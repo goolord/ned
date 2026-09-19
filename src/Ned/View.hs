@@ -15,6 +15,7 @@ module Ned.View
   , clipboardCut
   , clipboardPaste
   , defaultFontSize
+  , cellWidth
   ) where
 
 import Control.Monad (when)
@@ -158,15 +159,29 @@ data Geometry = Geometry
   , gGutterW :: !Float
   }
 
-geometry :: FontMetrics -> Buffer -> Geometry
-geometry fm buf =
-  let cellW = max 1 (fmAdvance fm 'M')
-      digits = max 3 (length (show (B.lineCount buf)))
+geometry :: Float -> FontMetrics -> Buffer -> Geometry
+geometry cellW fm buf =
+  let digits = max 3 (length (show (B.lineCount buf)))
    in Geometry
         { gCellW = cellW
         , gLineH = max 1 (fromIntegral (ceiling (fmLineHeight fm) :: Int))
         , gGutterW = fromIntegral (digits + 2) * cellW
         }
+
+-- | The width of a cell: what a character of a run advances the pen by.
+-- 'fmAdvance' is not that under a host that shapes. SDL_ttf gives a glyph's
+-- advance in whole pixels and lays a shaped line out by the unrounded one, 8
+-- and 8.25 at size 15, so cells a rounded advance wide part from the glyphs of
+-- a run drawn as one op, by a cell every 32 characters. The width of a long
+-- run over its length is the advance to within a pixel across a line.
+cellWidth :: FontMetrics -> IO Float
+cellWidth fm = do
+  w <- lineWidthIO fm cellRuler
+  pure (max 1 (w / fromIntegral (T.length cellRuler)))
+
+-- | Short enough for the host to keep its shaped line from frame to frame.
+cellRuler :: Text
+cellRuler = T.replicate 256 "M"
 
 -- | The width the text has to itself.
 textWidth :: Geometry -> Rect -> Float
@@ -210,6 +225,7 @@ editorView wantFocus ed0 = do
   inp <- askInput
   now <- uiTime
   (fm, _) <- uiIO (ctxResolveFont ctx (edFontSize ed0) WeightNormal FontStyleNormal FontMono)
+  cellW <- uiIO (cellWidth fm)
   -- The whole editor, from where its three parts were last frame.
   prevGutter <- uiIO (getPrevRect ctx widGutter)
   prevBar <- uiIO (getPrevRect ctx widBar)
@@ -228,7 +244,7 @@ editorView wantFocus ed0 = do
   let buf0 = edBuffer ed0
   buf1 <- if focused then applyKeys ctx inp (edViewLines ed0) buf0 else pure buf0
 
-  let g = geometry fm buf1
+  let g = geometry cellW fm buf1
       mouse = inputMousePos inp
       inside = rectContains rect mouse
       overBar = inside && v2X mouse >= rectX rect + rectW rect - scrollBarW

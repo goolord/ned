@@ -13,12 +13,13 @@ import qualified Data.Text.NanoRope as Rope
 import GHC.Clock (getMonotonicTime)
 import NanoUI
 import NanoUI.Backend.Sdl
+import NanoUI.Context (Context (..))
 import NanoUI.Input (UiCursorKind (..))
 import NanoUI.Runner (shouldRedrawFrame)
 import NanoUI.Testing (newPixelContext, uiCursorKind)
 import qualified Ned.Buffer as B
 import Ned.App
-import Ned.View (Editor (..))
+import Ned.View (Editor (..), cellWidth, defaultFontSize)
 import System.Directory (createDirectoryIfMissing)
 import System.Exit (exitFailure)
 import System.FilePath ((</>))
@@ -72,6 +73,18 @@ selftestIn dir mfile say = do
 
     idle
     shot "01-open.bmp"
+
+    -- A run drawn as one op has to end where its cells do, or the span after
+    -- it is drawn over its tail. At the sizes zooming passes through, where
+    -- the advance a glyph reports and the one a run is laid out by differ by
+    -- other fractions.
+    forM_ [8, 11, defaultFontSize, 16.5, 20, 33, 48] $ \pt -> do
+      (fm, _) <- ctxResolveFont ctx pt WeightNormal FontStyleNormal FontMono
+      cellW <- cellWidth fm
+      let run = T.replicate 150 "e"
+      drawn <- lineWidthIO fm run
+      when (abs (drawn - 150 * cellW) > 1) $
+        fail (printf "selftest: at size %.1f a run of 150 cells is %.2f wide and is drawn %.2f wide" pt (150 * cellW) drawn)
 
     case mfile of
       Just _ -> do

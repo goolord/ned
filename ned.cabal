@@ -1,0 +1,84 @@
+cabal-version:      3.4
+name:               ned
+version:            0.1.0.0
+synopsis:           A small, fast source code editor
+description:
+    A source code editor whose buffer is a nano-rope and whose window is
+    nano-ui on SDL3.
+license:            MIT
+license-file:       LICENSE
+author:             goolord
+maintainer:         zacharyachurchill@gmail.com
+category:           Text
+build-type:         Simple
+extra-doc-files:
+    CHANGELOG.md
+    README.md
+
+common extensions
+    default-language: GHC2021
+    default-extensions:
+        ExplicitNamespaces
+        LambdaCase
+        OverloadedStrings
+
+common ghc-options
+    ghc-options: -Wall -Widentities
+
+-- One capability and a large nursery: a frame allocates little and the
+-- editor has no parallel work. -I0 keeps the idle collector from waking a
+-- window nobody is touching.
+common rts-options
+    ghc-options: -rtsopts -threaded "-with-rtsopts=-N1 -A64m -I0"
+
+library
+    import:           extensions
+    import:           ghc-options
+    hs-source-dirs:   src
+    ghc-options:      -O2
+    exposed-modules:
+        Ned.Buffer
+        Ned.Highlight
+        Ned.View
+        Ned.App
+        Ned.Selftest
+    build-depends:
+        base ^>=4.22.0.0,
+        bytestring ^>=0.12,
+        directory ^>=1.3,
+        effectful-core ^>=2.6,
+        containers ^>=0.8,
+        filepath ^>=1.5,
+        nano-rope ^>=0.1,
+        nano-ui ^>=0.1,
+        nano-ui-sdl ^>=0.1,
+        primitive ^>=0.9,
+        text ^>=2.1
+
+    -- For SDL_SetWindowTitle, which nano-ui-sdl has no call for.
+    pkgconfig-depends: sdl3 >=3.2
+
+executable ned
+    import:           extensions
+    import:           ghc-options
+    import:           rts-options
+    main-is:          Main.hs
+    build-depends:
+        base,
+        ned
+    hs-source-dirs:   app
+
+test-suite ned-test
+    import:           extensions
+    import:           ghc-options
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          Main.hs
+    build-depends:
+        base,
+        bytestring,
+        directory,
+        filepath,
+        ned,
+        nano-rope,
+        text

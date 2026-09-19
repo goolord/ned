@@ -1,0 +1,20 @@
+packages: .
+
+source-repository-package
+  type: git
+  location: git@github.com:goolord/nano-ui.git
+  tag: 8287959ce131c6c3695a7542064b3af939abf484
+  subdir:
+    packages/nano-ui
+    packages/nano-ui-sdl
+
+source-repository-package
+  type: git
+  location: git@github.com:goolord/nano-rope.git
+  tag: d6cec01b6b21886faf5a77ec274907eae28c93f1
+
+-- The SDL backend needs SDL3, SDL3_ttf and pkg-config. On Windows install
+-- them through MSYS2 UCRT64 and point PKG_CONFIG_PATH at
+-- C:\msys64\ucrt64\lib\pkgconfig (see README.md).
+package nano-ui-sdl
+  flags: +sdl +simd

@@ -110,10 +110,18 @@ main = do
   check "unknown is plain" "Plain Text" (langName (languageFor "notes.xyz"))
   check
     "haskell line"
-    [("import", TokKeyword), ("Data", TokType), (".", TokPunct), ("Text", TokType), ("(", TokPunct), ("Text", TokType), (")", TokPunct), ("-- note", TokComment)]
+    [("import", TokKeyword), ("Data.Text", TokModule), ("(", TokPunct), ("Text", TokType), (")", TokPunct), ("-- note", TokComment)]
     (kinds hs LexNormal "import Data.Text (Text) -- note")
   check "string with an escape" [("\"a\\\"b\"", TokString), ("<>", TokPunct)] (kinds hs LexNormal "\"a\\\"b\" <> x")
-  check "character, and a prime that is not one" [("'x'", TokString)] (kinds hs LexNormal "foo' 'x'")
+  check "character, and a prime that is not one" [("'x'", TokString)] (kinds hs LexNormal "  foo' 'x'")
+  check
+    "the head of an application, qualified"
+    [("<-", TokPunct), ("T.", TokModule), ("length", TokFunction), ("(", TokPunct), ("f", TokFunction), (")", TokPunct)]
+    (kinds hs LexNormal "  n <- T.length (f x y)")
+  check "a qualified argument" [("map", TokFunction), ("T.", TokModule)] (kinds hs LexNormal "  map T.length xs")
+  check "a definition" [("go", TokFunction), ("=", TokPunct), ("case", TokKeyword), ("of", TokKeyword)] (kinds hs LexNormal "go acc t = case t of")
+  check "a signature applies types" [("f", TokFunction), ("::", TokPunct), ("Maybe", TokType), ("->", TokPunct)] (kinds hs LexNormal "f :: Maybe a -> m b")
+  check "a lambda's parameters" [("\\", TokPunct), ("->", TokPunct), ("g", TokFunction)] (kinds hs LexNormal "  \\x y -> g x")
   check "block comment opens" (LexBlock 1) (lexState hs LexNormal "x {- start")
   check "block comment nests" (LexBlock 2) (lexState hs (LexBlock 1) "still {- deeper")
   check "block comment closes" LexNormal (lexState hs (LexBlock 1) "done -} x")

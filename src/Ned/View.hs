@@ -103,32 +103,48 @@ revealCaret ed = ed {edReveal = True}
 -- Look
 --------------------------------------------------------------------------------
 
-rgb :: Int -> Color
-rgb v = colorRGBA (fromIntegral (v `shiftR` 16)) (fromIntegral (v `shiftR` 8)) (fromIntegral v) 255
+-- The colours are those of "Tomorrow Night Min", the theme the chrome has
+-- ('tomorrowNightMinDarkTheme'), from
+-- https://github.com/biaqat/tomorrow-min-theme-zed. The name after each is the
+-- key it has there; a key the theme leaves unset takes a neighbour's colour.
 
-colBackground, colGutter, colGutterText, colGutterActive, colCurrentLine, colSelection, colFindMatch, colCaret, colThumb, colThumbHot, colWhitespace :: Color
-colBackground = rgb 0x1D1F21
-colGutter = rgb 0x1D1F21
-colGutterText = rgb 0x5A5E63
-colGutterActive = rgb 0xC5C8C6
-colCurrentLine = rgb 0x26292C
-colSelection = rgb 0x3A4A5E
-colFindMatch = rgb 0x5C4B1C
-colCaret = rgb 0xE0E0E0
-colThumb = rgb 0x3A3E44
-colThumbHot = rgb 0x555A62
-colWhitespace = rgb 0x3E4247
+rgb :: Int -> Color
+rgb v = rgba v 255
+
+rgba :: Int -> Int -> Color
+rgba v a = colorRGBA (fromIntegral (v `shiftR` 16)) (fromIntegral (v `shiftR` 8)) (fromIntegral v) (fromIntegral a)
+
+colBackground, colGutter, colGutterText, colGutterActive, colCurrentLine, colSelection, colFindMatch, colCaret, colTrack, colThumb, colThumbHot, colWhitespace :: Color
+colBackground = rgb 0x1E1F21 -- editor.background
+colGutter = rgb 0x1E1F21 -- editor.gutter.background
+colGutterText = rgb 0x63666E -- hidden (editor.line_number is unset)
+colGutterActive = rgb 0xFFFFFF -- editor.active_line_number
+colCurrentLine = rgba 0x373B41 0x80 -- editor.active_line.background
+colSelection = rgba 0x373B41 0xC0 -- players[0].selection
+colFindMatch = rgba 0xF0C674 0x3E -- search.match_background
+colCaret = rgb 0x8ABEB7 -- players[0].cursor
+colTrack = rgba 0x1D1F21 0xC0 -- scrollbar.track.background
+colThumb = rgba 0x27292C 0xC0 -- scrollbar.thumb.background
+colThumbHot = rgba 0x373B41 0xC0 -- element.selected (scrollbar.thumb.hover_background is unset)
+colWhitespace = rgb 0x4D5057 -- ignored (editor.invisible is unset)
 
 tokenColor :: TokenKind -> Color
 tokenColor = \case
-  TokPlain -> rgb 0xC5C8C6
-  TokKeyword -> rgb 0xB294BB
-  TokType -> rgb 0xF0C674
-  TokFunction -> rgb 0x81A2BE
-  TokString -> rgb 0xB5BD68
-  TokNumber -> rgb 0xDE935F
-  TokComment -> rgb 0x7C7F80
-  TokPunct -> rgb 0x8ABEB7
+  TokPlain -> rgb 0xC5C8C6 -- editor.foreground
+  TokKeyword -> rgb 0xB294BB -- keyword
+  TokType -> rgb 0x81A2BE -- type: unset in the theme, and this in Zed
+  TokFunction -> rgb 0xDE935F -- function
+  TokModule -> rgb 0xB294BB -- title, which is what Zed gives a module
+  TokString -> rgb 0xB5BD68 -- string
+  TokNumber -> rgb 0xDE935F -- number
+  TokComment -> rgb 0x969896 -- comment
+  TokPunct -> rgb 0xC5C8C6 -- punctuation, operator
+
+tokenWeight :: TokenKind -> FontWeight
+tokenWeight = \case
+  TokType -> WeightSemiBold
+  TokFunction -> WeightSemiBold
+  _ -> WeightNormal
 
 scrollBarW, textPad :: Float
 scrollBarW = 12
@@ -558,6 +574,7 @@ drawScene which sc own@(Rect ox oy ow oh) =
             ]
       PartBar ->
         FillRect own colBackground
+          : FillRect own colTrack
           : [ FillRoundedRect (Rect (ox + 3) (y + thumbTop + 2) (scrollBarW - 6) (thumbH - 4)) 3 (if scThumbHot sc then colThumbHot else colThumb)
             | maxScrollY g rect buf > 0
             ]
@@ -572,7 +589,8 @@ drawScene which sc own@(Rect ox oy ow oh) =
     g = scGeometry sc
     cellW = gCellW g
     lineH = gLineH g
-    font = TextFont (scFontSize sc) FontMono WeightNormal FontStyleNormal DecorationNone
+    font = fontOf TokPlain
+    fontOf kind = TextFont (scFontSize sc) FontMono (tokenWeight kind) FontStyleNormal DecorationNone
     textX = x + gGutterW g + textPad - scScrollX sc
     firstLine = floor (scScrollY sc) :: Int
     yOff = realToFrac (fromIntegral firstLine - scScrollY sc) * lineH
@@ -664,18 +682,19 @@ drawScene which sc own@(Rect ox oy ow oh) =
 
     -- The draw ops of a line's spans, from a cell on. A run of plain ASCII is
     -- one op; anything else is placed a character at a time, so that the
-    -- grid holds whatever a fallback font makes of it.
+    -- grid holds whatever a fallback font makes of it, or a heavier weight,
+    -- whose glyphs advance further than a cell.
     runs _ _ _ [] = []
     runs ly cell t (Span n kind : rest)
       | cell > lastCell = []
       | otherwise =
           let seg = T.take n t
               t' = T.drop n t
-           in if T.all simple seg
+           in if T.all simple seg && tokenWeight kind == WeightNormal
                 then
                   let skip = max 0 (firstCell - cell)
                       keep = min n (lastCell - cell + 1) - skip
-                      op = DrawTextStyled (cellX (cell + skip)) ly font (T.take keep (T.drop skip seg)) (tokenColor kind)
+                      op = DrawTextStyled (cellX (cell + skip)) ly (fontOf kind) (T.take keep (T.drop skip seg)) (tokenColor kind)
                    in [op | keep > 0, not (T.all (== ' ') seg)] ++ runs ly (cell + n) t' rest
                 else
                   let (ops, cell') = chars ly kind cell seg
@@ -691,7 +710,7 @@ drawScene which sc own@(Rect ox oy ow oh) =
           Just (c, r)
             | c <= ' ' -> go acc (cell + 1) r
             | cell < firstCell || cell > lastCell -> go acc (cell + B.charCells c) r
-            | otherwise -> go (DrawTextStyled (cellX cell) ly font (T.singleton c) (tokenColor kind) : acc) (cell + B.charCells c) r
+            | otherwise -> go (DrawTextStyled (cellX cell) ly (fontOf kind) (T.singleton c) (tokenColor kind) : acc) (cell + B.charCells c) r
 
     numbers =
       [ DrawTextStyled (x + gGutterW g - cellW - fromIntegral (T.length label) * cellW) (lineY ln) font label color

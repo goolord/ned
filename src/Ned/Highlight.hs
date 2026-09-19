@@ -27,6 +27,7 @@ data TokenKind
   | TokKeyword
   | TokType
   | TokFunction
+  | TokModule
   | TokString
   | TokNumber
   | TokComment
@@ -63,6 +64,13 @@ data Lang = Lang
   -- ^ Whether a capitalised identifier names a type.
   , langCalls :: !Bool
   -- ^ Whether an identifier before @(@ is a function.
+  , langApplication :: !Bool
+  -- ^ Whether a function is applied by writing its arguments after it, as in
+  -- Haskell: the head of an application is a function, and so is a name a
+  -- line starts with.
+  , langQualifiers :: !Bool
+  -- ^ Whether a capitalised identifier before a @.@ names a module, as do
+  -- those of an @import@ or a @module@ line up to its list.
   , langIdentExtra :: ![Char]
   -- ^ Characters of identifiers besides letters, digits and @_@.
   , langDirectives :: !Bool
@@ -79,7 +87,7 @@ data Lang = Lang
 lexLine :: Lang -> LexState -> Text -> ([Span], LexState)
 lexLine lang st0 line
   | langHeadings lang && st0 == LexNormal && T.isPrefixOf "#" line = ([Span (T.length line) TokKeyword], LexNormal)
-  | otherwise = go st0 line []
+  | otherwise = go st0 False sig0 line []
   where
     done acc st = (reverse acc, st)
 
@@ -87,9 +95,13 @@ lexLine lang st0 line
     push n k (Span m k' : acc) | k == k' = Span (n + m) k : acc
     push n k acc = Span n k : acc
 
-    go st t acc
+    -- Besides the state, the lexer carries what tells the head of an
+    -- application from its arguments: whether the token before was an operand
+    -- (@prev@), and whether this is the type of a signature (@sig@), where
+    -- what is applied is a type.
+    go st _ _ t acc
       | T.null t = done acc st
-    go (LexBlock depth) t acc =
+    go (LexBlock depth) prev sig t acc =
       case langBlockComment lang of
         Nothing -> done (push (T.length t) TokComment acc) LexNormal
         Just (open, close) ->
@@ -98,52 +110,52 @@ lexLine lang st0 line
            in if langNestedComments lang && not (T.null restO) && T.length preO < T.length preC
                 then
                   let n = T.length preO + T.length open
-                   in go (LexBlock (depth + 1)) (T.drop n t) (push n TokComment acc)
+                   in go (LexBlock (depth + 1)) prev sig (T.drop n t) (push n TokComment acc)
                 else
                   if T.null restC
                     then done (push (T.length t) TokComment acc) (LexBlock depth)
                     else
                       let n = T.length preC + T.length close
                           st = if depth <= 1 then LexNormal else LexBlock (depth - 1)
-                       in go st (T.drop n t) (push n TokComment acc)
-    go (LexString delim) t acc =
+                       in go st prev sig (T.drop n t) (push n TokComment acc)
+    go (LexString delim) _ sig t acc =
       let (pre, rest) = T.breakOn delim t
        in if T.null rest
             then done (push (T.length t) TokString acc) (LexString delim)
             else
               let n = T.length pre + T.length delim
-               in go LexNormal (T.drop n t) (push n TokString acc)
-    go LexNormal t acc =
+               in go LexNormal True sig (T.drop n t) (push n TokString acc)
+    go LexNormal prev sig t acc =
       case T.uncons t of
         Nothing -> done acc LexNormal
         Just (c, rest)
           | isSpace c ->
               let n = T.length (T.takeWhile isSpace t)
-               in go LexNormal (T.drop n t) (push n TokPlain acc)
+               in go LexNormal prev sig (T.drop n t) (push n TokPlain acc)
           -- Before the line comments: Lua's block comment opens with its
           -- line comment's marker.
           | Just (open, _) <- langBlockComment lang
           , open `T.isPrefixOf` t ->
               let n = T.length open
-               in go (LexBlock 1) (T.drop n t) (push n TokComment acc)
+               in go (LexBlock 1) prev sig (T.drop n t) (push n TokComment acc)
           | any (`T.isPrefixOf` t) (langLineComments lang) ->
               done (push (T.length t) TokComment acc) LexNormal
           | Just delim <- firstPrefix (langMultiStrings lang) t ->
               let n = T.length delim
-               in go (LexString delim) (T.drop n t) (push n TokString acc)
+               in go (LexString delim) prev sig (T.drop n t) (push n TokString acc)
           | c `elem` langStrings lang ->
               let n = 1 + stringLength c rest
-               in go LexNormal (T.drop n t) (push n TokString acc)
+               in go LexNormal True sig (T.drop n t) (push n TokString acc)
           | c == '\'' && langCharLiterals lang ->
               case charLiteralLength t of
-                Just n -> go LexNormal (T.drop n t) (push n TokString acc)
-                Nothing -> go LexNormal rest (push 1 TokPlain acc)
+                Just n -> go LexNormal True sig (T.drop n t) (push n TokString acc)
+                Nothing -> go LexNormal prev sig rest (push 1 TokPlain acc)
           | isDigit c ->
               let n = T.length (T.takeWhile (\x -> isAlphaNum x || x == '.' || x == '_') t)
-               in go LexNormal (T.drop n t) (push n TokNumber acc)
+               in go LexNormal True sig (T.drop n t) (push n TokNumber acc)
           | c == '#' && langDirectives lang ->
               let n = 1 + T.length (T.takeWhile isAlpha rest)
-               in go LexNormal (T.drop n t) (push n TokKeyword acc)
+               in go LexNormal False sig (T.drop n t) (push n TokKeyword acc)
           | isAlpha c || c == '_' ->
               let word = T.takeWhile isIdent t
                   n = T.length word
@@ -151,11 +163,50 @@ lexLine lang st0 line
                   kind
                     | word `Set.member` langKeywords lang = TokKeyword
                     | word `Set.member` langTypes lang = TokType
+                    | langQualifiers lang && isUpper c && (qualifies after || importHead t) = TokModule
                     | langCapitalTypes lang && isUpper c = TokType
                     | langCalls lang && T.isPrefixOf "(" (T.stripStart after) = TokFunction
+                    | langApplication lang && (lineStart acc || not prev && not sig && applied after) = TokFunction
                     | otherwise = TokPlain
-               in go LexNormal after (push n kind acc)
-          | otherwise -> go LexNormal rest (push 1 TokPunct acc)
+                  -- A qualifier is part of the name after it, which is an
+                  -- operand or not as it would be alone.
+                  prev' = case kind of
+                    TokKeyword -> False
+                    TokModule -> prev
+                    _ -> True
+               in go LexNormal prev' sig after (push n kind acc)
+          | c == '.'
+          , Span _ TokModule : _ <- acc ->
+              go LexNormal prev sig rest (push 1 TokModule acc)
+          | otherwise ->
+              -- A closing bracket ends an operand, and what follows a lambda's
+              -- backslash are its parameters.
+              let prev' = c `elem` [')', ']', '}', '\\']
+                  sig' = sig || langApplication lang && c == ':' && T.isPrefixOf ":" rest
+               in go LexNormal prev' sig' rest (push 1 TokPunct acc)
+
+    -- A line that carries on a signature starts inside its type.
+    sig0 = langApplication lang && any (`T.isPrefixOf` T.stripStart line) ["->", "=>", "::"]
+
+    lineStart acc = null acc && st0 == LexNormal
+
+    importLine = langQualifiers lang && st0 == LexNormal && T.takeWhile isIdent (T.stripStart line) `elem` ["import", "module"]
+
+    -- Whether the rest of the line starts before the import's list.
+    importHead t = importLine && T.length t > T.length (T.dropWhile (/= '(') line)
+
+    qualifies after = case T.unpack (T.take 2 after) of
+      ['.', x] -> isAlpha x || x == '_'
+      _ -> False
+
+    -- Whether an argument follows: the start of an operand that is no keyword.
+    applied after =
+      let next = T.stripStart after
+       in T.isPrefixOf " " after && case T.uncons next of
+            Just (x, _) ->
+              (isAlphaNum x || x `elem` ['_', '"', '(', '[', '\\'])
+                && not (T.takeWhile isIdent next `Set.member` langKeywords lang)
+            Nothing -> False
 
     isIdent x = isAlphaNum x || x == '_' || x `elem` langIdentExtra lang
 
@@ -205,6 +256,8 @@ plainText =
     , langTypes = Set.empty
     , langCapitalTypes = False
     , langCalls = False
+    , langApplication = False
+    , langQualifiers = False
     , langIdentExtra = []
     , langDirectives = False
     , langHeadings = False
@@ -284,6 +337,8 @@ haskell =
     , langStrings = ['"']
     , langCharLiterals = True
     , langCapitalTypes = True
+    , langApplication = True
+    , langQualifiers = True
     , langIdentExtra = ['\'']
     , langKeywords =
         ws

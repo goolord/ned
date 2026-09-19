@@ -411,7 +411,7 @@ lexCacheFor ed before after firstLine
        in (version, firstLine, advance from LexNormal firstLine)
   where
     lang = edLang ed
-    stateless = isNothing (langBlockComment lang) && null (langMultiStrings lang)
+    stateless = isNothing (langBlockComment lang) && null (langMultiStrings lang) && not (langStringGaps lang)
     version = B.bufVersion after
     (cVersion, cLine, cState) = edLexCache ed
     editLine = minimum [B.lineOf b o | b <- [before, after], o <- [B.bufCursor b, B.bufAnchor b]]

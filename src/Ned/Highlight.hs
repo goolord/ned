@@ -45,6 +45,9 @@ data LexState
     LexBlock !Int
   | -- | A string that runs over lines, and the delimiter that ends it.
     LexString !Text
+  | -- | A string gap, as Haskell has them: a string of this quote that a
+    -- backslash ending the line before broke off, and the next one resumes.
+    LexGap !Char
   deriving (Eq, Show)
 
 data Lang = Lang
@@ -56,6 +59,8 @@ data Lang = Lang
   -- ^ Delimiters of strings that end with their line.
   , langMultiStrings :: ![Text]
   -- ^ Delimiters of strings that run over lines.
+  , langStringGaps :: !Bool
+  -- ^ Whether a backslash ending a line breaks a string off until the next.
   , langCharLiterals :: !Bool
   -- ^ Whether @'x'@ is a character, where a lone @'@ may be something else.
   , langKeywords :: !(Set Text)
@@ -125,6 +130,15 @@ lexLine lang st0 line
             else
               let n = T.length pre + T.length delim
                in go LexNormal True sig (T.drop n t) (push n TokString acc)
+    go (LexGap q) _ sig t acc =
+      let n = T.length (T.takeWhile isSpace t)
+       in case T.uncons (T.drop n t) of
+            -- A gap is any white space, blank lines among it.
+            Nothing -> done (push n TokPlain acc) (LexGap q)
+            Just ('\\', _) -> string q sig (T.drop n t) (push n TokPlain acc)
+            -- No gap after all: the line is code, and a line of its own. Only
+            -- the start of a line is lexed in this state.
+            Just _ -> lexLine lang LexNormal line
     go LexNormal prev sig t acc =
       case T.uncons t of
         Nothing -> done acc LexNormal
@@ -143,9 +157,7 @@ lexLine lang st0 line
           | Just delim <- firstPrefix (langMultiStrings lang) t ->
               let n = T.length delim
                in go (LexString delim) prev sig (T.drop n t) (push n TokString acc)
-          | c `elem` langStrings lang ->
-              let n = 1 + stringLength c rest
-               in go LexNormal True sig (T.drop n t) (push n TokString acc)
+          | c `elem` langStrings lang -> string c sig t acc
           | c == '\'' && langCharLiterals lang ->
               case charLiteralLength t of
                 Just n -> go LexNormal True sig (T.drop n t) (push n TokString acc)
@@ -214,15 +226,28 @@ lexLine lang st0 line
       d : _ -> Just d
       [] -> Nothing
 
-    -- Length of a string's body and closing quote, escapes skipped over. A
-    -- string left open ends with the line.
+    -- A string at the start of @t@: the character that opens or resumes it,
+    -- and then its body.
+    string q sig t acc =
+      let (m, gap) = stringLength q (T.drop 1 t)
+          n = 1 + m
+       in if gap && langStringGaps lang
+            then done (push n TokString acc) (LexGap q)
+            else go LexNormal True sig (T.drop n t) (push n TokString acc)
+
+    -- Length of a string's body and closing quote, escapes skipped over, and
+    -- whether a backslash ending the line broke it off: one with nothing
+    -- after it but white space, which is the gap's. A string left open ends
+    -- with the line.
     stringLength q = scan 0
       where
         scan !n t = case T.uncons t of
-          Nothing -> n
-          Just ('\\', r) -> scan (n + 1 + min 1 (T.length (T.take 1 r))) (T.drop 1 r)
+          Nothing -> (n, False)
+          Just ('\\', r)
+            | T.all isSpace r -> (n + 1 + T.length r, True)
+            | otherwise -> scan (n + 2) (T.drop 1 r)
           Just (x, r)
-            | x == q -> n + 1
+            | x == q -> (n + 1, False)
             | otherwise -> scan (n + 1) r
 
     charLiteralLength t = case T.unpack (T.take 4 t) of
@@ -251,6 +276,7 @@ plainText =
     , langNestedComments = False
     , langStrings = []
     , langMultiStrings = []
+    , langStringGaps = False
     , langCharLiterals = False
     , langKeywords = Set.empty
     , langTypes = Set.empty
@@ -335,6 +361,7 @@ haskell =
     , langBlockComment = Just ("{-", "-}")
     , langNestedComments = True
     , langStrings = ['"']
+    , langStringGaps = True
     , langCharLiterals = True
     , langCapitalTypes = True
     , langApplication = True

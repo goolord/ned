@@ -126,6 +126,20 @@ main = do
   check "block comment nests" (LexBlock 2) (lexState hs (LexBlock 1) "still {- deeper")
   check "block comment closes" LexNormal (lexState hs (LexBlock 1) "done -} x")
   check "inside a block comment" [("all of this", TokComment)] (kinds hs (LexBlock 1) "all of this")
+  check "string gap opens" (LexGap '"') (lexState hs LexNormal "  let kw = \"add all \\")
+  check "an escaped backslash opens no gap" LexNormal (lexState hs LexNormal "  let kw = \"add all \\\\")
+  check "string gap carries on" [("\\case else \\", TokString)] (kinds hs (LexGap '"') "    \\case else \\")
+  check "string gap carries on, state" (LexGap '"') (lexState hs (LexGap '"') "    \\case else \\")
+  check "string gap over a blank line" (LexGap '"') (lexState hs (LexGap '"') "   ")
+  check
+    "string resumes and ends"
+    [("\\then\"", TokString), ("<>", TokPunct)]
+    (kinds hs (LexGap '"') "    \\then\" <> x")
+  check "string ends where it resumes" [("\\\"", TokString), ("<>", TokPunct)] (kinds hs (LexGap '"') "  \\\" <> x")
+  check "string gap opens before trailing space" (LexGap '"') (lexState hs LexNormal "  let kw = \"add all \\  ")
+  check "no gap after all" [("case", TokKeyword), ("of", TokKeyword)] (kinds hs (LexGap '"') "  case x of")
+  check "no gap after all: a line of its own" (kinds hs LexNormal "main = do") (kinds hs (LexGap '"') "main = do")
+  check "no string gaps in c" LexNormal (lexState (languageFor "a.c") LexNormal "char *s = \"abc\\")
   let py = languageFor "a.py"
   check "python string over lines" (LexString "\"\"\"") (lexState py LexNormal "x = \"\"\"doc")
   check "python string ends" LexNormal (lexState py (LexString "\"\"\"") "end\"\"\" + 1")

@@ -16,6 +16,7 @@ module Ned.View
   , clipboardPaste
   , defaultFontSize
   , cellWidth
+  , caretColor
   ) where
 
 import Control.Monad (when)
@@ -118,16 +119,31 @@ rgba v a = colorRGBA (fromIntegral (v `shiftR` 16)) (fromIntegral (v `shiftR` 8)
 colBackground, colGutter, colGutterText, colGutterActive, colCurrentLine, colSelection, colFindMatch, colCaret, colTrack, colThumb, colThumbHot, colWhitespace :: Color
 colBackground = rgb 0x1E1F21 -- editor.background
 colGutter = rgb 0x1E1F21 -- editor.gutter.background
-colGutterText = rgb 0x63666E -- hidden (editor.line_number is unset)
+-- editor.line_number is unset, and 'hidden' (0x63666E), the key this took
+-- before, is the colour for a file nobody is meant to read: 2.9 to 1 on the
+-- page. A number you count down is not that. This is the same grey a step
+-- brighter, 4.0 to 1, and still far under the 9.8 to 1 of the code beside it.
+colGutterText = rgb 0x7A7D85
 colGutterActive = rgb 0xFFFFFF -- editor.active_line_number
 colCurrentLine = rgba 0x373B41 0x80 -- editor.active_line.background
 colSelection = rgba 0x373B41 0xC0 -- players[0].selection
 colFindMatch = rgba 0xF0C674 0x3E -- search.match_background
 colCaret = rgb 0x8ABEB7 -- players[0].cursor
 colTrack = rgba 0x1D1F21 0xC0 -- scrollbar.track.background
-colThumb = rgba 0x27292C 0xC0 -- scrollbar.thumb.background
-colThumbHot = rgba 0x373B41 0xC0 -- element.selected (scrollbar.thumb.hover_background is unset)
+-- scrollbar.thumb.background is 0x27292C, which over the track is 1.1 to 1:
+-- a thumb nobody can find is a thumb that does not work, whatever the theme
+-- says. These are the two greys this module already keeps, at 2.9 and 4.0 to
+-- one, so the lane reads without the bar becoming the loudest thing on the
+-- page. (scrollbar.thumb.hover_background is unset.)
+colThumb = rgb 0x63666E
+colThumbHot = rgb 0x7A7D85
 colWhitespace = rgb 0x4D5057 -- ignored (editor.invisible is unset)
+
+-- | The caret's colour, which is what the editor says "you are here" in. The
+-- file tree marks the file this editor has open in the same colour, so that
+-- one hue carries one meaning across the window.
+caretColor :: Color
+caretColor = colCaret
 
 tokenColor :: TokenKind -> Color
 tokenColor = \case
@@ -579,7 +595,7 @@ drawScene :: Part -> Scene -> Rect -> SmallArray DrawOp
 drawScene which sc own@(Rect ox oy ow oh) =
   smallArrayFromList $
     case which of
-      PartGutter -> FillRect own colGutter : numbers
+      PartGutter -> FillRect own colGutter : gutterCurrent ++ numbers
       PartText ->
         FillRect own colBackground
           : concat
@@ -727,6 +743,16 @@ drawScene which sc own@(Rect ox oy ow oh) =
             | c <= ' ' -> go acc (cell + 1) r
             | cell < firstCell || cell > lastCell -> go acc (cell + B.charCells c) r
             | otherwise -> go (DrawTextStyled (cellX cell) ly (fontOf kind) (T.singleton c) (tokenColor kind) : acc) (cell + B.charCells c) r
+
+    -- The band on the caret's line carries on through the gutter, so that the
+    -- number and the text it belongs to read as one row rather than as a
+    -- highlight that starts where the code does.
+    gutterCurrent =
+      [ FillRect (Rect ox (lineY caretLine) ow lineH) colCurrentLine
+      | selFrom == selTo
+      , caretLine >= firstLine
+      , caretLine <= lastLine
+      ]
 
     numbers =
       [ DrawTextStyled (x + gGutterW g - cellW - fromIntegral (T.length label) * cellW) (lineY ln) font label color

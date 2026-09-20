@@ -40,6 +40,8 @@ import NanoUI hiding (Row)
 import NanoUI.Context (Context (..), getFocusId, getPrevRect)
 import NanoUI.Input (UiCursorKind (..))
 import NanoUI.Monad (askContext, askInput)
+import Ned.Highlight (langName, languageFor)
+import Ned.View (caretColor)
 import System.Directory (doesDirectoryExist, listDirectory)
 import System.FilePath (equalFilePath, normalise, takeDirectory, takeFileName, (</>))
 
@@ -273,18 +275,46 @@ selectRow i ft
 -- The tree is chrome, so it takes its colours from the theme, as the menu bar
 -- and the status bar do: the window's own colour, which is a step darker than
 -- the editor's background, and the panel's text on it.
+--
+-- It spends one colour of its own, on the row whose file the editor has open,
+-- and that colour is the caret's ('caretColor'). Everything else here is grey:
+-- a hue in this window means "you are here", and it means nothing else.
+--
+-- What tells the rows apart is weight, not colour. A folder is set semibold,
+-- and takes the foreground while it is open and the muted grey while it is
+-- shut, so that brightness says which folder's contents you are looking at. A
+-- file is set normal and always at full strength: files are what a pointer is
+-- aimed at, so they are the brightest thing in the panel, and the folders
+-- around them are scaffolding to scan past.
 
-treePad, treeIndent, treeChevron, treeBarW :: Float
-treePad = 6
-treeIndent = 13
+treePad, treeIndent, treeChevron, treeIcon, treeBarW, treeMark :: Float
+treePad = 8
+treeIndent = 14
 treeChevron = 14
+
+-- | The column an icon sits in, between the chevron and the name. A file has
+-- no chevron but still leaves room for one, so that the icons of a folder and
+-- of the files inside it line up in a column.
+treeIcon = 18
 treeBarW = 10
+
+-- | The bar down the left of the row whose file the editor has open. It is its
+-- own mark and not the selection's, because arrowing through the tree moves
+-- the selection away and the open file has to stay findable.
+treeMark = 3
+
+-- | The only corner in the window, and the scrollbar thumb's own. It goes on
+-- the things a pointer grabs or picks and on nothing else; the caret, the
+-- selection bands and the rules are all square.
+treeRadius :: Float
+treeRadius = 3
 
 splitterW :: Float
 splitterW = 5
 
+-- | A row is scanned rather than read, so it sits tighter than a line of text.
 rowHeight :: FontMetrics -> Float
-rowHeight fm = fromIntegral (ceiling (fmLineHeight fm) :: Int) + 4
+rowHeight fm = fromIntegral (ceiling (fmLineHeight fm) :: Int) + 2
 
 --------------------------------------------------------------------------------
 -- The widget
@@ -301,9 +331,12 @@ fileTreePanel wantFocus current ft0 =
   rowWith (tight . gap 0 . fillH) $ do
     (resp, ft1, opened) <- columnWith (tight . gap 0 . fillH . fixedW (ftWidth ft0)) $ do
       -- The padding goes on last: 'tight' before it would take it off again,
-      -- and the name is meant to start where the rows' own names do.
-      rowWith (padXY (treePad + treeChevron) 4 . tight . fillW . gap 4 . alignMid) $
-        labelWith (tight . fontMuted) (rootName ft0)
+      -- and the name is meant to start where the rows' own names do. It is
+      -- set at full strength and semibold: it names the thing the panel is
+      -- about, and muted grey had it reading as a row that could not be
+      -- clicked.
+      rowWith (padXY (treePad + treeChevron + 2) 6 . tight . fillW . gap 4 . alignMid) $
+        labelWith (tight . fontSemiBold) (rootName ft0)
       separator
       treeRows wantFocus current ft0
     ft2 <- splitterBar ft1
@@ -523,8 +556,14 @@ splitterBar ft0 = do
         , widgetDraw = \cdc (Rect x y w h) ->
             let theme = cdcTheme cdc
              in smallArrayFromList
-                  [ FillRect (Rect x y w h) (themeWindow theme)
-                  , FillRect (Rect (x + w / 2 - 0.5) y 1 h) (if hot then themeAccent theme else themeSeparator theme)
+                  -- The strip carries on the editor's page, and the seam sits
+                  -- at the tree's own edge rather than down the middle of the
+                  -- strip the pointer grabs, so the panel ends where it looks
+                  -- like it ends. Taking hold of it brightens the seam; it
+                  -- stays grey, because the one hue in this window is spoken
+                  -- for.
+                  [ FillRect (Rect x y w h) (styleBg (themePanel theme))
+                  , FillRect (Rect x y 1 h) (if hot then themeMuted theme else themeSeparator theme)
                   ]
         , widgetContent = contentKey [if hot then 1 else 0]
         , widgetCursor = Just (const UiCursorEwResize)
@@ -587,7 +626,45 @@ drawTree cdc sc rect@(Rect x y w h) =
     yOff = realToFrac (fromIntegral first - scScroll sc) * lineH
     rowY i = y + yOff + fromIntegral (i - first) * lineH
     textY ry = ry + (lineH - fmLineHeight fm) / 2
-    font = TextFont 0 FontRegular WeightNormal FontStyleNormal DecorationNone
+    font weight = TextFont 0 FontRegular weight FontStyleNormal DecorationNone
+    -- The lane the scrollbar has, which is nothing until there is more to
+    -- show than the view holds.
+    lane = if fromIntegral count > scViewRows sc then treeBarW else 0
+    -- The separator, most of the way back toward the window behind it. A
+    -- rule this quiet is enough to follow down a column, and a deep tree
+    -- draws one of them for every level, so it has to stay under the names.
+    colSpine = lerpColor (themeWindow theme) (themeSeparator theme) 0.8
+    colChevron = themeMuted theme
+    -- Three rungs of the one grey ladder. The row the keyboard is on has to
+    -- stay apart from the row the pointer is merely over, and it dims rather
+    -- than disappears when the keyboard goes elsewhere, so that arrowing back
+    -- lands where you left off. None of them is tinted: 'themeSelection' is
+    -- built from the theme's accent, and a blue slab under the aqua name of
+    -- the open file put two hues in a panel that is allowed one.
+    colHover = lerpColor (themeWindow theme) (styleHoverBg surface) 0.45
+    colPickedAway = styleHoverBg surface
+    colPicked = lerpColor (themeSeparator theme) (styleFg surface) 0.1
+    -- 'scrollBarThumbColor' comes out at 1.5 to 1 on this panel, which is not
+    -- a thumb you can find. These are 2.5 and 3.6 to one, to sit beside the
+    -- editor's own bar rather than disappear next to it.
+    colThumb = lerpColor (themeWindow theme) (styleFg surface) 0.3
+    colThumbHot = lerpColor (themeWindow theme) (styleFg surface) 0.42
+
+    -- The tint on a file's page is the family of language the editor would
+    -- open it as, which is the one thing about a file the tree already knows
+    -- and the name does not always say. There are far more languages than
+    -- there are colours in the theme, so they share by family rather than
+    -- each having one of their own; prose and anything unrecognised stay
+    -- grey. The tint is on the icon alone -- the names stay in the grey
+    -- ladder -- so the panel reads as a column of chips beside a list, and
+    -- not as a list in a dozen colours.
+    tintFor path = case langName (languageFor path) of
+      l | l `elem` ["Haskell", "Cabal", "Nix"] -> themePurple theme
+      l | l `elem` ["C", "C++", "C#", "Rust", "Go", "Zig", "Java"] -> themeOrange theme
+      l | l `elem` ["JavaScript", "TypeScript", "Python", "Lua", "Shell", "PowerShell", "SQL"] -> themeYellow theme
+      l | l `elem` ["JSON", "TOML", "YAML", "XML", "CSS", "HTML", "Dockerfile", "Makefile"] -> themeGreen theme
+      "Markdown" -> themeRed theme
+      _ -> themeMuted theme
 
     rowOps i =
       let r = indexSmallArray rows i
@@ -597,44 +674,87 @@ drawTree cdc sc rect@(Rect x y w h) =
           -- The file the editor has, which is a path the application made and
           -- not one of ours, so it is matched the way the platform would.
           isCurrent = maybe False (equalFilePath (rowPath r)) (scCurrent sc)
-          -- The selection keeps a colour of its own when the keyboard is
-          -- elsewhere, half way to the background: the row the pointer is
-          -- over is drawn too, and the two have to be told apart.
+          -- What a pick lands on is inset rather than run from edge to edge,
+          -- so the panel keeps a margin down both sides and the mark has
+          -- somewhere of its own to sit.
+          pick = Rect (x + treeMark + 2) (ry + 1) (max 0 (w - treeMark - 4 - lane)) (lineH - 2)
           backdrop
-            | selected =
-                [ FillRect (Rect x ry w lineH) $
-                    if scFocused sc
-                      then themeSelection theme
-                      else lerpColor (themeWindow theme) (themeSelection theme) 0.55
-                ]
-            | scHovered sc == i = [FillRect (Rect x ry w lineH) (styleHoverBg surface)]
+            | selected = [FillRoundedRect pick treeRadius (if scFocused sc then colPicked else colPickedAway)]
+            | scHovered sc == i = [FillRoundedRect pick treeRadius colHover]
             | otherwise = []
+          -- One rule for each folder this row sits inside, down the middle of
+          -- that folder's own chevron. This is what makes the rows a tree
+          -- rather than a list of names: at the top level there is one root
+          -- and so no rule at all.
+          spine =
+            [ FillRect (Rect (rule k) ry 1 lineH) colSpine
+            | k <- [0 .. rowDepth r - 1]
+            ]
+          rule k = fromIntegral (round (x + treePad + fromIntegral k * treeIndent + treeChevron / 2) :: Int)
+          mark = [FillRect (Rect x (ry + 1) treeMark (lineH - 2)) caretColor | isCurrent]
           -- A folder has a chevron pointing along or down; a file has none.
+          cy = ry + lineH / 2
           chevron
             | not (rowDir r) = []
             | otherwise =
                 let cx = x + indent + treeChevron / 2
-                    cy = ry + lineH / 2
                  in [ if rowOpen r
-                        then FillTriangle (cx - 4) (cy - 2) (cx + 4) (cy - 2) cx (cy + 3) (themeMuted theme)
-                        else FillTriangle (cx - 2) (cy - 4) (cx - 2) (cy + 4) (cx + 3) cy (themeMuted theme)
+                        then FillTriangle (cx - 5) (cy - 2.5) (cx + 5) (cy - 2.5) cx (cy + 3.5) colChevron
+                        else FillTriangle (cx - 2.5) (cy - 5) (cx - 2.5) (cy + 5) (cx + 3.5) cy colChevron
                     ]
-          tx = x + indent + treeChevron
-          avail = w - (tx - x) - treePad - (if fromIntegral count > scViewRows sc then treeBarW else 0)
-          color
-            | isCurrent = themeAccent theme
-            | otherwise = styleFg surface
-       in backdrop ++ chevron ++ [DrawTextStyled tx (textY ry) font (elide fm avail (rowName r)) color]
+          icon
+            | rowDir r = folderIcon (x + indent + treeChevron) cy (if rowOpen r then styleFg surface else themeMuted theme)
+            | otherwise = fileIcon (x + indent + treeChevron) cy (tintFor (rowPath r))
+          tx = x + indent + treeChevron + treeIcon
+          avail = w - (tx - x) - treePad - lane
+          (weight, color)
+            | isCurrent = (WeightSemiBold, caretColor)
+            | rowDir r = (WeightSemiBold, if rowOpen r then styleFg surface else themeMuted theme)
+            | otherwise = (WeightNormal, styleFg surface)
+       in backdrop ++ spine ++ mark ++ chevron ++ icon ++ [DrawTextStyled tx (textY ry) (font weight) (elide fm avail (rowName r)) color]
 
     bar
-      | fromIntegral count <= scViewRows sc = []
+      | lane <= 0 = []
       | otherwise =
           let (thumbTop, thumbH) = thumbSpan rect count (scViewRows sc) (scScroll sc)
            in [ FillRoundedRect
                   (Rect (x + w - treeBarW + 2) (y + thumbTop + 2) (treeBarW - 4) (thumbH - 4))
                   3
-                  (if scThumbHot sc then scrollBarThumbColor surface theme else styleHoverBg surface)
+                  (if scThumbHot sc then colThumbHot else colThumb)
               ]
+
+-- | The icons, built out of the shapes the toolkit has rather than loaded
+-- from an image: two of them, because two is all the tree has to say. A
+-- folder is a body under a tab. A file is a page with its top corner taken
+-- off, which is the shape everyone reads as a document.
+--
+-- The corner is taken off rather than shaded over: the page is drawn as the
+-- five-sided shape it ends up being, so what shows through the cut is
+-- whatever the row behind it is, and one icon draws the same over a row that
+-- is picked, hovered or plain. A shade would have to know the row's colour,
+-- and at eleven pixels it did not read as a fold anyway.
+--
+-- Both are square-cornered. The one radius in the window belongs to the
+-- things a pointer grabs or picks; an icon is neither.
+--
+-- Both are centred on @cy@, in a column @treeIcon@ wide starting at @ix@.
+folderIcon :: Float -> Float -> Color -> [DrawOp]
+folderIcon ix cy col =
+  [ FillRect (Rect fx (cy - 5) 5 2) col
+  , FillRect (Rect fx (cy - 3) 12 8) col
+  ]
+  where
+    fx = fromIntegral (round ix :: Int) + 2
+
+fileIcon :: Float -> Float -> Color -> [DrawOp]
+fileIcon ix cy col =
+  [ FillRect (Rect fx fy 5 4) col
+  , FillRect (Rect fx (fy + 4) 9 8) col
+  , FillTriangle (fx + 5) fy (fx + 9) (fy + 4) (fx + 5) (fy + 4) col
+  ]
+  where
+    fx = fromIntegral (round ix :: Int) + 4
+    fy = cy - 6
 
 -- | A name cut to fit, with an ellipsis where it was cut.
 elide :: FontMetrics -> Float -> Text -> Text

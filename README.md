@@ -28,9 +28,13 @@ cabal run ned -- path/to/file.hs
   offers the folder above, a refresh, and closing everything; the bar between
   it and the text drags to resize it, and Ctrl+B puts it away. A folder is
   read the first time it is opened, so nothing walks a tree nobody looked at.
+  A rule down each level it is deep shows what sits inside what, a folder or
+  a page marks each row, and the page is tinted by the language the file
+  would open as. The file the editor has is marked in the caret's colour.
 - Incremental find with matches marked in the view, and go to line.
 - Zoom, a line number gutter, and a status bar with the position, language,
-  indentation and line endings.
+  indentation and line endings. A setting at its default is left off it: the
+  zoom appears when it is not 100%, the byte order mark when there is one.
 
 ## Keys
 

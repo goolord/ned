@@ -187,15 +187,15 @@ openPath path0 app = do
             appTree = FT.reveal path (appTree app)
           }
   if not exists
-    then pure (fresh B.empty (FileFormat LF False) ("New file " <> T.pack path))
+    then pure (fresh B.empty (FileFormat LF False) ("New file " <> T.pack (takeFileName path)))
     else
       loadFile path >>= \case
         Left err -> pure app {appStatus = "Could not open " <> T.pack path <> ": " <> err}
         Right loaded ->
           pure . fresh (loadedBuffer loaded) (loadedFormat loaded) $
             if loadedLossy loaded
-              then "Opened " <> T.pack path <> ", which is not UTF-8: its other bytes are shown as " <> T.singleton (toEnum 0xFFFD) <> " and saving will not bring them back"
-              else "Opened " <> T.pack path
+              then "Opened " <> T.pack (takeFileName path) <> ", which is not UTF-8: its other bytes are shown as " <> T.singleton (toEnum 0xFFFD) <> " and saving will not bring them back"
+              else "Opened " <> T.pack (takeFileName path)
 
 --------------------------------------------------------------------------------
 -- Window title
@@ -329,7 +329,7 @@ appView ref = do
                       edLexCache = (-1, 0, LexNormal)
                     }
               , appPath = Just path
-              , appStatus = "Saved " <> T.pack path
+              , appStatus = "Saved " <> T.pack (takeFileName path)
               }
       save forceDialog = do
         a <- uiIO (readIORef ref)
@@ -546,7 +546,7 @@ appView ref = do
       BarNone -> pure ()
       BarFind -> do
         separator
-        rowWith (tight . fillW . gap 8 . padXY 8 4 . alignMid) $ do
+        rowWith (padXY 12 5 . tight . fillW . gap 8 . alignMid) $ do
           labelWith (tight . fontMuted) "Find"
           (resp, query) <- textInput' (appFindText app2)
           holdFocus resp
@@ -564,7 +564,7 @@ appView ref = do
           when enter (find (not (modShift mods)))
       BarGoto -> do
         separator
-        rowWith (tight . fillW . gap 8 . padXY 8 4 . alignMid) $ do
+        rowWith (padXY 12 5 . tight . fillW . gap 8 . alignMid) $ do
           labelWith (tight . fontMuted) "Go to line"
           (resp, txt) <- textInput' (appGotoText app2)
           holdFocus resp
@@ -614,7 +614,8 @@ menuBar :: Text -> (Text -> NanoUI ()) -> Text -> (Text -> NanoUI ()) -> [(Text,
 menuBar open setOpen swallow setSwallow entries = do
   -- The pointer as it is, where a button under an open menu sees none.
   pointer <- askFrameInput
-  rowWith (tight . fillW . fixedH 28) $ do
+  -- The titles start in from the edge rather than hard against it.
+  styled menuChrome $ rowWith (padXY 6 0 . tight . fillW . fixedH 30 . gap 2) $ do
     for_ entries $ \(title, body) -> do
       let isOpen = open == title
       btn <- menuButton' title isOpen
@@ -629,21 +630,48 @@ menuBar open setOpen swallow setSwallow entries = do
     flex
   when (inputMouseReleased pointer && not (T.null swallow)) (setSwallow "")
 
+-- | The menus, in grey. A menu bar button and a menu row are not drawn from
+-- 'themeButton' at all: nano-ui mixes their lit background out of
+-- 'themeAccent', so the accent is the only way in. Scoping it to a grey turns
+-- the open menu and the row under the pointer into steps up the surface they
+-- are on, and leaves the accent everywhere else alone.
+--
+-- Hue in this window always stands for something -- which language a file is,
+-- where the caret is. A menu that is merely open stands for nothing, so it
+-- does not get any.
+menuChrome :: Theme -> Theme
+menuChrome theme = accentColor (lerpColor (themeWindow theme) (styleFg (themePanel theme)) 0.7) theme
+
+-- | The bar along the bottom. What is on it is in three voices rather than
+-- one: the file it is about is set semibold, the place the caret is in it is
+-- set at full strength because it changes as you type, and the facts that
+-- only sit there are muted. A row of eight labels all in the same grey is a
+-- row nobody reads.
+--
+-- A setting that is at its default says nothing at all. Every file is at 100%
+-- zoom and most have no byte order mark, so showing either of those on every
+-- file costs a place on the bar and tells you what you already assumed; they
+-- appear when they are worth a look and are quiet the rest of the time.
 statusBar :: App -> NanoUI ()
 statusBar app =
-  rowWith (tight . gap 16 . fillW . padXY 8 4) $ do
+  rowWith (padXY 12 5 . tight . gap 12 . fillW) $ do
     labelWith (tight . fontMuted) (appStatus app)
     flex
-    labelWith (tight . fontMuted) (maybe "Untitled" (T.pack . takeFileName) (appPath app) <> (if B.isDirty buf then " *" else ""))
-    labelWith (tight . fontMuted) ("Ln " <> showT (ln + 1) <> ", Col " <> showT (col + 1))
+    -- A file with changes to save carries a dot, the way an editor's tab
+    -- does. An asterisk read as part of the name.
+    labelWith (tight . fontSemiBold) (name <> (if B.isDirty buf then " \x2022" else ""))
+    labelWith tight ("Ln " <> showT (ln + 1) <> ", Col " <> showT (col + 1))
     labelWith (tight . fontMuted) (showT (B.lineCount buf) <> " lines")
     labelWith (tight . fontMuted) (langName (edLang ed))
     labelWith (tight . fontMuted) (if B.usesTabs buf then "Tabs" else "Spaces")
-    labelWith (tight . fontMuted) (T.pack (show (formatEol (appFormat app))) <> (if formatBom (appFormat app) then " BOM" else ""))
-    labelWith (tight . fontMuted) (showT (round (edFontSize ed / defaultFontSize * 100) :: Int) <> "%")
+    labelWith (tight . fontMuted) (T.pack (show (formatEol (appFormat app))))
+    when (formatBom (appFormat app)) $ labelWith (tight . fontMuted) "BOM"
+    when (zoom /= 100) $ labelWith (tight . fontMuted) (showT zoom <> "%")
   where
     ed = appEditor app
     buf = edBuffer ed
+    name = maybe "Untitled" (T.pack . takeFileName) (appPath app)
+    zoom = round (edFontSize ed / defaultFontSize * 100) :: Int
     (ln, col) = B.cursorPosition buf
     showT :: Show a => a -> Text
     showT = T.pack . show

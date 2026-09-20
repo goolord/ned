@@ -360,16 +360,22 @@ selftestIn dir mfile say = do
     -- real one does: the tree's edge has to track the pointer the whole way,
     -- not run away from it as it does when each step measures against the bar
     -- the last frame drew, which itself moves with the edge.
-    let atX x = base {inputMousePos = V2 x 300}
+    let atXIn b x = b {inputMousePos = V2 x 300}
+        atX = atXIn base
         -- Whether the bar is under @x@: asked of the frame the pointer last
         -- moved in, since the cursor comes from the widget under it there.
-        overDivider x = cursorKindIs ctx (atX x) UiCursorEwResize
-        findDivider x
+        overDividerIn b x = cursorKindIs ctx (atXIn b x) UiCursorEwResize
+        overDivider = overDividerIn base
+        -- The bar's left edge, searched for rightward from @x@. The input the
+        -- search draws with carries the window's size, so a window that has
+        -- been resized is measured at the size it now has.
+        findDividerIn b x
           | x > 900 = fail "selftest: found no bar between the tree and the text"
           | otherwise = do
-              frame (atX x)
-              here <- overDivider x
-              if here then pure x else findDivider (x + 1)
+              frame (atXIn b x)
+              here <- overDividerIn b x
+              if here then pure x else findDividerIn b (x + 1)
+        findDivider = findDividerIn base
     was <- findDivider 40
     frame (atX (was + 2)) {inputMouseDown = True, inputMousePressed = True}
     let dragTo step = do
@@ -429,6 +435,30 @@ selftestIn dir mfile say = do
     -- follows finds the tree as it was.
     click 60 70
     expectRows "a tree back on the left of the editor" ["sub", "outer.txt"]
+
+    -- A window that changes size gives the difference to the editor: the tree
+    -- is the grid's pinned pane, so the bar stays where the reader put it
+    -- however wide the window is. Measured at the tree's width as it stands,
+    -- since the drop above left it a fraction off the width it was dragged to.
+    pinnedAt <- findDivider 40
+    let resizedTo w h = do
+          setWindowSize env w h
+          -- The size the window really took, which the frames below are
+          -- drawn at; 'syncDisplay' also moves the pointer to where it really
+          -- is, so only the size is kept.
+          (_, synced) <- syncDisplay ctx env base
+          let b = base {inputWindowSize = inputWindowSize synced}
+          frame b >> frame b
+          pure b
+        staysPinned what b = do
+          edge <- findDividerIn b 40
+          when (abs (edge - pinnedAt) > 1) $
+            fail (printf "selftest: %s put the bar at %.0f, not %.0f" (what :: String) edge pinnedAt)
+    resizedTo 1600 900 >>= staysPinned "a wider window"
+    resizedTo 820 620 >>= staysPinned "a narrower window"
+    -- Back to the size everything below is placed by.
+    _ <- resizedTo 1100 760
+    idle
 
     -- A folder holding more than the view does scrolls, and the wheel moves
     -- it the way it moves the text.

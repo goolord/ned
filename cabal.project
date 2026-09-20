@@ -1,12 +1,9 @@
 packages: .
 
-source-repository-package
-  type: git
-  location: git@github.com:goolord/nano-ui.git
-  tag: 98410720397e031da3305c913152ba5cf25bb2a2
-  subdir:
-    packages/nano-ui
-    packages/nano-ui-sdl
+-- TEMPORARY (diagnosing resize lag): local checkout, same commit as the pin.
+packages:
+  ../nano-ui/packages/nano-ui
+  ../nano-ui/packages/nano-ui-sdl
 
 source-repository-package
   type: git

@@ -6,7 +6,9 @@
   highlighting, undo and redo, find, go to line, and LF and CRLF files.
 * A file tree beside the editor, on the folder the open file is in: its
   folders open and close, a click on a file opens it, the bar between it and
-  the text resizes it, and Ctrl+B puts it away.
+  the text resizes it, and Ctrl+B puts it away. A resized window resizes the
+  text: the tree is the pane grid's pinned pane and keeps the width it was
+  left at.
 * The file tree draws a rule down each level it is deep, a folder or a page
   on every row, and the page in the colour of the language the file would
   open as; the file the editor has is marked in the caret's colour.

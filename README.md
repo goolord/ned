@@ -26,7 +26,9 @@ cabal run ned -- path/to/file.hs
 - A file tree beside the text, on the folder the open file is in, whose
   folders open and close and whose files open on a click. Its right button
   offers the folder above, a refresh, and closing everything; the bar between
-  it and the text drags to resize it, and Ctrl+B puts it away. A folder is
+  it and the text drags to resize it, and Ctrl+B puts it away. A window that
+  changes size changes the width of the text: the tree stays as wide as it
+  was left, and gives way only when the window is too narrow to hold both. A folder is
   read the first time it is opened, so nothing walks a tree nobody looked at.
   A rule down each level it is deep shows what sits inside what, a folder or
   a page marks each row, and the page is tinted by the language the file

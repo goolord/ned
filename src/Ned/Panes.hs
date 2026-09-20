@@ -61,6 +61,11 @@ treeEditorNext = treeEditorSplit + 1
 -- Each pane's content is the given view, and the bar between them resizes
 -- them; the split is kept by the grid, so the tree comes back at the width it
 -- was left at when it is put away and taken up again.
+--
+-- The tree is the grid's pinned pane. A resized window resizes the editor:
+-- the tree is a fixture the reader set the width of, and a wider window is
+-- room for more text, not for more of a file name. It gives way only when
+-- the window is too narrow to hold it and the editor's minimum both.
 treeEditorGrid ::
   Ui :> es =>
   (PaneGridCtx es -> Eff es PaneView) ->
@@ -82,6 +87,9 @@ treeEditorGrid treePane editorPane = do
         , pgMinSize = minTreeWidth
         , pgLeeway = paneLeeway
         , pgPreserveDragSize = True
+        , -- The window's width is the editor's to take or give up: the tree
+          -- is as wide as it was left, whatever the window does.
+          pgFixedPanes = (== treePaneId)
         , pgViewPane = \pid pctx -> if pid == treePaneId then treePane pctx else editorPane pctx
         }
   where

@@ -150,6 +150,9 @@ main = do
   check "lua block comment opens" (LexBlock 1) (lexState lua LexNormal "x = 1 --[[ start")
   check "lua block comment closes" LexNormal (lexState lua (LexBlock 1) "end ]] y = 2")
   check "lua line comment" LexNormal (lexState lua LexNormal "x = 1 -- note")
+  check "lua long string opens" (LexString "]]") (lexState lua LexNormal "x = [[ long")
+  check "lua long string closes" LexNormal (lexState lua (LexString "]]") "more ]] y = 2")
+  check "lua long string on one line" [("=", TokPunct), ("[[ long ]]", TokString)] (kinds lua LexNormal "x = [[ long ]]")
   check "spans cover the line" 31 (sum (map spanLength (fst (lexLine hs LexNormal "import Data.Text (Text) -- note"))))
   check "c directive" [("#include", TokKeyword), ("<", TokPunct), (".", TokPunct), (">", TokPunct)] (kinds (languageFor "a.c") LexNormal "#include <stdio.h>")
 

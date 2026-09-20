@@ -128,7 +128,7 @@ lexLine lang st0 line
     start = \case
       LexNormal -> normal
       LexBlock depth -> block depth
-      LexString delim -> multiString delim
+      LexString close -> multiString close
       LexGap q -> gap q
 
     normal :: Lex LexState
@@ -145,8 +145,8 @@ lexLine lang st0 line
               eat (T.length open) TokComment >> block 1
           | any (`T.isPrefixOf` t) (langLineComments lang) ->
               eatRest TokComment >> pure LexNormal
-          | Just delim <- firstPrefix (langMultiStrings lang) t ->
-              eat (T.length delim) TokString >> multiString delim
+          | Just ms <- multiOpens t ->
+              eat (T.length (multiOpen ms)) TokString >> multiString (multiClose ms)
           | c `elem` langStrings lang -> string c
           | c == '\'' && langCharLiterals lang ->
               case charLiteralLength t of
@@ -202,12 +202,12 @@ lexLine lang st0 line
             | depth <= 1 -> normal
             | otherwise -> block (depth - 1)
 
-    -- A string that runs over lines, to its delimiter or to the line's end.
+    -- A string that runs over lines, to what closes it or to the line's end.
     multiString :: Text -> Lex LexState
-    multiString delim = do
-      hit <- eatTo [(delim, ())] TokString
+    multiString close = do
+      hit <- eatTo [(close, ())] TokString
       case hit of
-        Nothing -> pure (LexString delim)
+        Nothing -> pure (LexString close)
         Just () -> operand True >> normal
 
     -- A gap is any white space, blank lines among it. What follows it on this
@@ -280,8 +280,9 @@ lexLine lang st0 line
 
     isIdent x = isAlphaNum x || x == '_' || x `elem` langIdentExtra lang
 
-    firstPrefix ds t = case filter (`T.isPrefixOf` t) ds of
-      d : _ -> Just d
+    -- The multi-line string that opens here, if one does.
+    multiOpens t = case filter ((`T.isPrefixOf` t) . multiOpen) (langMultiStrings lang) of
+      ms : _ -> Just ms
       [] -> Nothing
 
 -- | The state a line leaves behind, without its spans.

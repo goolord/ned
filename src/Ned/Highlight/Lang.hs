@@ -9,6 +9,8 @@ module Ned.Highlight.Lang
   , Span (..)
   , LexState (..)
   , Lang (..)
+  , MultiString (..)
+  , quoted
   ) where
 
 import Data.Set (Set)
@@ -42,6 +44,19 @@ data LexState
     LexGap !Char
   deriving (Eq, Show)
 
+-- | A string that runs over lines: what opens it, and what closes it. Most
+-- languages end one the way they began it; Lua opens with @[[@ and closes
+-- with @]]@.
+data MultiString = MultiString
+  { multiOpen :: !Text
+  , multiClose :: !Text
+  }
+  deriving (Eq, Show)
+
+-- | A multi-line string that ends with the delimiter it starts with.
+quoted :: Text -> MultiString
+quoted d = MultiString d d
+
 data Lang = Lang
   { langName :: !Text
   , langLineComments :: ![Text]
@@ -49,8 +64,8 @@ data Lang = Lang
   , langNestedComments :: !Bool
   , langStrings :: ![Char]
   -- ^ Delimiters of strings that end with their line.
-  , langMultiStrings :: ![Text]
-  -- ^ Delimiters of strings that run over lines.
+  , langMultiStrings :: ![MultiString]
+  -- ^ Strings that run over lines.
   , langStringGaps :: !Bool
   -- ^ Whether a backslash ending a line breaks a string off until the next.
   , langCharLiterals :: !Bool

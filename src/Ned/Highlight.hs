@@ -13,6 +13,8 @@ module Ned.Highlight
 
     -- * Languages
   , Lang (..)
+  , MultiString (..)
+  , quoted
   , LexState (..)
   , plainText
   , languageFor

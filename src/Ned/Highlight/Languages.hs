@@ -176,7 +176,7 @@ golang :: Lang
 golang =
   cLike
     { langName = "Go"
-    , langMultiStrings = ["`"]
+    , langMultiStrings = [quoted "`"]
     , langKeywords =
         ws
           "break case chan const continue default defer else fallthrough for func go goto if import \
@@ -221,7 +221,7 @@ javascript =
     { langName = "JavaScript"
     , langStrings = ['"', '\'']
     , langCharLiterals = False
-    , langMultiStrings = ["`"]
+    , langMultiStrings = [quoted "`"]
     , langCapitalTypes = True
     , langIdentExtra = ['$']
     , langKeywords =
@@ -250,7 +250,7 @@ python =
     { langName = "Python"
     , langLineComments = ["#"]
     , langStrings = ['"', '\'']
-    , langMultiStrings = ["\"\"\"", "'''"]
+    , langMultiStrings = [quoted "\"\"\"", quoted "'''"]
     , langCalls = True
     , langKeywords =
         ws
@@ -267,7 +267,7 @@ lua =
     , langLineComments = ["--"]
     , langBlockComment = Just ("--[[", "]]")
     , langStrings = ['"', '\'']
-    , langMultiStrings = ["[["]
+    , langMultiStrings = [MultiString "[[" "]]"]
     , langCalls = True
     , langKeywords =
         ws
@@ -315,7 +315,7 @@ nix =
     , langLineComments = ["#"]
     , langBlockComment = Just ("/*", "*/")
     , langStrings = ['"']
-    , langMultiStrings = ["''"]
+    , langMultiStrings = [quoted "''"]
     , langIdentExtra = ['-', '\'']
     , langKeywords = ws "assert else if in inherit let or rec then with true false null import"
     }
@@ -326,7 +326,7 @@ toml =
     { langName = "TOML"
     , langLineComments = ["#"]
     , langStrings = ['"', '\'']
-    , langMultiStrings = ["\"\"\"", "'''"]
+    , langMultiStrings = [quoted "\"\"\"", quoted "'''"]
     , langIdentExtra = ['-']
     , langKeywords = ws "true false"
     }
@@ -345,7 +345,7 @@ markdown :: Lang
 markdown =
   plainText
     { langName = "Markdown"
-    , langMultiStrings = ["```"]
+    , langMultiStrings = [quoted "```"]
     , langStrings = ['`']
     , langHeadings = True
     }

@@ -81,6 +81,7 @@ treeEditorGrid treePane editorPane = do
         { pgSpacing = paneSpacing
         , pgMinSize = minTreeWidth
         , pgLeeway = paneLeeway
+        , pgPreserveDragSize = True
         , pgViewPane = \pid pctx -> if pid == treePaneId then treePane pctx else editorPane pctx
         }
   where

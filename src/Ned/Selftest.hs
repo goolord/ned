@@ -378,7 +378,7 @@ selftestIn dir mfile say = do
           atEdge <- overDivider edge
           below <- overDivider (edge - 1)
           when (not atEdge || below) $
-            fail (printf "selftest: the bar's edge at a drag of %d is not at %d" (step :: Int) edge)
+            fail (printf "selftest: the bar's edge at a drag of %d is not at %.0f" (step :: Int) edge)
     forM_ [10, 20 .. 100] dragTo
     forM_ [90, 80 .. 0] dragTo
     frame (atX (was + 2)) {inputMouseReleased = True}
@@ -391,7 +391,44 @@ selftestIn dir mfile say = do
     idle
     back <- findDivider 40
     when (back /= was) $
-      fail (printf "selftest: the tree came back at %d after being put away, not %d" back was)
+      fail (printf "selftest: the tree came back at %.0f after being put away, not %.0f" back was)
+
+    -- The tree's header is the pane's drag handle, so a hold there lifts the
+    -- pane out of the grid. An edge drop would split the editor in half for
+    -- the tree to land in; the grid keeps the dragged pane's size instead, so
+    -- the tree comes out of the drop at the width it went in.
+    frame (at (was / 2) 40) {inputMouseDown = True, inputMousePressed = True}
+    -- Past the drag threshold the pane lifts; over the editor's right edge,
+    -- well clear of the grid's outer band, and released, the tree lands to the
+    -- right of the editor at the width it had.
+    frame (at (was / 2 + 30) 40) {inputMouseDown = True}
+    frame (at 1000 400) {inputMouseDown = True}
+    frame (at 1000 400) {inputMouseReleased = True}
+    idle
+    -- The drop's ratio leaves sub-pixel dust, so a width is where it was when
+    -- it is within a pixel, not when it is exactly equal. On the right the
+    -- divider would measure the editor's width, so how wide the tree kept is
+    -- read on the left, where the divider is the tree's own edge.
+    let sameWidth x = abs (x - was) <= 1
+    -- The drop really did move it: on the right the tree keeps its width, so
+    -- the row that used to sit near the left edge of the window is there now,
+    -- and a click on it opens the folder.
+    click 950 70
+    expectRows "a tree dropped on the right of the editor" ["sub", "inner.txt", "outer.txt"]
+    -- And back: the tree's header is on the right edge of the row now, and a
+    -- drop on the editor's left edge restores it at the width it had.
+    frame (at 990 40) {inputMouseDown = True, inputMousePressed = True}
+    frame (at 1020 40) {inputMouseDown = True}
+    frame (at 40 400) {inputMouseDown = True}
+    frame (at 40 400) {inputMouseReleased = True}
+    idle
+    restored <- findDivider 40
+    unless (sameWidth restored) $
+      fail (printf "selftest: dropping the tree on the editor resized it from %.0f to %.0f" was restored)
+    -- The folder the click on the dropped tree opened is closed again, so what
+    -- follows finds the tree as it was.
+    click 60 70
+    expectRows "a tree back on the left of the editor" ["sub", "outer.txt"]
 
     -- A folder holding more than the view does scrolls, and the wheel moves
     -- it the way it moves the text.

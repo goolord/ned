@@ -85,14 +85,39 @@ cabal run ned -- path/to/file.hs
 
 ## Layout
 
+The modules stack, and a module only reaches down. The text knows nothing of
+a window, the widgets know nothing of the application, and the application is
+the only thing that knows there is a file on disk or a menu over it.
+
 | Module | Holds |
 | --- | --- |
-| `Ned.Buffer` | The rope, caret, selection, movement, editing, history and search. Pure |
-| `Ned.Highlight` | Languages and the line lexer. Pure |
-| `Ned.Widget` | What the two widgets share: the scrollbar, content keys, taking the keyboard |
-| `Ned.View` | The editor widget: input, scrolling and drawing |
-| `Ned.FileTree` | The file tree widget: what has been read of the folder, and drawing it |
-| `Ned.App` | Menus, files, the find bar, the status bar |
+| **The text** | *Pure: no window, no toolkit* |
+| `Ned.Text` | Characters: how wide one is, what kind it is, where a column lands |
+| `Ned.Buffer` | The rope, caret, selection, movement, editing, history and search |
+| `Ned.Highlight` | The door on the three below it |
+| `Ned.Highlight.Lang` | What a language is, and what a lexed line is made of |
+| `Ned.Highlight.Lex` | The lexer: one line, given where the line before it ended |
+| `Ned.Highlight.Languages` | The languages the editor knows, and matching a file to one |
+| **The window** | |
+| `Ned.Theme` | What colour everything is |
+| `Ned.Widget` | What the two widgets share: the scrollbar, content keys, the keyboard |
+| `Ned.Sdl` | The two SDL calls nano-ui-sdl has none of |
+| **The editor** | |
+| `Ned.Editor` | The frame: keys, pointer, wheel, scroll, lexer, draw |
+| `Ned.Editor.Types` | What it keeps between frames |
+| `Ned.Editor.Geometry` | Cells, the gutter, how much of the document the view holds |
+| `Ned.Editor.Keys` | What each key does to the text, and the clipboard |
+| `Ned.Editor.Draw` | The draw ops of one frame |
+| **The file tree** | |
+| `Ned.FileTree` | The panel: pointer and keys onto the tree below |
+| `Ned.FileTree.Model` | The tree as data, and reading directories |
+| `Ned.FileTree.Draw` | Measurements, and the draw ops of the rows on screen |
+| **The application** | |
+| `Ned.File` | Reading a file in and writing it back as it came |
+| `Ned.App` | One frame of the whole window, and the entry point |
+| `Ned.App.State` | What the application is between frames |
+| `Ned.App.Commands` | Everything the application can be asked to do |
+| `Ned.App.Chrome` | The menu bar, the find bar and the status bar |
 | `Ned.Selftest` | Drives the application in a hidden window |
 
 ## Building

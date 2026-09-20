@@ -6,6 +6,10 @@
 -- the document than the line or the window of text it works on. A rope is
 -- persistent and an edit shares all but a path with the rope before it, so
 -- the undo history keeps whole ropes and costs a few hundred bytes an entry.
+--
+-- How wide a character is and what class it belongs to are "Ned.Text"'s to
+-- say; this module turns those answers into the lines, columns and cells of
+-- a document.
 module Ned.Buffer
   ( -- * Buffers
     Buffer
@@ -21,8 +25,6 @@ module Ned.Buffer
   , setUsesTabs
 
     -- * Geometry
-  , clamp
-  , tabWidth
   , longLineLimit
   , lineCount
   , lineOf
@@ -32,12 +34,9 @@ module Ned.Buffer
   , lineWindow
   , isLongLine
   , cursorPosition
-  , cellsAt
-  , cellOfCol
   , colToVisual
   , visualToCol
   , offsetAt
-  , indentOf
 
     -- * Selection
   , hasSelection
@@ -86,14 +85,14 @@ module Ned.Buffer
     -- * Search
   , findNext
   , findPrev
-  , foldCase
   ) where
 
-import Data.Char (isAlphaNum, isSpace)
+import Data.Char (isSpace)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.NanoRope (Position (..), Rope, Unit (..))
 import qualified Data.Text.NanoRope as Rope
+import Ned.Text (cellOfCol, cellsAt, clamp, classOf, foldCase, indentOf, tabWidth)
 
 --------------------------------------------------------------------------------
 -- Buffers
@@ -181,13 +180,6 @@ setUsesTabs t b = b {bufTabs = t}
 -- Geometry
 --------------------------------------------------------------------------------
 
--- | A value held within bounds.
-clamp :: Ord a => a -> a -> a -> a
-clamp lo hi = max lo . min hi
-
-tabWidth :: Int
-tabWidth = 4
-
 -- | Lines longer than this are never read whole: they are drawn and measured
 -- a window at a time, with every character one cell wide.
 longLineLimit :: Int
@@ -241,31 +233,6 @@ cursorPosition b =
   let Position ln col = Rope.offsetToPosition Chars Chars (bufCursor b) (bufRope b)
    in (ln, col)
 
--- | How many cells of the grid a character takes, tabs aside.
-charCells :: Char -> Int
-charCells c
-  | c < '\x1100' = 1
-  | c <= '\x115F' = 2
-  | c >= '\x2E80' && c <= '\xA4CF' = 2
-  | c >= '\xAC00' && c <= '\xD7A3' = 2
-  | c >= '\xF900' && c <= '\xFAFF' = 2
-  | c >= '\xFE30' && c <= '\xFE4F' = 2
-  | c >= '\xFF00' && c <= '\xFF60' = 2
-  | c >= '\xFFE0' && c <= '\xFFE6' = 2
-  | c >= '\x1F300' && c <= '\x1FAFF' = 2
-  | c >= '\x20000' && c <= '\x3FFFD' = 2
-  | otherwise = 1
-
--- | How many cells a character takes when it starts at a cell: a tab runs to
--- the next tab stop.
-cellsAt :: Int -> Char -> Int
-cellsAt cell '\t' = tabWidth - cell `rem` tabWidth
-cellsAt _ c = charCells c
-
--- | The cell a column sits at in a line whose text is at hand.
-cellOfCol :: Text -> Int -> Int
-cellOfCol line col = T.foldl' (\v c -> v + cellsAt v c) 0 (T.take col line)
-
 -- | The cell a column of a line sits at.
 colToVisual :: Buffer -> Int -> Int -> Int
 colToVisual b ln col
@@ -289,10 +256,6 @@ offsetAt :: Buffer -> Int -> Int -> Int
 offsetAt b ln vis =
   let ln' = clamp 0 (lineCount b - 1) ln
    in lineStart b ln' + visualToCol b ln' vis
-
--- | The spaces and tabs a line starts with.
-indentOf :: Text -> Text
-indentOf = T.takeWhile (\c -> c == ' ' || c == '\t')
 
 --------------------------------------------------------------------------------
 -- Selection
@@ -321,15 +284,6 @@ setCursor extend off b =
 -- | A movement ends the run of edits that undo together.
 moved :: Buffer -> Buffer
 moved b = b {bufPrefCol = -1, bufLastEdit = EditOther}
-
-data CharClass = ClassSpace | ClassWord | ClassPunct
-  deriving (Eq)
-
-classOf :: Char -> CharClass
-classOf c
-  | isSpace c = ClassSpace
-  | isAlphaNum c || c == '_' || c == '\'' = ClassWord
-  | otherwise = ClassPunct
 
 -- | How far a scan for a word boundary reads.
 scanWindow :: Int
@@ -667,11 +621,6 @@ redo b = case bufRedo b of
 --------------------------------------------------------------------------------
 -- Search
 --------------------------------------------------------------------------------
-
--- | Fold ASCII letters to lower case. It keeps the length of a text, so
--- offsets into the folded text are offsets into the text.
-foldCase :: Text -> Text
-foldCase = T.map (\c -> if c >= 'A' && c <= 'Z' then toEnum (fromEnum c + 32) else c)
 
 -- | How much of the rope a search reads at a time, given the needle's
 -- length. A window steps on by its length less the needle's, so it has to be

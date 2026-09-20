@@ -3,10 +3,8 @@
 -- own, key their drawing on everything it reads, and keep the keyboard for as
 -- long as it is theirs.
 module Ned.Widget
-  ( clamp
-
-    -- * Scrolling
-  , Scroller (..)
+  ( -- * Scrolling
+    Scroller (..)
   , thumbSpan
   , thumbGrab
   , thumbScroll
@@ -27,7 +25,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import NanoUI (WidgetId)
 import NanoUI.Context (Context (..), getFocusId)
-import Ned.Buffer (clamp)
+import Ned.Text (clamp)
 
 --------------------------------------------------------------------------------
 -- Scrolling

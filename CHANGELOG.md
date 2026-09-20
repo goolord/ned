@@ -12,6 +12,9 @@
   open as; the file the editor has is marked in the caret's colour.
 * The status bar sets the file and the caret's place apart from the settings
   behind them, and leaves a setting off while it is at its default.
+* The code is in layers that only reach downward: the text and the lexer
+  know nothing of a window, the editor and the file tree know nothing of the
+  application, and what colour anything is is said in one place.
 * Typing that comes to nothing (a Ctrl+Alt chord, an empty paste) no longer
   deletes the selection; the go-to-line field takes the keyboard back when it
   is pressed; and a press on the file tree takes it from the find bar's field.

@@ -7,7 +7,7 @@ import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.NanoRope as Rope
-import Ned.App (Eol (..), FileFormat (..), Loaded (..), loadFile, saveFile)
+import Ned.File (Eol (..), FileFormat (..), Loaded (..), loadFile, saveFile)
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
 import Ned.Highlight

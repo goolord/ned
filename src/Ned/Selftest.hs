@@ -4,8 +4,6 @@
 module Ned.Selftest (selftest) where
 
 import Control.Exception (SomeException, try)
-import Foreign.C.Types (CBool (..), CInt (..))
-import Foreign.Ptr (Ptr, castPtr)
 import Control.Monad (forM_, unless, void, when)
 import Data.Foldable (toList)
 import Data.IORef (modifyIORef', newIORef, readIORef)
@@ -21,7 +19,8 @@ import NanoUI.Testing (newPixelContext, uiCursorKind)
 import qualified Ned.Buffer as B
 import Ned.App
 import qualified Ned.FileTree as FT
-import Ned.View (Editor (..), cellWidth, defaultFontSize)
+import Ned.Editor (Editor (..), cellWidth, defaultFontSize)
+import Ned.Sdl (setWindowSize)
 import System.Directory (createDirectoryIfMissing, makeAbsolute)
 import System.Exit (exitFailure)
 import System.FilePath (equalFilePath, (</>))
@@ -42,9 +41,6 @@ selftest dir mfile = do
       appendFile logFile ("FAILED: " <> show e <> "\n")
       hPutStrLn stderr ("FAILED: " <> show e)
       exitFailure
-
-foreign import ccall unsafe "SDL_SetWindowSize"
-  sdlSetWindowSize :: Ptr () -> CInt -> CInt -> IO CBool
 
 selftestIn :: FilePath -> Maybe FilePath -> (String -> IO ()) -> IO ()
 selftestIn dir mfile say = do
@@ -389,7 +385,7 @@ selftestIn dir mfile say = do
     let resizeRun name ui = do
           t0 <- getMonotonicTime
           forM_ [1 :: Int .. 100] $ \i -> do
-            _ <- sdlSetWindowSize (castPtr (sdlWindow env)) (fromIntegral (1500 + 8 * i)) (fromIntegral (900 + 4 * i))
+            setWindowSize env (1500 + 8 * i) (900 + 4 * i)
             (ctx', inp') <- syncDisplay ctx env base
             when (i == 100) (say ("  window is now " <> show (inputWindowSize inp')))
             void (sdlDrawFrame ctx' ui env inp' True)

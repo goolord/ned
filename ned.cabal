@@ -71,6 +71,7 @@ library
         Ned.App.State
         Ned.App.Commands
         Ned.App.Chrome
+        Ned.Panes
         Ned.Selftest
     build-depends:
         base ^>=4.22.0.0,

@@ -16,6 +16,7 @@ module Ned.Widget
 
     -- * Focus
   , takeFocus
+  , dropFocus
   ) where
 
 import Control.Monad (when)
@@ -23,7 +24,7 @@ import Data.Bits (xor)
 import Data.IORef (writeIORef)
 import Data.Text (Text)
 import qualified Data.Text as T
-import NanoUI (WidgetId)
+import NanoUI (WidgetId (..))
 import NanoUI.Context (Context (..), getFocusId)
 import Ned.Text (clamp)
 
@@ -108,3 +109,12 @@ takeFocus ctx wid = do
   when (focus /= wid) $ do
     writeIORef (ctxFocusId ctx) wid
     writeIORef (ctxFocusVisible ctx) False
+
+-- | Take the keyboard off a widget that should not act on it. The pane grid
+-- is focusable like any other nano-ui container, and its own keys act on its
+-- panes; ned's widgets own the keyboard this side of it, so a focus left on
+-- the grid by a Tab is dropped before the grid can read a key.
+dropFocus :: Context -> WidgetId -> IO ()
+dropFocus ctx wid = do
+  focus <- getFocusId ctx
+  when (focus == wid) (writeIORef (ctxFocusId ctx) (WidgetId 0))

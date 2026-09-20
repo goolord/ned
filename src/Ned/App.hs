@@ -3,11 +3,11 @@
 --
 -- The pieces it puts together are all elsewhere -- the editor in
 -- "Ned.Editor", the tree in "Ned.FileTree", files in "Ned.File", the bars in
--- "Ned.App.Chrome", what they ask for in "Ned.App.Commands", the state all of
--- it runs on in "Ned.App.State" -- so what is left here is the order things
--- happen in: dialogs, then chords, then the menus, then the tree and the
--- editor side by side, then the bar under them, then the status bar, and the
--- overlays over the lot.
+-- "Ned.App.Chrome", the pane grid they sit in in "Ned.Panes", what they ask
+-- for in "Ned.App.Commands", the state all of it runs on in "Ned.App.State" --
+-- so what is left here is the order things happen in: dialogs, then chords,
+-- then the menus, then the tree and the editor side by side, then the bar
+-- under them, then the status bar, and the overlays over the lot.
 module Ned.App
   ( -- * Running
     runNed
@@ -20,7 +20,7 @@ module Ned.App
   , openPath
   ) where
 
-import Control.Monad (forM_, when)
+import Control.Monad (forM_, unless, when)
 import Data.Foldable (for_)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Maybe (isJust, listToMaybe)
@@ -39,6 +39,7 @@ import Ned.Editor
 import Ned.FileTree (fileTreePanel, ftPressed)
 import qualified Ned.FileTree as FT
 import Ned.Highlight (langName)
+import Ned.Panes (treeEditorGrid)
 import Ned.Sdl (setWindowTitle)
 import System.Environment (lookupEnv)
 import Text.Printf (printf)
@@ -86,14 +87,17 @@ runNed mpath = do
 -- changed it after the part showing it was declared (a menu button opening
 -- its menu, a menu row editing the text, the find field setting what is
 -- marked) has to ask for the frame that shows it.
-chromeSig :: App -> (Text, Bool, Bool, Bool, Text, (Bool, Bool, Int, Float))
+--
+-- The tree's width is not in here: the pane grid marks its own damage while
+-- one of its bars is dragged.
+chromeSig :: App -> (Text, Bool, Bool, Bool, Text, (Bool, Bool, Int))
 chromeSig a =
   ( appOpenMenu a
   , appBar a == BarNone
   , appBarFocus a
   , isJust (appPending a)
   , appStatus a
-  , (appTreeShown a, appTreeFocus a, FT.ftVersion (appTree a), FT.ftWidth (appTree a))
+  , (appTreeShown a, appTreeFocus a, FT.ftVersion (appTree a))
   )
 
 editorSig :: App -> (Int, Int, Int, Text, (Bool, Bool, Bool), Float, Text)
@@ -168,57 +172,74 @@ appView ref = do
     separator
 
     -- The tree and the editor run on the state as the chords and menus above
-    -- left it. The tree is wrapped in a scope, so that putting it away does
-    -- not shift the editor's widget ids, and with them what it has laid out
-    -- and what has the keyboard.
+    -- left it. They are the two panes of a pane grid, so the bar between them
+    -- is the toolkit's to draw and drag, and where the split was left is
+    -- remembered by the grid rather than by the application.
     app1 <- uiIO (readIORef ref)
     let unblocked = not blocked && T.null (appOpenMenu app1)
-    (mTreeResp, (edResp, ed)) <- rowWith (grow . gap 0 . padAll 0) $ do
-      mTreeResp <- scope $
-        if not (appTreeShown app1)
-          then pure Nothing
-          else do
-            -- The find bar's field takes the keyboard from the tree as it
-            -- does from the editor, so the arrows do not walk both at once.
-            (resp, ft, opened) <-
-              fileTreePanel
-                (appTreeFocus app1 && not (appBarFocus app1) && unblocked)
-                (appPath app1)
-                (appTree app1)
-            modify $ \a ->
-              a
-                { appTree = ft
-                , appTreeFocus = appTreeFocus a || ftPressed ft
-                , appBarFocus = appBarFocus a && not (ftPressed ft)
-                }
-            -- A file the tree was clicked on opens as any other does, with
-            -- the text asked about if it has changes to lose, and the
-            -- keyboard going to it so that it can be typed into at once.
-            for_ opened $ \path -> do
-              modify (\a -> a {appTreeFocus = False})
-              guarded (PendingOpenPath path)
-            pure (Just resp)
-      -- The tree may have just opened a file, which is the editor's buffer
-      -- now. Who has the keyboard is read from before the tree ran, though:
-      -- the keys of this frame are the tree's, and an Enter that opened a
-      -- file there is not one to put a newline in the file it opened.
-      app1b <- uiIO (readIORef ref)
-      let wantFocus = not (appBarFocus app1) && not (appTreeFocus app1) && unblocked
-      (,) mTreeResp <$> editorView wantFocus (appEditor app1b)
-    modify $ \a ->
-      a
-        { appEditor = ed
-        , appBarFocus = appBarFocus a && not (edPressed ed)
-        , appTreeFocus = appTreeFocus a && not (edPressed ed)
-        }
+        -- The tree pane: the panel, and what a frame's clicks on it left
+        -- behind. The find bar's field takes the keyboard from the tree as it
+        -- does from the editor, so the arrows do not walk both at once.
+        treePane respRef = do
+          (resp, ft, opened) <-
+            fileTreePanel
+              (appTreeFocus app1 && not (appBarFocus app1) && unblocked)
+              (appPath app1)
+              (appTree app1)
+          uiIO (writeIORef respRef (Just resp))
+          modify $ \a ->
+            a
+              { appTree = ft
+              , appTreeFocus = appTreeFocus a || ftPressed ft
+              , appBarFocus = appBarFocus a && not (ftPressed ft)
+              }
+          -- A file the tree was clicked on opens as any other does, with the
+          -- text asked about if it has changes to lose, and the keyboard
+          -- going to it so that it can be typed into at once.
+          for_ opened $ \path -> do
+            modify (\a -> a {appTreeFocus = False})
+            guarded (PendingOpenPath path)
+          pure (PaneView "" False Nothing)
+        -- The editor pane. Putting the tree away makes this pane the whole
+        -- row: the grid calls that maximizing it, and keeps the split where
+        -- it was, so showing the tree again brings it back at its width.
+        editorPane respRef pctx = do
+          if appTreeShown app1
+            then when (pgcMaximized pctx) (pgcRestore pctx)
+            else unless (pgcMaximized pctx) (pgcMaximize pctx)
+          -- The tree may have just opened a file, which is the editor's
+          -- buffer now. Who has the keyboard is read from before the tree
+          -- ran, though: the keys of this frame are the tree's, and an Enter
+          -- that opened a file there is not one to put a newline in the file
+          -- it opened.
+          appNow <- uiIO (readIORef ref)
+          let wantFocus = not (appBarFocus app1) && not (appTreeFocus app1) && unblocked
+          (resp, ed) <- editorView wantFocus (appEditor appNow)
+          uiIO (writeIORef respRef (Just resp))
+          modify $ \a ->
+            a
+              { appEditor = ed
+              , appBarFocus = appBarFocus a && not (edPressed ed)
+              , appTreeFocus = appTreeFocus a && not (edPressed ed)
+              }
+          pure (PaneView "" False Nothing)
+    (mTreeResp, edResp) <- do
+      treeRespRef <- uiIO (newIORef Nothing)
+      edRespRef <- uiIO (newIORef Nothing)
+      _ <-
+        treeEditorGrid
+          (treePane treeRespRef)
+          (editorPane edRespRef)
+      (,) <$> uiIO (readIORef treeRespRef) <*> uiIO (readIORef edRespRef)
     app2 <- uiIO (readIORef ref)
     uiIO (writeIORef drawn (editorSig app2))
 
-    -- Scoped for the same reason the panel is: the editor's own menu below
-    -- keeps its ids whether or not the tree is there to hang one on.
+    -- Scoped so that the editor's own menu below keeps its ids whether or not
+    -- the tree hangs its own menu this frame.
     scope $ for_ mTreeResp $ \treeResp -> contextMenu treeResp (treeMenu cmds app2)
 
-    _ <- contextMenu edResp (editorMenu cmds (edBuffer ed))
+    for_ edResp $ \edMenuResp ->
+      contextMenu edMenuResp (editorMenu cmds (edBuffer (appEditor app2)))
 
     editorBar cmds app2
 

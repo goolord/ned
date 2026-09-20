@@ -25,6 +25,7 @@ module Ned.FileTree
   , collapseAll
   , rootName
   , defaultTreeWidth
+  , minTreeWidth
   ) where
 
 import Control.Monad (when)
@@ -50,22 +51,20 @@ import Ned.Widget
 -- on, and the path is a file the rows were asked to open.
 --
 -- It takes the keyboard when @wantFocus@ is set, which the application does
--- while the tree is the thing last clicked on.
+-- while the tree is the thing last clicked on. The bar that resizes it is the
+-- pane grid's, in "Ned.Panes"; this is only what the pane holds.
 fileTreePanel :: Ui :> es => Bool -> Maybe FilePath -> FileTree -> Eff es (Response, FileTree, Maybe FilePath)
 fileTreePanel wantFocus current ft0 =
-  rowWith (tight . gap 0 . fillH) $ do
-    (resp, ft1, opened) <- columnWith (tight . gap 0 . fillH . fixedW (ftWidth ft0)) $ do
-      -- The padding goes on last: 'tight' before it would take it off again,
-      -- and the name is meant to start where the rows' own names do. It is
-      -- set at full strength and semibold: it names the thing the panel is
-      -- about, and muted grey had it reading as a row that could not be
-      -- clicked.
-      rowWith (padXY treeHeaderPad 6 . tight . fillW . gap 4 . alignMid) $
-        labelWith (tight . fontSemiBold) (rootName ft0)
-      separator
-      treeRows wantFocus current ft0
-    ft2 <- splitterBar ft1
-    pure (resp, ft2, opened)
+  columnWith (tight . gap 0 . fillW . fillH) $ do
+    -- The padding goes on last: 'tight' before it would take it off again,
+    -- and the name is meant to start where the rows' own names do. It is
+    -- set at full strength and semibold: it names the thing the panel is
+    -- about, and muted grey had it reading as a row that could not be
+    -- clicked.
+    rowWith (padXY treeHeaderPad 6 . tight . fillW . gap 4 . alignMid) $
+      labelWith (tight . fontSemiBold) (rootName ft0)
+    separator
+    treeRows wantFocus current ft0
 
 -- | The rows, in one widget that scrolls itself.
 treeRows :: Ui :> es => Bool -> Maybe FilePath -> FileTree -> Eff es (Response, FileTree, Maybe FilePath)
@@ -76,7 +75,7 @@ treeRows wantFocus current ft0 = do
   let fm = ctxFontMetrics ctx
       lineH = rowHeight fm
   prev <- uiIO (getPrevRect ctx wid)
-  let rect = fromMaybe (Rect 0 0 (ftWidth ft0) 600) prev
+  let rect = fromMaybe (Rect 0 0 defaultTreeWidth 600) prev
       viewRows = realToFrac (rectH rect / lineH) :: Double
 
   -- The tree keeps the keyboard for as long as it is the thing being used, as
@@ -222,49 +221,3 @@ treeRows wantFocus current ft0 = do
           | j < 0 = -1
           | rowDepth (indexSmallArray rows j) < depth = j
           | otherwise = go (j - 1)
-
---------------------------------------------------------------------------------
--- The splitter
---------------------------------------------------------------------------------
-
--- | The bar between the tree and the editor, which drags to resize it.
-splitterBar :: Ui :> es => FileTree -> Eff es FileTree
-splitterBar ft0 = do
-  wid <- nextId
-  ctx <- askContext
-  inp <- askInput
-  prev <- uiIO (getPrevRect ctx wid)
-  let rect = fromMaybe (Rect 0 0 splitterW 600) prev
-      mouse = inputMousePos inp
-      over = rectContains rect mouse
-      ft1
-        | inputMousePressed inp && over =
-            -- Where the pointer is from the tree's edge when it takes the bar:
-            -- a drag puts the edge there again, wherever the pointer goes.
-            ft0 {ftDrag = DragWidth (v2X mouse - ftWidth ft0)}
-        | not (inputMouseDown inp) = case ftDrag ft0 of
-            DragWidth _ -> ft0 {ftDrag = DragNone}
-            _ -> ft0
-        | otherwise = case ftDrag ft0 of
-            -- The width follows the pointer from where it took the bar. The
-            -- bar's own rect is a frame behind the width and moves with it, so
-            -- measuring against it would chase itself; the press's offset from
-            -- the edge does not, and the bar settles under the pointer as the
-            -- layout catches up.
-            DragWidth grab ->
-              ft0 {ftWidth = clamp minTreeWidth maxTreeWidth (v2X mouse - grab)}
-            _ -> ft0
-      hot = over || isWidth (ftDrag ft1)
-  _ <-
-    customWidgetWithId
-      wid
-      defaultCustomWidgetSpec
-        { widgetLayout = (fillH . fixedW splitterW) defaultLayout
-        , widgetDraw = \cdc r -> splitterOps cdc hot r
-        , widgetContent = contentKey [if hot then 1 else 0]
-        , widgetCursor = Just (const UiCursorEwResize)
-        , widgetDamageSlop = 0
-        }
-  pure ft1
-  where
-    isWidth = \case DragWidth _ -> True; _ -> False

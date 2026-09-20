@@ -35,10 +35,9 @@ module Ned.FileTree.Model
   , selectedRow
   , selectRow
 
-    -- * How wide the panel may be
+    -- * How narrow the panel may be dragged
   , defaultTreeWidth
   , minTreeWidth
-  , maxTreeWidth
   ) where
 
 import Control.Exception (SomeException, try)
@@ -73,9 +72,6 @@ data Drag
   = DragNone
   | -- | The scrollbar's thumb, this far below its top.
     DragThumb !Float
-  | -- | The bar between the tree and the editor, this far from the tree's
-    -- edge, which is where the width follows the pointer from.
-    DragWidth !Float
   deriving (Eq)
 
 data FileTree = FileTree
@@ -98,16 +94,16 @@ data FileTree = FileTree
   , ftSelected :: !(Maybe FilePath)
   , ftReveal :: !Bool
   -- ^ Asks the next frame to scroll the selected row into view.
-  , ftWidth :: !Float
   , ftDrag :: !Drag
   , ftPressed :: !Bool
   -- ^ Whether the pointer went down on the tree this frame.
   }
 
-defaultTreeWidth, minTreeWidth, maxTreeWidth :: Float
+-- | The width the tree's pane starts at, and the narrowest the pane grid may
+-- drag it to. How wide it is at any time is the grid's to say, between these.
+defaultTreeWidth, minTreeWidth :: Float
 defaultTreeWidth = 240
 minTreeWidth = 120
-maxTreeWidth = 640
 
 -- | An empty tree on a directory, which the first frame reads.
 newFileTree :: FilePath -> FileTree
@@ -122,7 +118,6 @@ newFileTree root =
     , ftScroll = 0
     , ftSelected = Nothing
     , ftReveal = False
-    , ftWidth = defaultTreeWidth
     , ftDrag = DragNone
     , ftPressed = False
     }

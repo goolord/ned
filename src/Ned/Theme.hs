@@ -35,6 +35,7 @@ module Ned.Theme
 
     -- * The chrome
   , menuChrome
+  , paneChrome
   , TreeColors (..)
   , treeColors
   , languageTint
@@ -124,6 +125,14 @@ tokenWeight = \case
 menuChrome :: Theme -> Theme
 menuChrome theme = accentColor (lerpColor (themeWindow theme) (styleFg (themePanel theme)) 0.7) theme
 
+-- | The bar between the tree and the editor, in grey. The pane grid draws the
+-- bar in the accent colour, and lights it by mixing the accent in; a bar being
+-- dragged means nothing, so it is given the muted grey the tree's own seam lit
+-- up to and no hue at all. The pane grid's focus ring takes the same grey,
+-- since it is reached with the same keyboard.
+paneChrome :: Theme -> Theme
+paneChrome theme = accentColor (themeMuted theme) theme
+
 -- | The file tree's colours, worked out from the theme once a frame.
 --
 -- The tree is chrome, so it takes the window's own colour, which is a step
@@ -155,11 +164,6 @@ data TreeColors = TreeColors
   -- ^ That row once the keyboard has gone elsewhere.
   , tcThumb :: !Color
   , tcThumbHot :: !Color
-  , tcSplitter :: !Color
-  -- ^ The strip between the tree and the editor.
-  , tcSeam :: !Color
-  -- ^ The line down the tree's own edge, and that line while it is held.
-  , tcSeamHot :: !Color
   }
 
 treeColors :: Theme -> TreeColors
@@ -187,9 +191,6 @@ treeColors theme =
       -- the editor's own bar rather than disappear next to it.
       tcThumb = lerpColor (themeWindow theme) (styleFg surface) 0.3
     , tcThumbHot = lerpColor (themeWindow theme) (styleFg surface) 0.42
-    , tcSplitter = styleBg surface
-    , tcSeam = themeSeparator theme
-    , tcSeamHot = themeMuted theme
     }
   where
     surface = themePanel theme

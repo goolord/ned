@@ -2,14 +2,12 @@
 -- of the rows on screen.
 --
 -- The panel next door hit-tests against a few of the measurements here (the
--- height of a row, the lane the scrollbar has, the width of the bar that
--- resizes the panel), so they are written down once and both read them.
--- What colour any of it is is "Ned.Theme"'s to say.
+-- height of a row and the lane the scrollbar has), so they are written down
+-- once and both read them. What colour any of it is is "Ned.Theme"'s to say.
 module Ned.FileTree.Draw
   ( -- * Measurements
     treeHeaderPad
   , treeBarW
-  , splitterW
   , rowHeight
   , maxScroll
   , scroller
@@ -18,7 +16,6 @@ module Ned.FileTree.Draw
   , Scene (..)
   , sceneKey
   , drawTree
-  , splitterOps
   ) where
 
 import Data.Primitive.SmallArray (SmallArray, indexSmallArray, sizeofSmallArray, smallArrayFromList)
@@ -66,9 +63,6 @@ treeRadius = 3
 -- rather than sitting against the panel's edge.
 treeHeaderPad :: Float
 treeHeaderPad = treePad + treeChevron + 2
-
-splitterW :: Float
-splitterW = 5
 
 -- | A row is scanned rather than read, so it sits tighter than a line of text.
 rowHeight :: FontMetrics -> Float
@@ -193,20 +187,6 @@ drawTree cdc sc rect@(Rect x y w h) =
                   3
                   (if scThumbHot sc then tcThumbHot tc else tcThumb tc)
               ]
-
--- | The bar between the tree and the editor. The strip carries on the
--- editor's page, and the seam sits at the tree's own edge rather than down
--- the middle of the strip the pointer grabs, so the panel ends where it looks
--- like it ends. Taking hold of it brightens the seam; it stays grey, because
--- the one hue in this window is spoken for.
-splitterOps :: CustomDrawContext -> Bool -> Rect -> SmallArray DrawOp
-splitterOps cdc hot (Rect x y w h) =
-  smallArrayFromList
-    [ FillRect (Rect x y w h) (tcSplitter tc)
-    , FillRect (Rect x y 1 h) (if hot then tcSeamHot tc else tcSeam tc)
-    ]
-  where
-    tc = treeColors (cdcTheme cdc)
 
 -- | The icons, built out of the shapes the toolkit has rather than loaded
 -- from an image: two of them, because two is all the tree has to say. A

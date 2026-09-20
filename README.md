@@ -118,6 +118,7 @@ the only thing that knows there is a file on disk or a menu over it.
 | `Ned.App.State` | What the application is between frames |
 | `Ned.App.Commands` | Everything the application can be asked to do |
 | `Ned.App.Chrome` | The menu bar, the find bar and the status bar |
+| `Ned.Panes` | The pane grid the tree and the editor sit in, and the bar between them |
 | `Ned.Selftest` | Drives the application in a hidden window |
 
 ## Building
@@ -164,5 +165,8 @@ tell what a frame costs nano-ui from what it costs the editor.
   menu do.
 - The file tree does not watch the folder it is on: a file another program
   writes shows up on Refresh, in the tree's own menu.
+- The tree and the text share the row as a proportion, not a pixel count: a
+  wider window is a wider tree, and the tree can be dragged until 120 pixels
+  of text are left.
 - Highlighting is lexical. A view that jumps into the middle of a file
   guesses the lexer state from the 500 lines above it.

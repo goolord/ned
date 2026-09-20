@@ -15,7 +15,7 @@ import NanoUI.Backend.Sdl
 import NanoUI.Context (Context (..), getWakeAt)
 import NanoUI.Input (UiCursorKind (..))
 import NanoUI.Runner (shouldRedrawFrame)
-import NanoUI.Testing (newPixelContext, uiCursorKind)
+import NanoUI.Testing (cursorKindIs, newPixelContext, uiCursorKind)
 import qualified Ned.Buffer as B
 import Ned.App
 import qualified Ned.FileTree as FT
@@ -355,24 +355,43 @@ selftestIn dir mfile say = do
     click 60 70
     expectRows "a folder closed by a press on it" ["sub", "outer.txt"]
 
-    -- The bar between the tree and the text drags to resize it. The drag goes
-    -- a step at a time, as a real one does: the width has to track the pointer
-    -- the whole way, not run away from it as it does when each step measures
-    -- against the bar the last frame drew, which itself moves with the width.
-    let widthNow = FT.ftWidth <$> treeNow
-    was <- widthNow
-    frame base {inputMousePos = V2 (was + 2) 300, inputMouseDown = True, inputMousePressed = True}
+    -- The bar between the tree and the text is the pane grid's divider. It is
+    -- found by its resize cursor, and the drag goes a step at a time, as a
+    -- real one does: the tree's edge has to track the pointer the whole way,
+    -- not run away from it as it does when each step measures against the bar
+    -- the last frame drew, which itself moves with the edge.
+    let atX x = base {inputMousePos = V2 x 300}
+        -- Whether the bar is under @x@: asked of the frame the pointer last
+        -- moved in, since the cursor comes from the widget under it there.
+        overDivider x = cursorKindIs ctx (atX x) UiCursorEwResize
+        findDivider x
+          | x > 900 = fail "selftest: found no bar between the tree and the text"
+          | otherwise = do
+              frame (atX x)
+              here <- overDivider x
+              if here then pure x else findDivider (x + 1)
+    was <- findDivider 40
+    frame (atX (was + 2)) {inputMouseDown = True, inputMousePressed = True}
     let dragTo step = do
-          frame base {inputMousePos = V2 (was + 2 + fromIntegral step) 300, inputMouseDown = True}
-          wider <- widthNow
-          when (abs (wider - (was + fromIntegral step)) > 1) $
-            fail (printf "selftest: the tree's bar at a drag of %d is %.0f wide" (step :: Int) wider)
+          frame (atX (was + 2 + fromIntegral step)) {inputMouseDown = True}
+          let edge = was + fromIntegral step
+          atEdge <- overDivider edge
+          below <- overDivider (edge - 1)
+          when (not atEdge || below) $
+            fail (printf "selftest: the bar's edge at a drag of %d is not at %d" (step :: Int) edge)
     forM_ [10, 20 .. 100] dragTo
     forM_ [90, 80 .. 0] dragTo
-    frame base {inputMousePos = V2 (was + 2) 300, inputMouseReleased = True}
+    frame (atX (was + 2)) {inputMouseReleased = True}
     idle
-    modifyIORef' ref (\a -> a {appTree = (appTree a) {FT.ftWidth = was}})
+
+    -- The split is the grid's, not the frame's, so putting the tree away and
+    -- taking it up again brings it back at the width it was left at.
+    chord 'b'
+    chord 'b'
     idle
+    back <- findDivider 40
+    when (back /= was) $
+      fail (printf "selftest: the tree came back at %d after being put away, not %d" back was)
 
     -- A folder holding more than the view does scrolls, and the wheel moves
     -- it the way it moves the text.

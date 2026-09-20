@@ -64,10 +64,18 @@ selftestIn dir mfile say = do
         chord c = frame base {inputChars = T.singleton c, inputModifiers = Modifiers False True False} >> idle
         key mods k = frame base {inputKeys = inputKeysFromList [k], inputModifiers = mods} >> idle
         plain = Modifiers False False False
-        shot name = do
-          frame base
+        at x y = base {inputMousePos = V2 x y}
+        -- A click is a press and, a frame later, the release.
+        tap x y = do
+          frame (at x y) {inputMouseDown = True, inputMousePressed = True}
+          frame (at x y) {inputMouseReleased = True}
+        click x y = tap x y >> idle
+        -- A screenshot of the window as it stands, or with the pointer put
+        -- back where it rests.
+        snap name = do
           ok <- saveScreenshot env (dir </> name)
           unless ok (fail ("selftest: could not write " <> name))
+        shot name = frame base >> snap name
         text = Rope.toText . B.bufRope . edBuffer . appEditor <$> readIORef ref
         expect what want = do
           got <- text
@@ -102,9 +110,7 @@ selftestIn dir mfile say = do
         -- A press on the number of the last line in view takes that line, and
         -- leaves the view where it is: the caret it puts on the line after
         -- is nothing to scroll to.
-        frame base {inputMousePos = V2 20 725, inputMouseDown = True, inputMousePressed = True}
-        frame base {inputMousePos = V2 20 725, inputMouseReleased = True}
-        idle
+        click 20 725
         scrolled <- edScrollY . appEditor <$> readIORef ref
         when (scrolled /= 0) $ fail ("selftest: a press on the last line number in view scrolled to " <> show scrolled)
         -- Scroll a loaded file about and time the frames.
@@ -166,6 +172,21 @@ selftestIn dir mfile say = do
         when ((ln, col) /= (1, 4)) $ fail ("selftest: find next landed at " <> show (ln, col))
         key plain KeyEscape
 
+        -- A press on the text takes the keyboard from the go-to-line field,
+        -- and a press on the field takes it back, as the find field does.
+        let barHasKeys = appBarFocus <$> readIORef ref
+        chord 'g'
+        click 600 300
+        lostKeys <- not <$> barHasKeys
+        unless lostKeys (fail "selftest: a press on the text left the keyboard in the go-to-line field")
+        click 400 707
+        tookKeys <- barHasKeys
+        unless tookKeys (fail "selftest: a press on the go-to-line field did not give it the keyboard")
+        typed "2"
+        key plain KeyEnter
+        (gotoLn, _) <- B.cursorPosition . edBuffer . appEditor <$> readIORef ref
+        when (gotoLn /= 1) $ fail ("selftest: go to line 2 landed on line " <> show (gotoLn + 1))
+
         -- Select all, indent, unindent.
         chord 'a'
         key plain KeyTab
@@ -175,16 +196,13 @@ selftestIn dir mfile say = do
         shot "04-selected.bmp"
 
         -- A click places the caret; a drag selects.
-        frame base {inputMousePos = V2 300 300, inputMouseDown = True, inputMousePressed = True}
-        frame base {inputMousePos = V2 300 300, inputMouseReleased = True}
-        idle
+        click 300 300
         dirty <- B.isDirty . edBuffer . appEditor <$> readIORef ref
         unless dirty (fail "selftest: buffer should be dirty")
         shot "05-clicked.bmp"
 
         -- A press on a line number selects the line; dragging down takes more.
         let selection = B.selectedText . edBuffer . appEditor <$> readIORef ref
-            at x y = base {inputMousePos = V2 x y}
         frame (at 20 55) {inputMouseDown = True, inputMousePressed = True}
         one <- selection
         when (one /= "main = do" <> T.singleton (toEnum 10)) $ fail ("selftest: gutter press selected " <> show one)
@@ -233,10 +251,8 @@ selftestIn dir mfile say = do
         none <- selection
         unless (T.null none) $ fail "selftest: right click kept the selection"
         frame (at 300 40)
-        ok <- saveScreenshot env (dir </> "07-context-menu.bmp")
-        unless ok (fail "selftest: could not write 07-context-menu.bmp")
-        frame (at 900 500) {inputMouseDown = True, inputMousePressed = True}
-        frame (at 900 500) {inputMouseReleased = True}
+        snap "07-context-menu.bmp"
+        tap 900 500
 
         -- A click on a menu's button has to ask for the frame that shows the
         -- menu: nothing else will, with the pointer at rest.
@@ -246,15 +262,11 @@ selftestIn dir mfile say = do
         when (opened /= "File") $ fail "selftest: the File menu did not open"
         unless dirty1 $ fail "selftest: opening a menu asked for no frame"
         frame (at 17 13)
-        ok2 <- saveScreenshot env (dir </> "08-menu.bmp")
-        unless ok2 (fail "selftest: could not write 08-menu.bmp")
+        snap "08-menu.bmp"
 
         -- A click on the open menu's button closes it, and the next opens it.
         let menuNow = appOpenMenu <$> readIORef ref
-            clickFile = do
-              frame (at 17 13) {inputMouseDown = True, inputMousePressed = True}
-              frame (at 17 13) {inputMouseReleased = True}
-              idle
+            clickFile = click 17 13
         clickFile
         closed <- menuNow
         when (closed /= "") $ fail ("selftest: a click on the open menu's button left " <> show closed <> " open")
@@ -284,11 +296,17 @@ selftestIn dir mfile say = do
             fail ("selftest: " <> what <> ": expected " <> show want <> ", got " <> show got)
     expectRows "the tree's rows" ["sub", "outer.txt"]
 
+    -- A press on the tree takes the keyboard from the find bar's field, as a
+    -- press on the text does.
+    chord 'f'
+    click 100 600
+    findKeptKeys <- appBarFocus <$> readIORef ref
+    when findKeptKeys (fail "selftest: a press on the tree left the keyboard in the find field")
+    key plain KeyEscape
+
     -- A press inside the tree, below its rows, gives it the keyboard without
     -- taking anything; from there the arrows walk it.
-    frame base {inputMousePos = V2 100 600, inputMouseDown = True, inputMousePressed = True}
-    frame base {inputMousePos = V2 100 600, inputMouseReleased = True}
-    idle
+    click 100 600
     key plain KeyDown
     key plain KeyRight
     expectRows "a folder opened with Right" ["sub", "inner.txt", "outer.txt"]
@@ -304,7 +322,7 @@ selftestIn dir mfile say = do
     openedPath <- appPath <$> readIORef ref
     unless (maybe False (equalFilePath (treeDir </> "sub" </> "inner.txt")) openedPath) $
       fail ("selftest: Enter in the tree opened " <> show openedPath)
-    opened <- Rope.toText . B.bufRope . edBuffer . appEditor <$> readIORef ref
+    opened <- text
     when (opened /= "inner\n") $ fail ("selftest: the tree opened a file holding " <> show opened)
     root <- FT.ftRoot <$> treeNow
     when (root /= treeDir) $ fail ("selftest: opening a file in the tree moved it to " <> show root)
@@ -312,7 +330,7 @@ selftestIn dir mfile say = do
     treeHasKeys <- appTreeFocus <$> readIORef ref
     when treeHasKeys (fail "selftest: opening a file left the keyboard in the tree")
     typed "x"
-    typedInto <- Rope.toText . B.bufRope . edBuffer . appEditor <$> readIORef ref
+    typedInto <- text
     when (typedInto == opened) $ fail "selftest: the text took nothing after the tree opened it"
 
     -- Every row of the tree is the one widget, so nano-ui runs no frame for a
@@ -338,9 +356,7 @@ selftestIn dir mfile say = do
 
     -- A press on a folder's row closes it again. The rows start under the
     -- menu bar and the tree's own heading, a row every line height.
-    frame base {inputMousePos = V2 60 70, inputMouseDown = True, inputMousePressed = True}
-    frame base {inputMousePos = V2 60 70, inputMouseReleased = True}
-    idle
+    click 60 70
     expectRows "a folder closed by a press on it" ["sub", "outer.txt"]
 
     -- The bar between the tree and the text drags to resize it.

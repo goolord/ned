@@ -20,8 +20,7 @@ module Ned.View
   ) where
 
 import Control.Monad (when)
-import Data.Bits (shiftR, xor)
-import Data.IORef (writeIORef)
+import Data.Bits (shiftR)
 import Data.Maybe (isNothing)
 import Data.Primitive.SmallArray (SmallArray, smallArrayFromList)
 import Data.Text (Text)
@@ -29,12 +28,13 @@ import qualified Data.Text as T
 import Effectful (Eff, type (:>))
 import GHC.Float (castDoubleToWord64, castFloatToWord32)
 import NanoUI hiding (label, row)
-import NanoUI.Context (Context (..), getFocusId, getPrevRect)
+import NanoUI.Context (Context (..), getPrevRect)
 import NanoUI.Input (UiCursorKind (..))
 import NanoUI.Monad (askContext, askInput, uiTime)
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
 import Ned.Highlight
+import Ned.Widget
 
 data Drag
   = DragNone
@@ -209,15 +209,12 @@ viewLinesOf g r = realToFrac (rectH r / gLineH g)
 maxScrollY :: Geometry -> Rect -> Buffer -> Double
 maxScrollY g r buf = max 0 (fromIntegral (B.lineCount buf) - viewLinesOf g r + 1)
 
--- | The scrollbar's thumb: its top and its height, within the widget.
-thumbSpan :: Geometry -> Rect -> Buffer -> Double -> (Float, Float)
-thumbSpan g r buf scrollY =
-  let h = rectH r
-      total = fromIntegral (B.lineCount buf) + viewLinesOf g r
-      thumbH = max 28 (min h (h * realToFrac (viewLinesOf g r / total)))
-      range = maxScrollY g r buf
-      frac = if range <= 0 then 0 else realToFrac (scrollY / range)
-   in ((h - thumbH) * frac, thumbH)
+-- | The view and its scrollbar. The last line scrolls up to the top of the
+-- view, so what there is to scroll through is the lines and a view more.
+scroller :: Geometry -> Rect -> Buffer -> Scroller
+scroller g r buf =
+  let viewL = viewLinesOf g r
+   in Scroller (rectH r) (viewL / (fromIntegral (B.lineCount buf) + viewL)) (maxScrollY g r buf)
 
 --------------------------------------------------------------------------------
 -- The widget
@@ -251,10 +248,7 @@ editorView wantFocus ed0 = do
 
   -- Tab would walk the focus off to the menu bar, and a click on a menu takes
   -- it there; the editor takes it back for as long as it is wanted.
-  focus0 <- uiIO (getFocusId ctx)
-  when (wantFocus && focus0 /= wid) $ uiIO $ do
-    writeIORef (ctxFocusId ctx) wid
-    writeIORef (ctxFocusVisible ctx) False
+  when wantFocus $ uiIO (takeFocus ctx wid)
   let focused = wantFocus
 
   let buf0 = edBuffer ed0
@@ -267,24 +261,19 @@ editorView wantFocus ed0 = do
       overGutter = inside && v2X mouse < rectX rect + gGutterW g
       localY = v2Y mouse - rectY rect
       pointedLine scrollY b =
-        max 0 (min (B.lineCount b - 1) (floor (scrollY + realToFrac (localY / gLineH g))))
+        clamp 0 (B.lineCount b - 1) (floor (scrollY + realToFrac (localY / gLineH g)))
       -- The offset under the pointer.
       pointed scrollY scrollX b =
-        let ln = floor (scrollY + realToFrac (localY / gLineH g)) :: Int
-            x = v2X mouse - (rectX rect + gGutterW g + textPad) + scrollX
-         in B.offsetAt b ln (round (x / gCellW g))
-      (thumbTop, thumbH) = thumbSpan g rect buf1 (edScrollY ed0)
-      scrollToThumb grab =
-        let range = maxScrollY g rect buf1
-            track = rectH rect - thumbH
-         in if track <= 0 then 0 else realToFrac ((localY - grab) / track) * range
+        let x = v2X mouse - (rectX rect + gGutterW g + textPad) + scrollX
+         in B.offsetAt b (pointedLine scrollY b) (round (x / gCellW g))
+      bar = scroller g rect buf1
 
   -- The pointer: a press starts a selection or takes the thumb, and a held
   -- button carries on with whichever it started.
   let (drag1, buf2, scrollY1)
         | inputMousePressed inp && overBar =
-            let grab = if localY >= thumbTop && localY <= thumbTop + thumbH then localY - thumbTop else thumbH / 2
-             in (DragThumb grab, buf1, scrollToThumb grab)
+            let grab = thumbGrab bar (edScrollY ed0) localY
+             in (DragThumb grab, buf1, thumbScroll bar grab localY)
         | inputMousePressed inp && overGutter =
             -- A press on a line's number selects the line; with Shift, the
             -- lines from the selection's anchor to it.
@@ -314,7 +303,7 @@ editorView wantFocus ed0 = do
              in (DragNone, if within then buf1 else B.setCursor False off buf1, edScrollY ed0)
         | not (inputMouseDown inp) = (DragNone, buf1, edScrollY ed0)
         | otherwise = case edDrag ed0 of
-            DragThumb grab -> (DragThumb grab, buf1, scrollToThumb grab)
+            DragThumb grab -> (DragThumb grab, buf1, thumbScroll bar grab localY)
             DragSelect ->
               let sy = edgeScrolled
                in (DragSelect, B.setCursor True (pointed sy (edScrollX ed0) buf1) buf1, sy)
@@ -331,7 +320,7 @@ editorView wantFocus ed0 = do
               | localY < 0 = realToFrac (localY / gLineH g)
               | localY > rectH rect = realToFrac ((localY - rectH rect) / gLineH g)
               | otherwise = 0
-         in edScrollY ed0 + max (-3) (min 3 (over * 0.5))
+         in edScrollY ed0 + clamp (-3) 3 (over * 0.5)
       selecting = drag1 == DragSelect || isWords drag1 || isLines drag1
       autoScrolling = selecting && (localY < 0 || localY > rectH rect)
   when autoScrolling (wakeAfter 0.03)
@@ -352,9 +341,7 @@ editorView wantFocus ed0 = do
       viewL = viewLinesOf g rect
       followY y
         | not caretMoved || autoScrolling || isLines drag1 = y
-        | fromIntegral cLine < y = fromIntegral cLine
-        | fromIntegral cLine + 1 > y + viewL = fromIntegral cLine + 1 - max 1 (fromIntegral (floor viewL :: Int))
-        | otherwise = y
+        | otherwise = followRow cLine viewL y
       caretPx = fromIntegral cCell * gCellW g
       tw = textWidth g rect
       -- A drag over the line numbers leaves the caret on the line after the
@@ -364,13 +351,13 @@ editorView wantFocus ed0 = do
         | caretPx < x = max 0 (caretPx - 4 * gCellW g)
         | caretPx > x + tw - 2 * gCellW g = caretPx - tw + 6 * gCellW g
         | otherwise = x
-      scrollY3 = max 0 (min (maxScrollY g rect buf2) (followY scrollY2))
+      scrollY3 = clamp 0 (maxScrollY g rect buf2) (followY scrollY2)
       firstLine = floor scrollY3 :: Int
       lastLine = min (B.lineCount buf2 - 1) (firstLine + ceiling viewL)
       -- Sideways the view goes as far as the widest line on screen.
       widest = maximum (cCell : [B.colToVisual buf2 ln (B.lineLength buf2 ln) | ln <- [firstLine .. lastLine]])
       maxScrollX = max 0 (fromIntegral (widest + 4) * gCellW g - tw)
-      scrollX3 = max 0 (min maxScrollX (followX scrollX2))
+      scrollX3 = clamp 0 maxScrollX (followX scrollX2)
 
   -- The lexer state the first line on screen starts in.
   let lexCache = lexCacheFor ed0 buf0 buf2 firstLine
@@ -518,16 +505,18 @@ applyKeys ctx inp page buf0 = do
 -- | Copy, cut and paste through the host's clipboard. With nothing selected,
 -- copy and cut take the whole line.
 clipboardCopy, clipboardCut, clipboardPaste :: Context -> Buffer -> IO Buffer
--- An empty line has nothing to take, and what the clipboard holds stays.
-clipboardCopy ctx b
-  | T.null (B.selectedText (orLine b)) = pure b
-  | otherwise = b <$ ctxClipboardSet ctx (B.selectedText (orLine b))
-clipboardCut ctx b
-  | T.null (B.selectedText (orLine b)) = pure b
-  | otherwise = do
-      copied <- ctxClipboardSet ctx (B.selectedText (orLine b))
-      pure (if copied then B.deleteSelection (orLine b) else b)
+clipboardCopy ctx b = b <$ copyFrom ctx (orLine b)
+clipboardCut ctx b = do
+  copied <- copyFrom ctx (orLine b)
+  pure (if copied then B.deleteSelection (orLine b) else b)
 clipboardPaste ctx b = maybe b (`B.insertText` b) <$> ctxClipboardGet ctx
+
+-- | Put the selection on the clipboard, and say whether it went. An empty
+-- line has nothing to take, and what the clipboard holds stays.
+copyFrom :: Context -> Buffer -> IO Bool
+copyFrom ctx b =
+  let t = B.selectedText b
+   in if T.null t then pure False else ctxClipboardSet ctx t
 
 orLine :: Buffer -> Buffer
 orLine b = if B.hasSelection b then b else B.selectLineAt (B.bufCursor b) b
@@ -579,10 +568,7 @@ sceneKey which sc =
           , hashText (langName (scLang sc))
           , hashText (T.pack (show (scLexStart sc)))
           ]
-      h = foldl' (\acc v -> (acc `xor` v) * 1099511628211) 1469598103934665603 fields
-   in if h == 0 then 1 else h
-  where
-    hashText = T.foldl' (\acc c -> (acc `xor` fromEnum c) * 1099511628211) 1469598103934665603
+   in contentHash fields
 
 -- | The widgets the editor is made of.
 data Part = PartGutter | PartText | PartBar
@@ -632,7 +618,7 @@ drawScene which sc own@(Rect ox oy ow oh) =
     firstCell = max 0 (floor (scScrollX sc / cellW) - 1) :: Int
     lastCell = firstCell + ceiling (w / cellW) + 2
     cellX c = textX + fromIntegral c * cellW
-    (thumbTop, thumbH) = thumbSpan g rect buf (scScrollY sc)
+    (thumbTop, thumbH) = thumbSpan (scroller g rect buf) (scScrollY sc)
     (selFrom, selTo) = B.selectionRange buf
     (caretLine, caretCol) = B.cursorPosition buf
 
@@ -693,7 +679,7 @@ drawScene which sc own@(Rect ox oy ow oh) =
     -- rule along each tab.
     indentation row
       | rowLong row = []
-      | otherwise = marks 0 (T.unpack (T.takeWhile (\c -> c == ' ' || c == '\t') (rowText row)))
+      | otherwise = marks 0 (T.unpack (B.indentOf (rowText row)))
       where
         midY = lineY (rowLine row) + fromIntegral (round (lineH / 2) :: Int)
         marks _ [] = []
@@ -701,7 +687,7 @@ drawScene which sc own@(Rect ox oy ow oh) =
           | cell > lastCell = []
           | c == ' ' = [FillRect (Rect (cellX cell + cellW / 2 - 1) (midY - 1) 2 2) colWhitespace | cell >= firstCell] ++ marks (cell + 1) cs
           | otherwise =
-              let next = cell + B.tabWidth - cell `rem` B.tabWidth
+              let next = cell + B.cellsAt cell '\t'
                in [FillRect (Rect (cellX cell + 2) midY (fromIntegral (next - cell) * cellW - 4) 1) colWhitespace | next > firstCell] ++ marks next cs
 
     texts = concatMap rowText' rows
@@ -738,11 +724,13 @@ drawScene which sc own@(Rect ox oy ow oh) =
       where
         go acc !cell t = case T.uncons t of
           Nothing -> (reverse acc, cell)
-          Just ('\t', r) -> go acc (cell + B.tabWidth - cell `rem` B.tabWidth) r
           Just (c, r)
-            | c <= ' ' -> go acc (cell + 1) r
-            | cell < firstCell || cell > lastCell -> go acc (cell + B.charCells c) r
-            | otherwise -> go (DrawTextStyled (cellX cell) ly (fontOf kind) (T.singleton c) (tokenColor kind) : acc) (cell + B.charCells c) r
+            -- A tab, a space and what is off screen take their cells and
+            -- draw nothing.
+            | c <= ' ' || cell < firstCell || cell > lastCell -> go acc next r
+            | otherwise -> go (DrawTextStyled (cellX cell) ly (fontOf kind) (T.singleton c) (tokenColor kind) : acc) next r
+            where
+              next = cell + B.cellsAt cell c
 
     -- The band on the caret's line carries on through the gutter, so that the
     -- number and the text it belongs to read as one row rather than as a

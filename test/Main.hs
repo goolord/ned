@@ -57,6 +57,7 @@ main = do
   check "typing replaces the selection" "alpha\n  X gamma\n\tdelta\n" (text (B.insertText "X" (B.selectWordAt 9 doc)))
   check "newline carries the indent" "alpha\n  beta\n   gamma\n\tdelta\n" (text (B.newline (B.setCursor False 12 doc)))
   check "pasted line endings become newlines" "a\nb\nc" (text (B.insertText "a\r\nb\nc" B.empty))
+  check "typing nothing leaves the selection be" ("beta", False) (let b = B.insertText "" (B.selectWordAt 9 doc) in (B.selectedText b, B.isDirty b))
   check "go to line" (2, 0) (B.cursorPosition (B.gotoLine 3 doc))
   check "go to line clamps" (3, 0) (B.cursorPosition (B.gotoLine 99 doc))
 
@@ -67,6 +68,8 @@ main = do
   check "indent lines" "    one\n    two\n    three" (text (B.indentKey block))
   check "unindent lines" "one\ntwo\nthree" (text (B.unindentKey (B.indentKey block)))
   check "indenting lines is one step" "one\ntwo\nthree" (text (B.undo (B.indentKey block)))
+  let undoSteps b = length (takeWhile B.canUndo (iterate B.undo b))
+  check "indenting lines keeps to the undo limit" True (undoSteps (iterate B.indentKey block !! 4100) <= 4000)
   let caretIn = B.setCursor False 6 (B.fromText "    indented")
   check "shift+tab with a caret unindents" "indented" (text (B.unindentKey caretIn))
   check "and leaves a caret, moved with the text" (2, 2) (B.bufCursor (B.unindentKey caretIn), B.bufAnchor (B.unindentKey caretIn))
@@ -107,6 +110,8 @@ main = do
       offsets spans = zip (scanl (+) 0 (map spanLength spans)) spans
   check "language by extension" "Haskell" (langName hs)
   check "language by name" "Makefile" (langName (languageFor "src/Makefile"))
+  check "language by a name that has an extension" "Cabal" (langName (languageFor "cabal.project"))
+  check "extensions in any case" "C++" (langName (languageFor "src/A.HPP"))
   check "unknown is plain" "Plain Text" (langName (languageFor "notes.xyz"))
   check
     "haskell line"

@@ -23,10 +23,8 @@ module Ned.FileTree
 
 import Control.Exception (SomeException, try)
 import Control.Monad (when)
-import Data.Bits (xor)
 import Data.Char (toLower)
 import Data.Foldable (toList)
-import Data.IORef (writeIORef)
 import Data.List (sortOn)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
@@ -37,11 +35,12 @@ import qualified Data.Text as T
 import Effectful (Eff, type (:>))
 -- 'Row' here is a row of the tree, not nano-ui's layout direction.
 import NanoUI hiding (Row)
-import NanoUI.Context (Context (..), getFocusId, getPrevRect)
+import NanoUI.Context (Context (..), getPrevRect)
 import NanoUI.Input (UiCursorKind (..))
 import NanoUI.Monad (askContext, askInput)
 import Ned.Highlight (langName, languageFor)
 import Ned.View (caretColor)
+import Ned.Widget
 import System.Directory (doesDirectoryExist, listDirectory)
 import System.FilePath (equalFilePath, normalise, takeDirectory, takeFileName, (</>))
 
@@ -188,7 +187,11 @@ loadPending ft
 
 -- | Put the tree on another directory, keeping what has already been read.
 setRoot :: FilePath -> FileTree -> FileTree
-setRoot dir ft = rebuild ft {ftRoot = dir, ftPending = dir : ftPending ft, ftScroll = 0}
+setRoot dir = rebuild . rootedAt dir
+
+-- | 'setRoot', for a caller that works the rows out itself.
+rootedAt :: FilePath -> FileTree -> FileTree
+rootedAt dir ft = ft {ftRoot = dir, ftPending = dir : ftPending ft, ftScroll = 0}
 
 -- | Whether the root has a directory above it to go to.
 hasParentRoot :: FileTree -> Bool
@@ -214,21 +217,18 @@ reveal path ft0 =
       , ftReveal = True
       }
   where
-    ft = if under (ftRoot ft0) path then ft0 else setRoot (takeDirectory path) ft0
-    -- The directories between the file and the root. The root is reached
-    -- because the file is under it; the count is a guard against a path that
-    -- says otherwise.
-    dirs = take 64 (takeWhile (not . equalFilePath (ftRoot ft)) (iterate takeDirectory (takeDirectory path)))
+    above = ancestors path
+    ft = if any (equalFilePath (ftRoot ft0)) above then ft0 else rootedAt (takeDirectory path) ft0
+    -- The directories between the file and the root, which is one of them.
+    dirs = takeWhile (not . equalFilePath (ftRoot ft)) above
 
--- | Whether a path is somewhere under a directory.
-under :: FilePath -> FilePath -> Bool
-under root path = go (takeDirectory path) (64 :: Int)
+-- | The directories a path is under, nearest first, as far as the one that
+-- has none above it. The count is a guard against a path that never gets
+-- there.
+ancestors :: FilePath -> [FilePath]
+ancestors = take 64 . go . takeDirectory
   where
-    go _ 0 = False
-    go dir n
-      | equalFilePath dir root = True
-      | equalFilePath (takeDirectory dir) dir = False
-      | otherwise = go (takeDirectory dir) (n - 1)
+    go dir = dir : if equalFilePath (takeDirectory dir) dir then [] else go (takeDirectory dir)
 
 -- | Forget what every directory held, so the next frame reads them again.
 refresh :: FileTree -> FileTree
@@ -356,10 +356,7 @@ treeRows wantFocus current ft0 = do
 
   -- The tree keeps the keyboard for as long as it is the thing being used, as
   -- the editor does with its own.
-  focus0 <- uiIO (getFocusId ctx)
-  when (wantFocus && focus0 /= wid) $ uiIO $ do
-    writeIORef (ctxFocusId ctx) wid
-    writeIORef (ctxFocusVisible ctx) False
+  when wantFocus $ uiIO (takeFocus ctx wid)
 
   let mouse = inputMousePos inp
       inside = rectContains rect mouse
@@ -367,12 +364,8 @@ treeRows wantFocus current ft0 = do
       rowsNow = ftRows ft0
       rowCount = sizeofSmallArray rowsNow
       overBar = inside && v2X mouse >= rectX rect + rectW rect - treeBarW && fromIntegral rowCount > viewRows
-      (thumbTop, thumbH) = thumbSpan rect rowCount viewRows (ftScroll ft0)
+      bar = scroller rect rowCount viewRows
       pointedRow = floor (ftScroll ft0 + realToFrac (localY / lineH)) :: Int
-      scrollToThumb grab =
-        let range = maxScroll rowCount viewRows
-            track = rectH rect - thumbH
-         in if track <= 0 then 0 else realToFrac ((localY - grab) / track) * range
 
       pressedNow = (inputMousePressed inp || inputMouseRightPressed inp) && inside
 
@@ -380,8 +373,8 @@ treeRows wantFocus current ft0 = do
       -- file opens the file.
       (ftMouse, openedByMouse)
         | inputMousePressed inp && overBar =
-            let grab = if localY >= thumbTop && localY <= thumbTop + thumbH then localY - thumbTop else thumbH / 2
-             in (ft0 {ftDrag = DragThumb grab, ftScroll = scrollToThumb grab}, Nothing)
+            let grab = thumbGrab bar (ftScroll ft0) localY
+             in (ft0 {ftDrag = DragThumb grab, ftScroll = thumbScroll bar grab localY}, Nothing)
         | pressedNow =
             case rowAt rowsNow pointedRow of
               Nothing -> (ft0, Nothing)
@@ -396,7 +389,7 @@ treeRows wantFocus current ft0 = do
         | not (inputMouseDown inp) =
             (case ftDrag ft0 of DragThumb _ -> ft0 {ftDrag = DragNone}; _ -> ft0, Nothing)
         | otherwise = case ftDrag ft0 of
-            DragThumb grab -> (ft0 {ftScroll = scrollToThumb grab}, Nothing)
+            DragThumb grab -> (ft0 {ftScroll = thumbScroll bar grab localY}, Nothing)
             _ -> (ft0, Nothing)
 
   -- nano-ui runs a frame for a pointer that only moved when it came over
@@ -426,12 +419,8 @@ treeRows wantFocus current ft0 = do
       rows1 = ftRows ftKeys
       count1 = sizeofSmallArray rows1
       sel1 = selectedRow ftKeys
-      follow y
-        | not (ftReveal ftKeys) || sel1 < 0 = y
-        | fromIntegral sel1 < y = fromIntegral sel1
-        | fromIntegral sel1 + 1 > y + viewRows = fromIntegral sel1 + 1 - max 1 (fromIntegral (floor viewRows :: Int))
-        | otherwise = y
-      scroll1 = max 0 (min (maxScroll count1 viewRows) (follow scrolled))
+      follow y = if ftReveal ftKeys && sel1 >= 0 then followRow sel1 viewRows y else y
+      scroll1 = clamp 0 (maxScroll count1 viewRows) (follow scrolled)
 
       ft1 =
         ftKeys
@@ -517,14 +506,10 @@ rowAt rows i
 maxScroll :: Int -> Double -> Double
 maxScroll rowCount viewRows = max 0 (fromIntegral rowCount - viewRows)
 
--- | The scrollbar's thumb: its top and its height, within the widget.
-thumbSpan :: Rect -> Int -> Double -> Double -> (Float, Float)
-thumbSpan rect rowCount viewRows at =
-  let h = rectH rect
-      thumbH = max 28 (min h (h * realToFrac (viewRows / max 1 (fromIntegral rowCount))))
-      range = maxScroll rowCount viewRows
-      frac = if range <= 0 then 0 else realToFrac (at / range)
-   in ((h - thumbH) * frac, thumbH)
+-- | The view and its scrollbar, over so many rows.
+scroller :: Rect -> Int -> Double -> Scroller
+scroller rect rowCount viewRows =
+  Scroller (rectH rect) (viewRows / max 1 (fromIntegral rowCount)) (maxScroll rowCount viewRows)
 
 -- | The bar between the tree and the editor, which drags to resize it.
 splitterBar :: Ui :> es => FileTree -> Eff es FileTree
@@ -545,7 +530,7 @@ splitterBar ft0 = do
             -- The layout follows a frame behind, so the width moves by what
             -- the pointer is from where it took the bar, and settles there.
             DragWidth grab ->
-              ft0 {ftWidth = max minTreeWidth (min maxTreeWidth (ftWidth ft0 + (v2X mouse - rectX rect - grab)))}
+              ft0 {ftWidth = clamp minTreeWidth maxTreeWidth (ftWidth ft0 + (v2X mouse - rectX rect - grab))}
             _ -> ft0
       hot = over || isWidth (ftDrag ft1)
   _ <-
@@ -595,19 +580,15 @@ data Scene = Scene
 -- for the rows, which are worked out only when they change.
 sceneKey :: Scene -> Int
 sceneKey sc =
-  let fields =
-        [ scVersion sc
-        , round (scScroll sc * 64)
-        , hashText (maybe "" T.pack (scSelected sc))
-        , hashText (maybe "" T.pack (scCurrent sc))
-        , scHovered sc
-        , fromEnum (scFocused sc)
-        , fromEnum (scThumbHot sc)
-        ]
-      h = foldl' (\acc v -> (acc `xor` v) * 1099511628211) 1469598103934665603 fields
-   in if h == 0 then 1 else h
-  where
-    hashText = T.foldl' (\acc c -> (acc `xor` fromEnum c) * 1099511628211) 1469598103934665603
+  contentHash
+    [ scVersion sc
+    , round (scScroll sc * 64)
+    , hashText (maybe "" T.pack (scSelected sc))
+    , hashText (maybe "" T.pack (scCurrent sc))
+    , scHovered sc
+    , fromEnum (scFocused sc)
+    , fromEnum (scThumbHot sc)
+    ]
 
 -- | The draw ops of the rows on screen, and of the scrollbar over them when
 -- there is more than the view holds.
@@ -716,7 +697,7 @@ drawTree cdc sc rect@(Rect x y w h) =
     bar
       | lane <= 0 = []
       | otherwise =
-          let (thumbTop, thumbH) = thumbSpan rect count (scViewRows sc) (scScroll sc)
+          let (thumbTop, thumbH) = thumbSpan (scroller rect count (scViewRows sc)) (scScroll sc)
            in [ FillRoundedRect
                   (Rect (x + w - treeBarW + 2) (y + thumbTop + 2) (treeBarW - 4) (thumbH - 4))
                   3

@@ -89,6 +89,7 @@ cabal run ned -- path/to/file.hs
 | --- | --- |
 | `Ned.Buffer` | The rope, caret, selection, movement, editing, history and search. Pure |
 | `Ned.Highlight` | Languages and the line lexer. Pure |
+| `Ned.Widget` | What the two widgets share: the scrollbar, content keys, taking the keyboard |
 | `Ned.View` | The editor widget: input, scrolling and drawing |
 | `Ned.FileTree` | The file tree widget: what has been read of the folder, and drawing it |
 | `Ned.App` | Menus, files, the find bar, the status bar |

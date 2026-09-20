@@ -21,6 +21,7 @@ module Ned.Buffer
   , setUsesTabs
 
     -- * Geometry
+  , clamp
   , tabWidth
   , longLineLimit
   , lineCount
@@ -31,11 +32,12 @@ module Ned.Buffer
   , lineWindow
   , isLongLine
   , cursorPosition
-  , charCells
+  , cellsAt
   , cellOfCol
   , colToVisual
   , visualToCol
   , offsetAt
+  , indentOf
 
     -- * Selection
   , hasSelection
@@ -179,6 +181,10 @@ setUsesTabs t b = b {bufTabs = t}
 -- Geometry
 --------------------------------------------------------------------------------
 
+-- | A value held within bounds.
+clamp :: Ord a => a -> a -> a -> a
+clamp lo hi = max lo . min hi
+
 tabWidth :: Int
 tabWidth = 4
 
@@ -225,8 +231,8 @@ lineWindow :: Buffer -> Int -> Int -> Int -> Text
 lineWindow b ln c0 c1 =
   let s = lineStart b ln
       len = lineLength b ln
-      from = max 0 (min len c0)
-      to = max from (min len c1)
+      from = clamp 0 len c0
+      to = clamp from len c1
    in if to <= from then T.empty else Rope.sliceText Chars (s + from) (s + to) (bufRope b)
 
 -- | Line and column of the caret, both from zero, the column in code points.
@@ -250,12 +256,15 @@ charCells c
   | c >= '\x20000' && c <= '\x3FFFD' = 2
   | otherwise = 1
 
+-- | How many cells a character takes when it starts at a cell: a tab runs to
+-- the next tab stop.
+cellsAt :: Int -> Char -> Int
+cellsAt cell '\t' = tabWidth - cell `rem` tabWidth
+cellsAt _ c = charCells c
+
 -- | The cell a column sits at in a line whose text is at hand.
 cellOfCol :: Text -> Int -> Int
-cellOfCol line col = T.foldl' step 0 (T.take col line)
-  where
-    step v '\t' = v + tabWidth - v `rem` tabWidth
-    step v c = v + charCells c
+cellOfCol line col = T.foldl' (\v c -> v + cellsAt v c) 0 (T.take col line)
 
 -- | The cell a column of a line sits at.
 colToVisual :: Buffer -> Int -> Int -> Int
@@ -266,20 +275,24 @@ colToVisual b ln col
 -- | The column of a line nearest a cell.
 visualToCol :: Buffer -> Int -> Int -> Int
 visualToCol b ln vis
-  | isLongLine b ln = max 0 (min (lineLength b ln) vis)
+  | isLongLine b ln = clamp 0 (lineLength b ln) vis
   | otherwise = go 0 0 (lineText b ln)
   where
     go !col !v t = case T.uncons t of
       Nothing -> col
       Just (c, rest) ->
-        let w = if c == '\t' then tabWidth - v `rem` tabWidth else charCells c
+        let w = cellsAt v c
          in if vis * 2 < v * 2 + w then col else go (col + 1) (v + w) rest
 
 -- | The offset of a line and a cell, both clamped to the text.
 offsetAt :: Buffer -> Int -> Int -> Int
 offsetAt b ln vis =
-  let ln' = max 0 (min (lineCount b - 1) ln)
+  let ln' = clamp 0 (lineCount b - 1) ln
    in lineStart b ln' + visualToCol b ln' vis
+
+-- | The spaces and tabs a line starts with.
+indentOf :: Text -> Text
+indentOf = T.takeWhile (\c -> c == ' ' || c == '\t')
 
 --------------------------------------------------------------------------------
 -- Selection
@@ -302,7 +315,7 @@ selectAll b = moved b {bufAnchor = 0, bufCursor = size b}
 -- | Put the caret at an offset, keeping the anchor when extending.
 setCursor :: Bool -> Int -> Buffer -> Buffer
 setCursor extend off b =
-  let off' = max 0 (min (size b) off)
+  let off' = clamp 0 (size b) off
    in moved b {bufCursor = off', bufAnchor = if extend then bufAnchor b else off'}
 
 -- | A movement ends the run of edits that undo together.
@@ -330,7 +343,7 @@ textAfter b off = Rope.sliceText Chars off (min (size b) (off + scanWindow)) (bu
 -- the offsets it starts and ends at; nothing at all on an empty line.
 wordRangeAt :: Int -> Buffer -> (Int, Int)
 wordRangeAt off0 b =
-  let off = max 0 (min (size b) off0)
+  let off = clamp 0 (size b) off0
       after = textAfter b off
       before = textBefore b off
       cls = case T.uncons after of
@@ -407,7 +420,7 @@ moveLines n extend b =
 moveHome :: Bool -> Buffer -> Buffer
 moveHome extend b =
   let (ln, col) = cursorPosition b
-      indent = T.length (T.takeWhile (\c -> c == ' ' || c == '\t') (lineWindow b ln 0 longLineLimit))
+      indent = T.length (indentOf (lineWindow b ln 0 longLineLimit))
       col' = if col == indent then 0 else indent
    in setCursor extend (lineStart b ln + col') b
 
@@ -445,7 +458,7 @@ moveDocEnd extend b = setCursor extend (size b) b
 
 -- | To the start of a line, counted from one.
 gotoLine :: Int -> Buffer -> Buffer
-gotoLine n b = setCursor False (lineStart b (max 0 (min (lineCount b - 1) (n - 1)))) b
+gotoLine n b = setCursor False (lineStart b (clamp 0 (lineCount b - 1) (n - 1))) b
 
 --------------------------------------------------------------------------------
 -- Editing
@@ -459,50 +472,59 @@ undoLimit = 2000
 edit :: EditKind -> Int -> Int -> Text -> Buffer -> Buffer
 edit kind i j t b
   | i >= j && T.null t = b
-  | otherwise =
-      let rope0 = bufRope b
-          rope'
-            | i >= j = Rope.insert Chars i t rope0
-            | T.null t = Rope.delete Chars i j rope0
-            | otherwise = Rope.replace Chars i j t rope0
-          end = i + T.length t
-          continues =
-            continuesRun (bufLastEdit b) kind
-              && not (hasSelection b)
-              && bufLastEnd b == (if kind == EditBackspace then j else i)
-          snap = Snapshot rope0 (bufCursor b) (bufAnchor b) (bufVersion b)
-          (undos, depth)
-            | continues = (bufUndo b, bufUndoDepth b)
-            | bufUndoDepth b >= 2 * undoLimit = (snap : take undoLimit (bufUndo b), undoLimit + 1)
-            | otherwise = (snap : bufUndo b, bufUndoDepth b + 1)
-       in b
-            { bufRope = rope'
-            , bufCursor = end
-            , bufAnchor = end
-            , bufPrefCol = -1
-            , bufVersion = bufNextVersion b
-            , bufNextVersion = bufNextVersion b + 1
-            , bufUndo = undos
-            , bufUndoDepth = depth
-            , bufRedo = []
-            , bufLastEdit = kind
-            , bufLastEnd = end
-            }
+  | otherwise = commit continues kind rope' end end b
+  where
+    rope'
+      | i >= j = Rope.insert Chars i t (bufRope b)
+      | T.null t = Rope.delete Chars i j (bufRope b)
+      | otherwise = Rope.replace Chars i j t (bufRope b)
+    end = i + T.length t
+    continues =
+      continuesRun (bufLastEdit b) kind
+        && not (hasSelection b)
+        && bufLastEnd b == (if kind == EditBackspace then j else i)
+
+-- | Put a new text in place, with its anchor and caret, as a step of the
+-- history: the text before it goes on the undo stack, unless this edit
+-- continues the run before it and undoes with that.
+commit :: Bool -> EditKind -> Rope -> Int -> Int -> Buffer -> Buffer
+commit continues kind rope anchor cursor b =
+  b
+    { bufRope = rope
+    , bufCursor = cursor
+    , bufAnchor = anchor
+    , bufPrefCol = -1
+    , bufVersion = bufNextVersion b
+    , bufNextVersion = bufNextVersion b + 1
+    , bufUndo = undos
+    , bufUndoDepth = depth
+    , bufRedo = []
+    , bufLastEdit = kind
+    , bufLastEnd = cursor
+    }
+  where
+    (undos, depth)
+      | continues = (bufUndo b, bufUndoDepth b)
+      | bufUndoDepth b >= 2 * undoLimit = (current b : take undoLimit (bufUndo b), undoLimit + 1)
+      | otherwise = (current b : bufUndo b, bufUndoDepth b + 1)
 
 -- | Replace a range, as one step of the history.
 replaceRange :: Int -> Int -> Text -> Buffer -> Buffer
 replaceRange = edit EditOther
 
--- | Type or paste a text over the selection. Line endings become @\\n@.
+-- | Type or paste a text over the selection. Line endings become @\\n@. No
+-- text is nothing done: the selection stays, and is not deleted.
 insertText :: Text -> Buffer -> Buffer
-insertText t0 b =
-  let t = T.filter (/= '\r') (T.replace "\r\n" "\n" t0)
-      (i, j) = selectionRange b
-      kind
-        | i /= j || T.length t /= 1 || t == "\n" = EditOther
-        | t == " " = EditSpace
-        | otherwise = EditType
-   in edit kind i j t b
+insertText t0 b
+  | T.null t = b
+  | otherwise = edit kind i j t b
+  where
+    t = T.filter (/= '\r') t0
+    (i, j) = selectionRange b
+    kind
+      | i /= j || T.length t /= 1 || t == "\n" = EditOther
+      | t == " " = EditSpace
+      | otherwise = EditType
 
 -- | Break the line, carrying its indentation over.
 newline :: Buffer -> Buffer
@@ -510,7 +532,7 @@ newline b =
   let (i, j) = selectionRange b
       ln = lineOf b i
       col = i - lineStart b ln
-      indent = T.takeWhile (\c -> c == ' ' || c == '\t') (lineWindow b ln 0 (min col longLineLimit))
+      indent = indentOf (lineWindow b ln 0 (min col longLineLimit))
    in edit EditOther i j (T.cons '\n' indent) b
 
 deleteSelection :: Buffer -> Buffer
@@ -566,10 +588,10 @@ indentKey b
   | l1 > l0 = reindent (\_ -> Just (0, 0, indentUnit b)) b
   | bufTabs b = insertText "\t" b
   | otherwise =
-      let (i, _) = selectionRange b
+      let (i, j) = selectionRange b
           ln = lineOf b i
           vis = colToVisual b ln (i - lineStart b ln)
-       in edit EditOther i (snd (selectionRange b)) (T.replicate (tabWidth - vis `rem` tabWidth) " ") b
+       in edit EditOther i j (T.replicate (cellsAt vis '\t') " ") b
   where
     (l0, l1) = selectedLines b
 
@@ -596,7 +618,6 @@ reindent f b =
       -- From the last line up, so that the offsets of earlier lines hold.
       rope' = foldl' step (bufRope b) [l1, l1 - 1 .. l0]
       changed = Rope.length Chars rope' /= size b
-      snap = Snapshot (bufRope b) (bufCursor b) (bufAnchor b) (bufVersion b)
       start = Rope.convert Lines Chars l0 rope'
       end
         | l1 + 1 < Rope.lineCount rope' = Rope.convert Lines Chars (l1 + 1) rope'
@@ -607,22 +628,7 @@ reindent f b =
       (anchor', cursor')
         | hasSelection b = (start, end)
         | otherwise = (caret, caret)
-   in if not changed
-        then b
-        else
-          b
-            { bufRope = rope'
-            , bufAnchor = anchor'
-            , bufCursor = cursor'
-            , bufPrefCol = -1
-            , bufVersion = bufNextVersion b
-            , bufNextVersion = bufNextVersion b + 1
-            , bufUndo = snap : bufUndo b
-            , bufUndoDepth = bufUndoDepth b + 1
-            , bufRedo = []
-            , bufLastEdit = EditOther
-            , bufLastEnd = cursor'
-            }
+   in if changed then commit False EditOther rope' anchor' cursor' b else b
 
 --------------------------------------------------------------------------------
 -- History

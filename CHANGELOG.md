@@ -12,3 +12,6 @@
   open as; the file the editor has is marked in the caret's colour.
 * The status bar sets the file and the caret's place apart from the settings
   behind them, and leaves a setting off while it is at its default.
+* Typing that comes to nothing (a Ctrl+Alt chord, an empty paste) no longer
+  deletes the selection; the go-to-line field takes the keyboard back when it
+  is pressed; and a press on the file tree takes it from the find bar's field.

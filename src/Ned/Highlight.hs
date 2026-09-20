@@ -15,7 +15,11 @@ module Ned.Highlight
   , languageFor
   ) where
 
+import Control.Applicative ((<|>))
 import Data.Char (isAlpha, isAlphaNum, isDigit, isSpace, isUpper, toLower)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
+import Data.Maybe (fromMaybe)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -302,56 +306,48 @@ cLike =
 ws :: Text -> Set Text
 ws = Set.fromList . T.words
 
--- | The language of a file, going by its name.
+-- | The language of a file, going by its extension, or failing that by its
+-- whole name.
 languageFor :: FilePath -> Lang
-languageFor path =
-  case map toLower (takeExtension path) of
-    ".hs" -> haskell
-    ".lhs" -> haskell
-    ".hsc" -> haskell
-    ".cabal" -> cabal
-    ".project" -> cabal
-    ".c" -> cLang
-    ".h" -> cLang
-    ".cc" -> cpp
-    ".cpp" -> cpp
-    ".cxx" -> cpp
-    ".hpp" -> cpp
-    ".hh" -> cpp
-    ".rs" -> rust
-    ".go" -> golang
-    ".java" -> java
-    ".cs" -> csharp
-    ".js" -> javascript
-    ".jsx" -> javascript
-    ".mjs" -> javascript
-    ".ts" -> typescript
-    ".tsx" -> typescript
-    ".json" -> json
-    ".py" -> python
-    ".lua" -> lua
-    ".zig" -> zig
-    ".sh" -> shell
-    ".bash" -> shell
-    ".zsh" -> shell
-    ".ps1" -> shell {langName = "PowerShell"}
-    ".nix" -> nix
-    ".toml" -> toml
-    ".yaml" -> yaml
-    ".yml" -> yaml
-    ".md" -> markdown
-    ".markdown" -> markdown
-    ".sql" -> sql
-    ".css" -> css
-    ".html" -> html
-    ".htm" -> html
-    ".xml" -> html {langName = "XML"}
-    ".svg" -> html {langName = "XML"}
-    _ -> case map toLower (takeFileName path) of
-      "makefile" -> shell {langName = "Makefile"}
-      "dockerfile" -> shell {langName = "Dockerfile"}
-      "cabal.project" -> cabal
-      _ -> plainText
+languageFor path = fromMaybe plainText (known (takeExtension path) <|> known (takeFileName path))
+  where
+    known key = Map.lookup (map toLower key) languages
+
+-- | The languages, by the extensions and the file names they go by.
+languages :: Map String Lang
+languages =
+  Map.fromList
+    [ (key, lang)
+    | (keys, lang) <-
+        [ (".hs .lhs .hsc", haskell)
+        , (".cabal .project", cabal)
+        , (".c .h", cLang)
+        , (".cc .cpp .cxx .hpp .hh", cpp)
+        , (".rs", rust)
+        , (".go", golang)
+        , (".java", java)
+        , (".cs", csharp)
+        , (".js .jsx .mjs", javascript)
+        , (".ts .tsx", typescript)
+        , (".json", json)
+        , (".py", python)
+        , (".lua", lua)
+        , (".zig", zig)
+        , (".sh .bash .zsh", shell)
+        , (".ps1", shell {langName = "PowerShell"})
+        , (".nix", nix)
+        , (".toml", toml)
+        , (".yaml .yml", yaml)
+        , (".md .markdown", markdown)
+        , (".sql", sql)
+        , (".css", css)
+        , (".html .htm", html)
+        , (".xml .svg", html {langName = "XML"})
+        , ("makefile", shell {langName = "Makefile"})
+        , ("dockerfile", shell {langName = "Dockerfile"})
+        ]
+    , key <- words keys
+    ]
 
 haskell :: Lang
 haskell =

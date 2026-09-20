@@ -361,27 +361,22 @@ appView ref = do
           case go (edFindExact ed) needle (edBuffer ed) of
             Just b -> onBuffer (const b) >> status ""
             Nothing -> status ("No match for " <> needle)
-      zoom f = onEditor (\ed -> ed {edFontSize = max 8 (min 48 (f (edFontSize ed)))})
+      zoom f = onEditor (\ed -> ed {edFontSize = B.clamp 8 48 (f (edFontSize ed))})
       onTree f = modify (\a -> a {appTree = f (appTree a)})
       -- Putting the tree away hands the keyboard back to the editor.
       toggleTree = modify $ \a ->
         a {appTreeShown = not (appTreeShown a), appTreeFocus = False}
 
   ------------------------------------------------------------ file dialogs ---
-  for_ (appOpenDlg app0) $ \did ->
-    pollFileDialogUi did >>= \case
-      FileDialogPending -> pure ()
-      FileDialogSelected paths -> do
-        modify (\a -> a {appOpenDlg = Nothing})
-        for_ (listToMaybe paths) (run . PendingOpenPath)
-      _ -> modify (\a -> a {appOpenDlg = Nothing})
-  for_ (appSaveDlg app0) $ \did ->
-    pollFileDialogUi did >>= \case
-      FileDialogPending -> pure ()
-      FileDialogSelected paths -> do
-        modify (\a -> a {appSaveDlg = Nothing})
-        for_ (listToMaybe paths) saveTo
-      _ -> modify (\a -> a {appSaveDlg = Nothing})
+  -- A dialog that is up is asked for its answer, and put away once it has one.
+  let pollDialog dialog forget onPick =
+        for_ (dialog app0) $ \did ->
+          pollFileDialogUi did >>= \case
+            FileDialogPending -> pure ()
+            FileDialogSelected paths -> modify forget >> for_ (listToMaybe paths) onPick
+            _ -> modify forget
+  pollDialog appOpenDlg (\a -> a {appOpenDlg = Nothing}) (run . PendingOpenPath)
+  pollDialog appSaveDlg (\a -> a {appSaveDlg = Nothing}) saveTo
 
   -- A file dropped on the window opens.
   for_ [T.unpack (dropEventData d) | d <- foldr (:) [] (inputDrops inp), dropEventType d == DropFile] $
@@ -409,9 +404,12 @@ appView ref = do
   when (inputKeysElem KeyEscape (inputKeys inp) && appBar app0 /= BarNone && not blocked) closeBar
 
   ------------------------------------------------------------------ menus ---
-  let item lbl shortcut action =
-        whenM (if T.null shortcut then menuItem lbl else menuItemShortcut lbl shortcut) (closeMenu >> action)
-      itemIf ok lbl shortcut action = if ok then item lbl shortcut action else menuItemDisabled lbl
+  -- A row of a menu, greyed when it does not apply. Picking one closes the
+  -- menu bar's menu, which a context menu has none of and loses nothing by.
+  let entry ok lbl shortcut action
+        | not ok = menuItemDisabled lbl
+        | otherwise = whenM (if T.null shortcut then menuItem lbl else menuItemShortcut lbl shortcut) (closeMenu >> action)
+      item = entry True
       buf0 = edBuffer (appEditor app0)
       fileMenu = do
         item "New" "Ctrl+N" (guarded PendingNew)
@@ -420,15 +418,18 @@ appView ref = do
         item "Save As..." "Ctrl+Shift+S" (save True)
         menuSeparator
         item "Exit" "Ctrl+Q" (guarded PendingQuit)
-      editMenu = do
-        itemIf (B.canUndo buf0) "Undo" "Ctrl+Z" (onBuffer B.undo)
-        itemIf (B.canRedo buf0) "Redo" "Ctrl+Y" (onBuffer B.redo)
+      -- What the Edit menu and the editor's own menu both start with.
+      editEntries buf = do
+        entry (B.canUndo buf) "Undo" "Ctrl+Z" (onBuffer B.undo)
+        entry (B.canRedo buf) "Redo" "Ctrl+Y" (onBuffer B.redo)
         menuSeparator
         item "Cut" "Ctrl+X" (onBufferIO clipboardCut)
         item "Copy" "Ctrl+C" (onBufferIO clipboardCopy)
         item "Paste" "Ctrl+V" (onBufferIO clipboardPaste)
         menuSeparator
         item "Select All" "Ctrl+A" (onBuffer B.selectAll)
+      editMenu = do
+        editEntries buf0
         menuSeparator
         item "Find..." "Ctrl+F" (openBar BarFind)
         item "Go to Line..." "Ctrl+G" (openBar BarGoto)
@@ -483,7 +484,12 @@ appView ref = do
                 (appTreeFocus app1 && not (appBarFocus app1) && unblocked)
                 (appPath app1)
                 (appTree app1)
-            modify (\a -> a {appTree = ft, appTreeFocus = appTreeFocus a || ftPressed ft})
+            modify $ \a ->
+              a
+                { appTree = ft
+                , appTreeFocus = appTreeFocus a || ftPressed ft
+                , appBarFocus = appBarFocus a && not (ftPressed ft)
+                }
             -- A file the tree was clicked on opens as any other does, with
             -- the text asked about if it has changes to lose, and the
             -- keyboard going to it so that it can be typed into at once.
@@ -511,30 +517,17 @@ appView ref = do
     -- keeps its ids whether or not the tree is there to hang one on.
     scope $ for_ mTreeResp $ \treeResp ->
       contextMenu treeResp $ do
-        let ft = appTree app2
-            pick lbl ok action =
-              if ok then whenM (menuItem lbl) action else menuItemDisabled lbl
-        pick "Reveal Current File" (isJust (appPath app2)) (for_ (appPath app2) (onTree . FT.reveal))
-        pick "Open Parent Folder" (FT.hasParentRoot ft) (onTree FT.parentRoot)
+        entry (isJust (appPath app2)) "Reveal Current File" "" (for_ (appPath app2) (onTree . FT.reveal))
+        entry (FT.hasParentRoot (appTree app2)) "Open Parent Folder" "" (onTree FT.parentRoot)
         menuSeparator
-        pick "Collapse All" True (onTree FT.collapseAll)
-        pick "Refresh" True (onTree FT.refresh)
+        item "Collapse All" "" (onTree FT.collapseAll)
+        item "Refresh" "" (onTree FT.refresh)
         menuSeparator
-        pick "Hide File Tree" True toggleTree
+        item "Hide File Tree" "" toggleTree
 
     _ <- contextMenu edResp $ do
-      let buf = edBuffer ed
-          pick lbl shortcut ok action =
-            if ok then whenM (menuItemShortcut lbl shortcut) action else menuItemDisabled lbl
-      pick "Undo" "Ctrl+Z" (B.canUndo buf) (onBuffer B.undo)
-      pick "Redo" "Ctrl+Y" (B.canRedo buf) (onBuffer B.redo)
-      menuSeparator
-      pick "Cut" "Ctrl+X" True (onBufferIO clipboardCut)
-      pick "Copy" "Ctrl+C" True (onBufferIO clipboardCopy)
-      pick "Paste" "Ctrl+V" True (onBufferIO clipboardPaste)
-      menuSeparator
-      pick "Select All" "Ctrl+A" True (onBuffer B.selectAll)
-      pick "Find..." "Ctrl+F" True (openBar BarFind)
+      editEntries (edBuffer ed)
+      item "Find..." "Ctrl+F" (openBar BarFind)
 
     let enter = inputKeysElem KeyEnter (inputKeys inp) && appBarFocus app2
         -- Keep the keyboard in the bar's field while the bar has it.
@@ -542,15 +535,21 @@ appView ref = do
           when (appBarFocus app2) $ uiIO $ do
             focus <- getFocusId ctx
             when (focus /= respId resp) $ writeIORef (ctxFocusId ctx) (respId resp)
+        -- A bar: its name, its field, and whatever comes after the field. A
+        -- press on the field takes the keyboard back from the editor or the
+        -- tree.
+        barRow name value rest = do
+          separator
+          rowWith (padXY 12 5 . tight . fillW . gap 8 . alignMid) $ do
+            labelWith (tight . fontMuted) name
+            (resp, txt) <- textInput' value
+            holdFocus resp
+            when (respPressed resp) (modify (\a -> a {appBarFocus = True}))
+            rest txt
     case appBar app2 of
       BarNone -> pure ()
-      BarFind -> do
-        separator
-        rowWith (padXY 12 5 . tight . fillW . gap 8 . alignMid) $ do
-          labelWith (tight . fontMuted) "Find"
-          (resp, query) <- textInput' (appFindText app2)
-          holdFocus resp
-          when (respPressed resp) (modify (\a -> a {appBarFocus = True}))
+      BarFind ->
+        barRow "Find" (appFindText app2) $ \query -> do
           when (query /= appFindText app2) $ do
             modify (\a -> a {appFindText = query, appEditor = (appEditor a) {edFind = query}})
             -- Search as the query is typed, from where the selection starts.
@@ -562,12 +561,8 @@ appView ref = do
           whenM (buttonWith tight "Next") (find True)
           whenM (buttonWith tight "Close") closeBar
           when enter (find (not (modShift mods)))
-      BarGoto -> do
-        separator
-        rowWith (padXY 12 5 . tight . fillW . gap 8 . alignMid) $ do
-          labelWith (tight . fontMuted) "Go to line"
-          (resp, txt) <- textInput' (appGotoText app2)
-          holdFocus resp
+      BarGoto ->
+        barRow "Go to line" (appGotoText app2) $ \txt -> do
           when (txt /= appGotoText app2) (modify (\a -> a {appGotoText = txt}))
           go <- buttonWith tight "Go"
           whenM (buttonWith tight "Close") closeBar

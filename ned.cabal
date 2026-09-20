@@ -40,6 +40,7 @@ library
         Ned.Buffer
         Ned.FileTree
         Ned.Highlight
+        Ned.Widget
         Ned.View
         Ned.App
         Ned.Selftest

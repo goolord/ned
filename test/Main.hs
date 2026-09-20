@@ -115,6 +115,7 @@ main = do
     (kinds hs LexNormal "import Data.Text (Text) -- note")
   check "string with an escape" [("\"a\\\"b\"", TokString), ("<>", TokPunct)] (kinds hs LexNormal "\"a\\\"b\" <> x")
   check "character, and a prime that is not one" [("'x'", TokString)] (kinds hs LexNormal "  foo' 'x'")
+  check "a quote is a character of its own" [("==", TokPunct), ("'\\''", TokString)] (kinds hs LexNormal "  x == '\\''")
   check
     "the head of an application, qualified"
     [("<-", TokPunct), ("T.", TokModule), ("length", TokFunction), ("(", TokPunct), ("f", TokFunction), (")", TokPunct)]
@@ -127,6 +128,7 @@ main = do
   check "block comment nests" (LexBlock 2) (lexState hs (LexBlock 1) "still {- deeper")
   check "block comment closes" LexNormal (lexState hs (LexBlock 1) "done -} x")
   check "inside a block comment" [("all of this", TokComment)] (kinds hs (LexBlock 1) "all of this")
+  check "an empty line leaves the state alone" (LexBlock 1) (lexState hs (LexBlock 1) "")
   check "string gap opens" (LexGap '"') (lexState hs LexNormal "  let kw = \"add all \\")
   check "an escaped backslash opens no gap" LexNormal (lexState hs LexNormal "  let kw = \"add all \\\\")
   check "string gap carries on" [("\\case else \\", TokString)] (kinds hs (LexGap '"') "    \\case else \\")

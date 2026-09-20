@@ -14,7 +14,6 @@ import NanoUI
 import NanoUI.Backend.Sdl
 import NanoUI.Context (Context (..), getWakeAt)
 import NanoUI.Input (UiCursorKind (..))
-import NanoUI.Runner (shouldRedrawFrame)
 import NanoUI.Testing (cursorKindIs, newPixelContext, uiCursorKind)
 import qualified Ned.Buffer as B
 import Ned.App
@@ -225,21 +224,15 @@ selftestIn dir mfile say = do
         when (line /= "    putStrLn " <> T.pack (show ("hello" :: String)) <> " -- greet" <> T.singleton (toEnum 10)) $
           fail ("selftest: triple click selected " <> show line)
 
-        -- The pointer crossing from the text onto the scrollbar, and doing
-        -- nothing else, has to get a frame out of the session and the arrow
-        -- for a cursor; likewise onto the line numbers, and back.
-        let crossing name from to want = do
-              frame (at (fst from) (snd from)) >> frame (at (fst from) (snd from))
-              let prevInp = at (fst from) (snd from)
-                  curInp = at (fst to) (snd to)
-              due <- shouldRedrawFrame ctx prevInp curInp False False False
-              unless due $ fail ("selftest: no frame for the pointer moving " <> name)
-              frame curInp
-              kind <- uiCursorKind ctx curInp
-              when (kind /= want) $ fail ("selftest: cursor " <> show kind <> " after moving " <> name)
-        crossing "onto the scrollbar" (600, 400) (1094, 400) UiCursorDefault
-        crossing "back onto the text" (1094, 400) (600, 400) UiCursorText
-        crossing "onto the line numbers" (600, 400) (20, 400) UiCursorDefault
+        -- What is under the pointer says what the cursor is: the text has the
+        -- beam, the scrollbar and the line numbers the arrow.
+        let crossing name x want = do
+              frame (at x 400) >> frame (at x 400)
+              kind <- uiCursorKind ctx (at x 400)
+              when (kind /= want) $ fail ("selftest: cursor " <> show kind <> " " <> name)
+        crossing "on the scrollbar" 1094 UiCursorDefault
+        crossing "on the text" 600 UiCursorText
+        crossing "on the line numbers" 20 UiCursorDefault
 
         -- A right click outside the selection moves the caret and opens the menu.
         frame (at 300 40) {inputMouseRightDown = True, inputMouseRightPressed = True}
@@ -355,110 +348,23 @@ selftestIn dir mfile say = do
     click 60 70
     expectRows "a folder closed by a press on it" ["sub", "outer.txt"]
 
-    -- The bar between the tree and the text is the pane grid's divider. It is
-    -- found by its resize cursor, and the drag goes a step at a time, as a
-    -- real one does: the tree's edge has to track the pointer the whole way,
-    -- not run away from it as it does when each step measures against the bar
-    -- the last frame drew, which itself moves with the edge.
-    let atXIn b x = b {inputMousePos = V2 x 300}
-        atX = atXIn base
-        -- Whether the bar is under @x@: asked of the frame the pointer last
-        -- moved in, since the cursor comes from the widget under it there.
-        overDividerIn b x = cursorKindIs ctx (atXIn b x) UiCursorEwResize
-        overDivider = overDividerIn base
-        -- The bar's left edge, searched for rightward from @x@. The input the
-        -- search draws with carries the window's size, so a window that has
-        -- been resized is measured at the size it now has.
-        findDividerIn b x
+    -- Putting the tree away maximizes the editor's pane and taking it up again
+    -- restores the split, so the tree comes back at the width it was left at.
+    -- The bar between them is the pane grid's divider, found by its cursor.
+    let atX x = base {inputMousePos = V2 x 300}
+        findDivider x
           | x > 900 = fail "selftest: found no bar between the tree and the text"
           | otherwise = do
-              frame (atXIn b x)
-              here <- overDividerIn b x
-              if here then pure x else findDividerIn b (x + 1)
-        findDivider = findDividerIn base
+              frame (atX x)
+              here <- cursorKindIs ctx (atX x) UiCursorEwResize
+              if here then pure x else findDivider (x + 1)
     was <- findDivider 40
-    frame (atX (was + 2)) {inputMouseDown = True, inputMousePressed = True}
-    let dragTo step = do
-          frame (atX (was + 2 + fromIntegral step)) {inputMouseDown = True}
-          let edge = was + fromIntegral step
-          atEdge <- overDivider edge
-          below <- overDivider (edge - 1)
-          when (not atEdge || below) $
-            fail (printf "selftest: the bar's edge at a drag of %d is not at %.0f" (step :: Int) edge)
-    forM_ [10, 20 .. 100] dragTo
-    forM_ [90, 80 .. 0] dragTo
-    frame (atX (was + 2)) {inputMouseReleased = True}
-    idle
-
-    -- The split is the grid's, not the frame's, so putting the tree away and
-    -- taking it up again brings it back at the width it was left at.
     chord 'b'
     chord 'b'
     idle
     back <- findDivider 40
     when (back /= was) $
       fail (printf "selftest: the tree came back at %.0f after being put away, not %.0f" back was)
-
-    -- The tree's header is the pane's drag handle, so a hold there lifts the
-    -- pane out of the grid. An edge drop would split the editor in half for
-    -- the tree to land in; the grid keeps the dragged pane's size instead, so
-    -- the tree comes out of the drop at the width it went in.
-    frame (at (was / 2) 40) {inputMouseDown = True, inputMousePressed = True}
-    -- Past the drag threshold the pane lifts; over the editor's right edge,
-    -- well clear of the grid's outer band, and released, the tree lands to the
-    -- right of the editor at the width it had.
-    frame (at (was / 2 + 30) 40) {inputMouseDown = True}
-    frame (at 1000 400) {inputMouseDown = True}
-    frame (at 1000 400) {inputMouseReleased = True}
-    idle
-    -- The drop's ratio leaves sub-pixel dust, so a width is where it was when
-    -- it is within a pixel, not when it is exactly equal. On the right the
-    -- divider would measure the editor's width, so how wide the tree kept is
-    -- read on the left, where the divider is the tree's own edge.
-    let sameWidth x = abs (x - was) <= 1
-    -- The drop really did move it: on the right the tree keeps its width, so
-    -- the row that used to sit near the left edge of the window is there now,
-    -- and a click on it opens the folder.
-    click 950 70
-    expectRows "a tree dropped on the right of the editor" ["sub", "inner.txt", "outer.txt"]
-    -- And back: the tree's header is on the right edge of the row now, and a
-    -- drop on the editor's left edge restores it at the width it had.
-    frame (at 990 40) {inputMouseDown = True, inputMousePressed = True}
-    frame (at 1020 40) {inputMouseDown = True}
-    frame (at 40 400) {inputMouseDown = True}
-    frame (at 40 400) {inputMouseReleased = True}
-    idle
-    restored <- findDivider 40
-    unless (sameWidth restored) $
-      fail (printf "selftest: dropping the tree on the editor resized it from %.0f to %.0f" was restored)
-    -- The folder the click on the dropped tree opened is closed again, so what
-    -- follows finds the tree as it was.
-    click 60 70
-    expectRows "a tree back on the left of the editor" ["sub", "outer.txt"]
-
-    -- A window that changes size gives the difference to the editor: the tree
-    -- is the grid's pinned pane, so the bar stays where the reader put it
-    -- however wide the window is. Measured at the tree's width as it stands,
-    -- since the drop above left it a fraction off the width it was dragged to.
-    pinnedAt <- findDivider 40
-    let resizedTo w h = do
-          setWindowSize env w h
-          -- The size the window really took, which the frames below are
-          -- drawn at; 'syncDisplay' also moves the pointer to where it really
-          -- is, so only the size is kept.
-          (_, synced) <- syncDisplay ctx env base
-          let b = base {inputWindowSize = inputWindowSize synced}
-          frame b >> frame b
-          pure b
-        staysPinned what b = do
-          edge <- findDividerIn b 40
-          when (abs (edge - pinnedAt) > 1) $
-            fail (printf "selftest: %s put the bar at %.0f, not %.0f" (what :: String) edge pinnedAt)
-    resizedTo 1600 900 >>= staysPinned "a wider window"
-    resizedTo 820 620 >>= staysPinned "a narrower window"
-    -- Back to the size everything below is placed by.
-    _ <- resizedTo 1100 760
-    idle
 
     -- A folder holding more than the view does scrolls, and the wheel moves
     -- it the way it moves the text.

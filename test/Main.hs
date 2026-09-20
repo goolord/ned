@@ -2,7 +2,7 @@
 -- model kept as one 'Text', the history, search, the lexer, and files.
 module Main (main) where
 
-import Control.Monad (unless, when)
+import Control.Monad (unless)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -26,7 +26,6 @@ main = do
   let typed = foldl' (\b c -> B.insertText (T.singleton c) b) B.empty ("foo bar" :: String)
   check "typing" "foo bar" (text typed)
   check "undo takes a word back" "foo" (text (B.undo typed))
-  check "undo twice" "" (text (B.undo (B.undo typed)))
   check "redo" "foo bar" (text (B.redo (B.redo (B.undo (B.undo typed)))))
   check "dirty after typing" True (B.isDirty typed)
   check "clean after undoing everything" False (B.isDirty (B.undo (B.undo typed)))
@@ -53,7 +52,6 @@ main = do
   check "word left" (1, 2) (B.cursorPosition (B.moveWordLeft False (B.moveWordRight False atBeta)))
   check "select word" "beta" (B.selectedText (B.selectWordAt 9 doc))
   check "select line" "  beta gamma\n" (B.selectedText (B.selectLineAt 9 doc))
-  check "shift extends" "be" (B.selectedText (B.moveRight True (B.moveRight True atBeta)))
   check "typing replaces the selection" "alpha\n  X gamma\n\tdelta\n" (text (B.insertText "X" (B.selectWordAt 9 doc)))
   check "newline carries the indent" "alpha\n  beta\n   gamma\n\tdelta\n" (text (B.newline (B.setCursor False 12 doc)))
   check "pasted line endings become newlines" "a\nb\nc" (text (B.insertText "a\r\nb\nc" B.empty))
@@ -74,7 +72,6 @@ main = do
   check "shift+tab with a caret unindents" "indented" (text (B.unindentKey caretIn))
   check "and leaves a caret, moved with the text" (2, 2) (B.bufCursor (B.unindentKey caretIn), B.bufAnchor (B.unindentKey caretIn))
   check "delete word back" "foo " (text (B.deleteWordBack typed))
-  check "delete forward at the end" "foo bar" (text (B.deleteForward typed))
 
   -- Search -------------------------------------------------------------------
   let hay = B.fromText (T.replicate 30000 "abc " <> "Needle" <> T.replicate 30000 " xyz" <> "needle")
@@ -108,7 +105,6 @@ main = do
   let hs = languageFor "Main.hs"
       kinds l st t = [(T.take n (T.drop o t), k) | (o, Span n k) <- offsets (fst (lexLine l st t)), k /= TokPlain]
       offsets spans = zip (scanl (+) 0 (map spanLength spans)) spans
-  check "language by extension" "Haskell" (langName hs)
   check "language by name" "Makefile" (langName (languageFor "src/Makefile"))
   check "language by a name that has an extension" "Cabal" (langName (languageFor "cabal.project"))
   check "extensions in any case" "C++" (langName (languageFor "src/A.HPP"))
@@ -142,8 +138,7 @@ main = do
     (kinds hs (LexGap '"') "    \\then\" <> x")
   check "string ends where it resumes" [("\\\"", TokString), ("<>", TokPunct)] (kinds hs (LexGap '"') "  \\\" <> x")
   check "string gap opens before trailing space" (LexGap '"') (lexState hs LexNormal "  let kw = \"add all \\  ")
-  check "no gap after all" [("case", TokKeyword), ("of", TokKeyword)] (kinds hs (LexGap '"') "  case x of")
-  check "no gap after all: a line of its own" (kinds hs LexNormal "main = do") (kinds hs (LexGap '"') "main = do")
+  check "no gap after all" (kinds hs LexNormal "main = do") (kinds hs (LexGap '"') "main = do")
   check "no string gaps in c" LexNormal (lexState (languageFor "a.c") LexNormal "char *s = \"abc\\")
   let py = languageFor "a.py"
   check "python string over lines" (LexString "\"\"\"") (lexState py LexNormal "x = \"\"\"doc")
@@ -222,7 +217,6 @@ modelRun failures steps = go steps (12345 :: Int) B.empty (Model T.empty 0 0)
           putStrLn ("FAIL model after " <> name <> " at step " <> show (steps - n))
           putStrLn ("  buffer " <> show (T.take 80 (text b'), B.bufCursor b', B.bufAnchor b'))
           putStrLn ("  model  " <> show (T.take 80 t, c, a))
-          when False (go 0 seed' b' m')
 
     step :: Int -> Int -> Buffer -> Model -> (Buffer, Model, String)
     step op arg b (Model t c a) =

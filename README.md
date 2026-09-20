@@ -4,6 +4,8 @@ A small, fast source code editor. The text lives in a
 [nano-rope](https://github.com/goolord/nano-rope) and the window is
 [nano-ui](https://github.com/goolord/nano-ui) on SDL3.
 
+<img width="1101" height="800" alt="{184EF29C-DC82-48AA-A80C-51049B9DED4E}" src="https://github.com/user-attachments/assets/0464941a-5166-4599-9951-72abdee6889d" />
+
 ```sh
 cabal run ned -- path/to/file.hs
 ```

@@ -7,6 +7,7 @@
 module Ned.FileTree.Draw
   ( -- * Measurements
     treeHeaderPad
+  , treeHeaderHeight
   , treeBarW
   , rowHeight
   , maxScroll
@@ -67,6 +68,11 @@ treeHeaderPad = treePad + treeChevron + 2
 -- | A row is scanned rather than read, so it sits tighter than a line of text.
 rowHeight :: FontMetrics -> Float
 rowHeight fm = fromIntegral (ceiling (fmLineHeight fm) :: Int) + 2
+
+-- | The panel's header: the root's name, with the header's own padding above
+-- and below it. The pane grid's drag picks the pane by this strip.
+treeHeaderHeight :: FontMetrics -> Float
+treeHeaderHeight fm = fromIntegral (ceiling (fmLineHeight fm) :: Int) + 12
 
 maxScroll :: Int -> Double -> Double
 maxScroll rowCount viewRows = max 0 (fromIntegral rowCount - viewRows)

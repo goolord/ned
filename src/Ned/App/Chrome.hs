@@ -174,19 +174,24 @@ editorBar cmds app = case appBar app of
         -- Search as the query is typed, from where the selection starts.
         cmdOnBuffer cmds (\b -> B.setCursor False (fst (B.selectionRange b)) b)
         cmdFind cmds True
-      exact <- checkbox "Match case" (edFindExact (appEditor app))
+      exact <- barCheckbox "Match case" (edFindExact (appEditor app))
       when (exact /= edFindExact (appEditor app)) (cmdOnEditor cmds (\e -> e {edFindExact = exact}))
-      whenM (buttonWith tight "Previous") (cmdFind cmds False)
-      whenM (buttonWith tight "Next") (cmdFind cmds True)
-      whenM (buttonWith tight "Close") (cmdCloseBar cmds)
+      separator
+      -- The buttons are subtle: a toolbar row does not want three filled
+      -- grey chips, only the press and the hover to be seen.
+      styled subtle $ do
+        whenM (buttonWith (tight . alignMid) "Previous") (cmdFind cmds False)
+        whenM (buttonWith (tight . alignMid) "Next") (cmdFind cmds True)
+        whenM (buttonWith (tight . alignMid) "Close") (cmdCloseBar cmds)
       enter <- pressedEnter
       shift <- heldShift
       when enter (cmdFind cmds (not shift))
   BarGoto ->
     barRow "Go to line" (appGotoText app) $ \txt -> do
       when (txt /= appGotoText app) (cmdModify cmds (\a -> a {appGotoText = txt}))
-      go <- buttonWith tight "Go"
-      whenM (buttonWith tight "Close") (cmdCloseBar cmds)
+      separator
+      go <- styled subtle (buttonWith (tight . alignMid) "Go")
+      whenM (styled subtle (buttonWith (tight . alignMid) "Close")) (cmdCloseBar cmds)
       enter <- pressedEnter
       when (enter || go) $
         case readMaybe (T.unpack (T.strip txt)) of
@@ -203,15 +208,30 @@ editorBar cmds app = case appBar app of
       uiIO $ do
         focus <- getFocusId ctx
         when (focus /= respId resp) $ writeIORef (ctxFocusId ctx) (respId resp)
-    -- A bar: its name, its field, and whatever comes after the field.
+    -- A bar: its name, its field, and whatever comes after the field. The
+    -- name is set at full strength and semibold, the way the tree's header
+    -- and the status bar's file are, so the bar reads as naming what it is
+    -- for rather than as one muted place more among the grey.
     barRow name value rest = do
       separator
       rowWith (padXY 12 5 . tight . fillW . gap 8 . alignMid) $ do
-        labelWith (tight . fontMuted) name
+        labelWith (tight . fontSemiBold . alignMid) name
         (resp, txt) <- textInput' value
         holdFocus resp
         when (respPressed resp) (cmdModify cmds (\a -> a {appBarFocus = True}))
         rest txt
+
+-- | A checkbox on the bar's middle line. The toolkit's own 'checkbox' takes no
+-- layout, so it cannot be told to centre itself in a row whose height is set by
+-- the taller find field; a column that fills the row and pads equally above and
+-- below puts it where the row's 'alignMid' means it to go.
+barCheckbox :: Text -> Bool -> NanoUI Bool
+barCheckbox caption checked =
+  columnWith (tight . gap 0 . fillH) $ do
+    spacer Fit (Grow 1)
+    on <- checkbox caption checked
+    spacer Fit (Grow 1)
+    pure on
 
 --------------------------------------------------------------------------------
 -- The status bar

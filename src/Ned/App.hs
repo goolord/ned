@@ -29,14 +29,15 @@ import qualified Data.Text as T
 import GHC.Clock (getMonotonicTime)
 import NanoUI
 import NanoUI.Backend.Sdl
-import NanoUI.Context (markDirty)
+import NanoUI.Context (Context (..), markDirty)
 import NanoUI.Monad (askContext, askHost, askInput)
 import Ned.App.Chrome
 import Ned.App.Commands
 import Ned.App.State
 import qualified Ned.Buffer as B
 import Ned.Editor
-import Ned.FileTree (fileTreePanel, ftPressed)
+import Ned.FileTree (rootName, fileTreePanel, ftPressed)
+import Ned.FileTree.Draw (treeHeaderHeight)
 import qualified Ned.FileTree as FT
 import Ned.Highlight (langName)
 import Ned.Panes (treeEditorGrid)
@@ -180,7 +181,7 @@ appView ref = do
         -- The tree pane: the panel, and what a frame's clicks on it left
         -- behind. The find bar's field takes the keyboard from the tree as it
         -- does from the editor, so the arrows do not walk both at once.
-        treePane respRef = do
+        treePane respRef pctx = do
           (resp, ft, opened) <-
             fileTreePanel
               (appTreeFocus app1 && not (appBarFocus app1) && unblocked)
@@ -199,7 +200,14 @@ appView ref = do
           for_ opened $ \path -> do
             modify (\a -> a {appTreeFocus = False})
             guarded (PendingOpenPath path)
-          pure (PaneView "" False Nothing)
+          -- The pane grid moves the pane by the pick it is told about; the
+          -- tree's is its header, the strip of the pane the root's name
+          -- stands on, so a hold there drags the pane as the grid's own bars
+          -- are dragged and nothing else does.
+          hdrCtx <- askContext
+          let (Rect px py pw _) = pgcRect pctx
+              hh = treeHeaderHeight (ctxFontMetrics hdrCtx)
+          pure (PaneView (rootName ft) False (Just (Rect px py pw hh)))
         -- The editor pane. Putting the tree away makes this pane the whole
         -- row: the grid calls that maximizing it, and keeps the split where
         -- it was, so showing the tree again brings it back at its width.

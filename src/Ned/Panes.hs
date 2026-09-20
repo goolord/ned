@@ -63,7 +63,7 @@ treeEditorNext = treeEditorSplit + 1
 -- was left at when it is put away and taken up again.
 treeEditorGrid ::
   Ui :> es =>
-  Eff es PaneView ->
+  (PaneGridCtx es -> Eff es PaneView) ->
   (PaneGridCtx es -> Eff es PaneView) ->
   Eff es PaneGridResponse
 treeEditorGrid treePane editorPane = do
@@ -81,7 +81,7 @@ treeEditorGrid treePane editorPane = do
         { pgSpacing = paneSpacing
         , pgMinSize = minTreeWidth
         , pgLeeway = paneLeeway
-        , pgViewPane = \pid pctx -> if pid == treePaneId then treePane else editorPane pctx
+        , pgViewPane = \pid pctx -> if pid == treePaneId then treePane pctx else editorPane pctx
         }
   where
     -- The tree's share of the row: the width the tree has always started at,

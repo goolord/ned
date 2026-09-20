@@ -1,17 +1,18 @@
--- | The file tree beside the editor: the folder the open file is in, with its
--- directories opening and closing and a click on a file opening it.
+-- | One frame of the file tree beside the editor: what the pointer landed on,
+-- which folders that opens or closes, what the keys walked to, and where the
+-- rows ended up scrolled to.
 --
--- Like the editor, it is a nano-ui custom widget that scrolls by itself and
--- whose draw ops are keyed on everything it reads, so a frame in which
--- nothing changed builds nothing.
+-- Like the editor it scrolls by itself, and reads a folder the first time it
+-- is opened, so nothing walks a tree nobody looked at.
 --
--- This module is the panel: it turns a frame's pointer and keys into the
--- changes "Ned.FileTree.Model" knows how to make, and hands what comes of
--- that to "Ned.FileTree.Draw". The application above it sees a tree, a
--- response to hang a menu on, and a file that was asked for.
+-- Nothing here draws. The panel the rows sit in, and the ops they build, are
+-- in "Ned.View"; this turns a frame's pointer and keys into the changes
+-- "Ned.FileTree.Model" knows how to make, and hands back the tree, a file that
+-- was asked for, and what the drawing needs to know besides.
 module Ned.FileTree
-  ( -- * The panel
-    fileTreePanel
+  ( -- * One frame
+    treeFrame
+  , TreeFrame (..)
 
     -- * The tree it is given
   , FileTree (..)
@@ -29,60 +30,44 @@ module Ned.FileTree
   ) where
 
 import Control.Monad (when)
-import Data.Maybe (fromMaybe)
 import Data.Primitive.SmallArray (indexSmallArray, sizeofSmallArray)
 import Effectful (Eff, type (:>))
 -- 'Row' here is a row of the tree, not nano-ui's layout direction.
 import NanoUI hiding (Row)
-import NanoUI.Context (Context (..), getPrevRect)
-import NanoUI.Input (UiCursorKind (..))
-import NanoUI.Monad (askContext, askInput)
-import Ned.FileTree.Draw
+import NanoUI.Monad (askInput)
+import Ned.FileTree.Geometry
 import Ned.FileTree.Model
 import Ned.Text (clamp)
 import Ned.Widget
 
 --------------------------------------------------------------------------------
--- The panel
+-- One frame
 --------------------------------------------------------------------------------
 
--- | The panel: the root's name, the rows, and the bar that resizes it. Pass
--- the tree and keep the result; the response is for hanging a context menu
--- on, and the path is a file the rows were asked to open.
---
--- It takes the keyboard when @wantFocus@ is set, which the application does
--- while the tree is the thing last clicked on. The bar that resizes it is the
--- pane grid's, in "Ned.Panes"; this is only what the pane holds.
-fileTreePanel :: Ui :> es => Bool -> Maybe FilePath -> FileTree -> Eff es (Response, FileTree, Maybe FilePath)
-fileTreePanel wantFocus current ft0 =
-  columnWith (tight . gap 0 . fillW . fillH) $ do
-    -- The padding goes on last: 'tight' before it would take it off again,
-    -- and the name is meant to start where the rows' own names do. It is
-    -- set at full strength and semibold: it names the thing the panel is
-    -- about, and muted grey had it reading as a row that could not be
-    -- clicked.
-    rowWith (padXY treeHeaderPad 6 . tight . fillW . gap 4 . alignMid) $
-      labelWith (tight . fontSemiBold) (rootName ft0)
-    separator
-    treeRows wantFocus current ft0
+-- | What a frame of the tree worked out: the tree as the frame leaves it, a
+-- file its rows were asked to open, and the answers the drawing needs that the
+-- tree itself does not hold.
+data TreeFrame = TreeFrame
+  { tfTree :: !FileTree
+  , tfOpened :: !(Maybe FilePath)
+  -- ^ A file a click or an Enter asked for.
+  , tfHovered :: !Int
+  -- ^ The row the pointer is over, or -1.
+  , tfThumbHot :: !Bool
+  -- ^ Whether the pointer is over the scrollbar, or holding its thumb.
+  , tfViewRows :: !Double
+  -- ^ How many rows the view holds.
+  }
 
--- | The rows, in one widget that scrolls itself.
-treeRows :: Ui :> es => Bool -> Maybe FilePath -> FileTree -> Eff es (Response, FileTree, Maybe FilePath)
-treeRows wantFocus current ft0 = do
-  wid <- nextId
-  ctx <- askContext
+-- | Run one frame of the tree over the rectangle its rows are laid out in.
+-- @wantFocus@ says the tree has the keyboard, which the application gives it
+-- while the tree is the thing last clicked on; @lineH@ is the height of a row,
+-- which whoever lays it out has worked out from the font already.
+treeFrame :: Ui :> es => Bool -> Rect -> Float -> FileTree -> Eff es TreeFrame
+treeFrame wantFocus rect lineH ft0 = do
   inp <- askInput
-  let fm = ctxFontMetrics ctx
-      lineH = rowHeight fm
-  prev <- uiIO (getPrevRect ctx wid)
-  let rect = fromMaybe (Rect 0 0 defaultTreeWidth 600) prev
-      viewRows = realToFrac (rectH rect / lineH) :: Double
-
-  -- The tree keeps the keyboard for as long as it is the thing being used, as
-  -- the editor does with its own.
-  when wantFocus $ uiIO (takeFocus ctx wid)
-
-  let mouse = inputMousePos inp
+  let viewRows = realToFrac (rectH rect / lineH) :: Double
+      mouse = inputMousePos inp
       inside = rectContains rect mouse
       localY = v2Y mouse - rectY rect
       rowsNow = ftRows ft0
@@ -155,35 +140,17 @@ treeRows wantFocus current ft0 = do
             ftReveal = ftReveal ftKeys && sel1 < 0 && not (null (ftPending ftKeys))
           , ftPressed = pressedNow
           }
-      opened = maybe openedByKey Just openedByMouse
 
       hovered = if inside && not overBar then floor (scroll1 + realToFrac (localY / lineH)) else -1
-      scene =
-        Scene
-          { scRows = rows1
-          , scVersion = ftVersion ft1
-          , scScroll = scroll1
-          , scLineH = lineH
-          , scViewRows = viewRows
-          , scSelected = ftSelected ft1
-          , scCurrent = current
-          , scHovered = if hovered >= 0 && hovered < count1 then hovered else -1
-          , scFocused = wantFocus
-          , scThumbHot = overBar || isThumb (ftDrag ft1)
-          }
 
-  (resp, ()) <-
-    customWidgetWithId
-      wid
-      defaultCustomWidgetSpec
-        { widgetLayout = (grow . fillH) defaultLayout
-        , widgetDraw = \cdc r -> drawTree cdc scene r
-        , widgetContent = sceneKey scene
-        , widgetCursor = Just (const UiCursorDefault)
-        , widgetFocusable = True
-        , widgetDamageSlop = 0
-        }
-  pure (resp, ft1, opened)
+  pure
+    TreeFrame
+      { tfTree = ft1
+      , tfOpened = maybe openedByKey Just openedByMouse
+      , tfHovered = if hovered >= 0 && hovered < count1 then hovered else -1
+      , tfThumbHot = overBar || isThumb (ftDrag ft1)
+      , tfViewRows = viewRows
+      }
   where
     isThumb = \case DragThumb _ -> True; _ -> False
 

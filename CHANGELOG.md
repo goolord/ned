@@ -16,7 +16,9 @@
   behind them, and leaves a setting off while it is at its default.
 * The code is in layers that only reach downward: the text and the lexer
   know nothing of a window, the editor and the file tree know nothing of the
-  application, and what colour anything is is said in one place.
+  application, and what colour anything is is said in one place. Everything
+  that draws is one module over the lot of them, so nothing that keeps state
+  or answers a key is written in the same place as the ops that paint it.
 * Typing that comes to nothing (a Ctrl+Alt chord, an empty paste) no longer
   deletes the selection; the go-to-line field takes the keyboard back when it
   is pressed; and a press on the file tree takes it from the find bar's field.

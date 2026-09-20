@@ -9,7 +9,7 @@
 --
 -- Nothing here knows about nano-ui, the pointer or the keyboard. Every way
 -- the tree can change is a function from 'FileTree' to 'FileTree', so the
--- panel in "Ned.FileTree" is left saying which one a frame calls for.
+-- frame in "Ned.FileTree" is left saying which one a frame calls for.
 module Ned.FileTree.Model
   ( -- * The tree
     FileTree (..)

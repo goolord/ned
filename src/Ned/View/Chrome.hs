@@ -3,8 +3,8 @@
 --
 -- None of this edits anything itself. Every row and button asks for a
 -- 'Commands', so what a menu says and what it does sit on the same line, and
--- the frame in "Ned.App" is left to say where the bars go.
-module Ned.App.Chrome
+-- the frame in "Ned.View" is left to say where the bars go.
+module Ned.View.Chrome
   ( -- * The menus
     menuBar
   , appMenus
@@ -69,7 +69,6 @@ menuBar open setOpen swallow setSwallow entries = do
         when (inputMousePressed pointer && onButton) (setSwallow title)
     flex
   when (inputMouseReleased pointer && not (T.null swallow)) (setSwallow "")
-
 
 -- | A row of a menu, greyed when it does not apply. Picking one closes the
 -- menu bar's menu, which a context menu has none of and loses nothing by.

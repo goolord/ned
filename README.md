@@ -91,6 +91,13 @@ The modules stack, and a module only reaches down. The text knows nothing of
 a window, the widgets know nothing of the application, and the application is
 the only thing that knows there is a file on disk or a menu over it.
 
+Everything that draws is in the `Ned.View` modules at the top, and nothing
+else draws at all: they place every widget and build every draw op, while what
+the modules under them hold is state and what is done to it, so none of those
+has to know how any of it looks. A frame of the editor or of the tree works
+itself out down there and hands back what it worked out; the view is what turns
+that into ops.
+
 | Module | Holds |
 | --- | --- |
 | **The text** | *Pure: no window, no toolkit* |
@@ -104,23 +111,26 @@ the only thing that knows there is a file on disk or a menu over it.
 | `Ned.Theme` | What colour everything is |
 | `Ned.Widget` | What the two widgets share: the scrollbar, content keys, the keyboard |
 | `Ned.Sdl` | The two SDL calls nano-ui-sdl has none of |
-| **The editor** | |
-| `Ned.Editor` | The frame: keys, pointer, wheel, scroll, lexer, draw |
+| **The editor** | *State, and what a frame works out: no drawing* |
+| `Ned.Editor` | One frame: keys, pointer, wheel, scroll, lexer, caret |
 | `Ned.Editor.Types` | What it keeps between frames |
 | `Ned.Editor.Geometry` | Cells, the gutter, how much of the document the view holds |
 | `Ned.Editor.Keys` | What each key does to the text, and the clipboard |
-| `Ned.Editor.Draw` | The draw ops of one frame |
 | **The file tree** | |
-| `Ned.FileTree` | The panel: pointer and keys onto the tree below |
+| `Ned.FileTree` | One frame: pointer and keys onto the tree below |
 | `Ned.FileTree.Model` | The tree as data, and reading directories |
-| `Ned.FileTree.Draw` | Measurements, and the draw ops of the rows on screen |
+| `Ned.FileTree.Geometry` | How tall a row is, how far it indents, the lane its scrollbar has |
 | **The application** | |
 | `Ned.File` | Reading a file in and writing it back as it came |
-| `Ned.App` | One frame of the whole window, and the entry point |
+| `Ned.App` | The entry point: a window, and the frames |
 | `Ned.App.State` | What the application is between frames |
 | `Ned.App.Commands` | Everything the application can be asked to do |
-| `Ned.App.Chrome` | The menu bar, the find bar and the status bar |
-| `Ned.Panes` | The pane grid the tree and the editor sit in, and the bar between them |
+| `Ned.App.Frame` | The dialogs, the chords and the title a frame answers to |
+| **The drawing** | *Everything that draws, and nothing that does not* |
+| `Ned.View` | One frame of the window, and the pane grid its two panes share |
+| `Ned.View.Editor` | The editor's three widgets, and the draw ops of one frame |
+| `Ned.View.Tree` | The tree's panel, and the draw ops of the rows on screen |
+| `Ned.View.Chrome` | The menu bar, the find bar and the status bar |
 | `Ned.Selftest` | Drives the application in a hidden window |
 
 ## Building

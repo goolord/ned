@@ -5,9 +5,9 @@
 -- one, put the tree away -- and each of them works the same way: read the
 -- state, work out the next one, write it back.
 --
--- Gathering them behind one record leaves the frame in "Ned.App" saying only
--- when each is asked for, and lets the menus be written in "Ned.App.Chrome",
--- beside the bar they hang from, rather than inside the frame that draws it.
+-- Gathering them behind one record leaves the frame in "Ned.View" saying only
+-- when each is asked for, and lets a menu row be written beside the bar it
+-- hangs from rather than inside the frame that draws it. Nothing here draws.
 module Ned.App.Commands
   ( Commands (..)
   , commands

@@ -1,20 +1,21 @@
--- | The editor widget: three custom nano-ui widgets side by side (line
--- numbers, text, scrollbar) that draw the lines of the rope that are on
--- screen, and turn the frame's keys and pointer into edits.
+-- | One frame of the editor, as far as the editor can work it out on its own:
+-- what the keys did to the text, what the pointer took hold of, where the view
+-- ended up, and how far the lexer has to run to reach the top of it.
 --
 -- It scrolls by itself, in lines, and asks the rope for the lines it shows and
 -- no others, so a frame costs the same in a document of ten lines as in one of
--- ten million. Its drawing is keyed on everything it reads: a frame in which
--- none of that changed builds no draw ops and repaints nothing.
+-- ten million.
 --
--- This module is the frame itself, and the door on the rest: the state is in
--- "Ned.Editor.Types", the measurements in "Ned.Editor.Geometry", what the
--- keys do in "Ned.Editor.Keys", and the drawing in "Ned.Editor.Draw". Read
--- 'editorView' top to bottom and it says what one frame of the editor does,
--- in order: keys, pointer, wheel, scroll, lexer, then draw.
+-- Nothing here draws. The three widgets the editor is made of, and the ops
+-- they build, are in "Ned.View"; what one of their frames runs on is here, the
+-- state it runs on is in "Ned.Editor.Types", the measurements in
+-- "Ned.Editor.Geometry", and what the keys do in "Ned.Editor.Keys". Read
+-- 'editorFrame' top to bottom and it says what one frame of the editor does,
+-- in order: keys, pointer, wheel, scroll, lexer, caret.
 module Ned.Editor
-  ( -- * The widget
-    editorView
+  ( -- * One frame
+    editorFrame
+  , EditorFrame (..)
 
     -- * Its state
   , Editor (..)
@@ -33,53 +34,43 @@ import Control.Monad (when)
 import Data.Maybe (isNothing)
 import Effectful (Eff, type (:>))
 import NanoUI
-import NanoUI.Context (Context (..), getPrevRect)
-import NanoUI.Input (UiCursorKind (..))
 import NanoUI.Monad (askContext, askInput, uiTime)
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
-import Ned.Editor.Draw
 import Ned.Editor.Geometry
 import Ned.Editor.Keys
 import Ned.Editor.Types
 import Ned.Highlight
-import Ned.Text (clamp, foldCase)
+import Ned.Text (clamp)
 import Ned.Widget
 
 --------------------------------------------------------------------------------
 -- One frame
 --------------------------------------------------------------------------------
 
--- | The editor, filling the space its parent gives it. Pass the editor and
--- keep the result; the response is for hanging a context menu on. It takes
--- the keyboard when @wantFocus@ is set, which an application clears while a
--- field of its own is being typed into.
-editorView :: Ui :> es => Bool -> Editor -> Eff es (Response, Editor)
-editorView wantFocus ed0 = do
-  -- Three widgets side by side: the line numbers, the text and the scrollbar.
-  -- nano-ui runs a frame for a pointer that only moved when it came over
-  -- another widget, and takes the cursor's shape from the widget under it, so
-  -- this is what changes the cursor the moment it crosses onto the scrollbar.
-  -- The text's widget is the one with the keyboard.
-  widGutter <- nextId
-  wid <- nextId
-  widBar <- nextId
+-- | What a frame of the editor worked out: the editor as the frame leaves it,
+-- and the answers the drawing needs that the editor itself does not hold.
+data EditorFrame = EditorFrame
+  { efEditor :: !Editor
+  , efGeometry :: !Geometry
+  -- ^ The grid the frame was laid out on.
+  , efLexStart :: !LexState
+  -- ^ The state the lexer is in at the first line on screen.
+  , efCaretOn :: !Bool
+  -- ^ Whether the caret shows this frame.
+  , efThumbHot :: !Bool
+  -- ^ Whether the pointer is over the scrollbar, or holding its thumb.
+  }
+
+-- | Run one frame of the editor over the rectangle it is laid out in.
+-- @focused@ says the editor has the keyboard, which an application clears
+-- while a field of its own is being typed into; @cellW@ and @fm@ are the font
+-- it is set in, which whoever lays it out has resolved already.
+editorFrame :: Ui :> es => Bool -> Rect -> Float -> FontMetrics -> Editor -> Eff es EditorFrame
+editorFrame focused rect cellW fm ed0 = do
   ctx <- askContext
   inp <- askInput
   now <- uiTime
-  (fm, _) <- uiIO (ctxResolveFont ctx (edFontSize ed0) WeightNormal FontStyleNormal FontMono)
-  cellW <- uiIO (cellWidth fm)
-  -- The whole editor, from where its three parts were last frame.
-  prevGutter <- uiIO (getPrevRect ctx widGutter)
-  prevBar <- uiIO (getPrevRect ctx widBar)
-  let rect = case (prevGutter, prevBar) of
-        (Just (Rect gx gy _ gh), Just (Rect bx _ bw _)) -> Rect gx gy (bx + bw - gx) gh
-        _ -> Rect 0 0 800 600
-
-  -- Tab would walk the focus off to the menu bar, and a click on a menu takes
-  -- it there; the editor takes it back for as long as it is wanted.
-  when wantFocus $ uiIO (takeFocus ctx wid)
-  let focused = wantFocus
 
   let buf0 = edBuffer ed0
   buf1 <- if focused then applyKeys ctx inp (edViewLines ed0) buf0 else pure buf0
@@ -200,47 +191,25 @@ editorView wantFocus ed0 = do
       caretOn = focused && even phase
   when focused $ wakeAfter (epoch + fromIntegral (phase + 1) * blinkPeriod - now + 0.005)
 
-  let ed1 =
-        ed0
-          { edBuffer = buf2
-          , edScrollY = scrollY3
-          , edScrollX = scrollX3
-          , edDrag = drag1
-          , edBlinkEpoch = epoch
-          , edLexCache = lexCache
-          , edReveal = False
-          , edViewLines = max 1 (floor viewL - 1)
-          , edPressed = (inputMousePressed inp || inputMouseRightPressed inp) && inside
-          }
-      scene =
-        Scene
-          { scBuffer = buf2
-          , scLang = edLang ed1
-          , scLexStart = lexStart
-          , scScrollY = scrollY3
-          , scScrollX = scrollX3
-          , scFontSize = edFontSize ed1
-          , scGeometry = g
-          , scCaretOn = caretOn
-          , scFind = if edFindExact ed1 then edFind ed1 else foldCase (edFind ed1)
-          , scFindExact = edFindExact ed1
-          , scThumbHot = overBar || isThumb drag1
-          , scWhitespace = edShowWhitespace ed1
-          }
-  let part which pointer layout =
-        defaultCustomWidgetSpec
-          { widgetLayout = layout defaultLayout
-          , widgetDraw = \_ r -> drawScene which scene r
-          , widgetContent = sceneKey which scene
-          , widgetCursor = Just (const pointer)
-          , widgetDamageSlop = 0
-          }
-  resp <- rowWith (grow . gap 0 . padAll 0) $ do
-    (respGutter, ()) <- customWidgetWithId widGutter (part PartGutter UiCursorDefault (fillH . fixedW (gGutterW g)))
-    (respText, ()) <- customWidgetWithId wid (part PartText UiCursorText grow) {widgetFocusable = True}
-    _ <- customWidgetWithId widBar (part PartBar UiCursorDefault (fillH . fixedW scrollBarW))
-    pure (respGutter <> respText)
-  pure (resp, ed1)
+  pure
+    EditorFrame
+      { efEditor =
+          ed0
+            { edBuffer = buf2
+            , edScrollY = scrollY3
+            , edScrollX = scrollX3
+            , edDrag = drag1
+            , edBlinkEpoch = epoch
+            , edLexCache = lexCache
+            , edReveal = False
+            , edViewLines = max 1 (floor viewL - 1)
+            , edPressed = (inputMousePressed inp || inputMouseRightPressed inp) && inside
+            }
+      , efGeometry = g
+      , efLexStart = lexStart
+      , efCaretOn = caretOn
+      , efThumbHot = overBar || isThumb drag1
+      }
   where
     blinkPeriod = 0.53 :: Double
     isThumb = \case DragThumb _ -> True; _ -> False

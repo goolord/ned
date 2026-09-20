@@ -20,6 +20,7 @@ import Ned.App
 import qualified Ned.FileTree as FT
 import Ned.Editor (Editor (..), cellWidth, defaultFontSize)
 import Ned.Sdl (setWindowSize)
+import Ned.View (appView)
 import System.Directory (createDirectoryIfMissing, makeAbsolute)
 import System.Exit (exitFailure)
 import System.FilePath (equalFilePath, (</>))

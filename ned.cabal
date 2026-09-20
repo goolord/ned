@@ -39,6 +39,9 @@ library
     -- The modules stack, and a module only reaches down: the text knows
     -- nothing of a window, the widgets know nothing of the application, and
     -- the application is the only one that knows there is a file on disk.
+    -- Everything that draws is in "Ned.View", at the top: what the others
+    -- hold is state and what is done to it, which is why none of them has to
+    -- know how any of it looks.
     exposed-modules:
         -- The text, which needs no window.
         Ned.Text
@@ -53,25 +56,29 @@ library
         Ned.Widget
         Ned.Sdl
 
-        -- The editor widget.
+        -- The editor's state, and what a frame of it works out.
         Ned.Editor
         Ned.Editor.Types
         Ned.Editor.Geometry
         Ned.Editor.Keys
-        Ned.Editor.Draw
 
         -- The file tree beside it.
         Ned.FileTree
         Ned.FileTree.Model
-        Ned.FileTree.Draw
+        Ned.FileTree.Geometry
 
         -- The application around both.
         Ned.File
         Ned.App
         Ned.App.State
         Ned.App.Commands
-        Ned.App.Chrome
-        Ned.Panes
+        Ned.App.Frame
+
+        -- The drawing, over the lot.
+        Ned.View
+        Ned.View.Editor
+        Ned.View.Tree
+        Ned.View.Chrome
         Ned.Selftest
     build-depends:
         base ^>=4.22.0.0,

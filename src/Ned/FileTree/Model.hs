@@ -73,7 +73,8 @@ data Drag
   = DragNone
   | -- | The scrollbar's thumb, this far below its top.
     DragThumb !Float
-  | -- | The bar between the tree and the editor, this far from its left edge.
+  | -- | The bar between the tree and the editor, this far from the tree's
+    -- edge, which is where the width follows the pointer from.
     DragWidth !Float
   deriving (Eq)
 

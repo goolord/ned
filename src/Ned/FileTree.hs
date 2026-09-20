@@ -238,15 +238,21 @@ splitterBar ft0 = do
       mouse = inputMousePos inp
       over = rectContains rect mouse
       ft1
-        | inputMousePressed inp && over = ft0 {ftDrag = DragWidth (v2X mouse - rectX rect)}
+        | inputMousePressed inp && over =
+            -- Where the pointer is from the tree's edge when it takes the bar:
+            -- a drag puts the edge there again, wherever the pointer goes.
+            ft0 {ftDrag = DragWidth (v2X mouse - ftWidth ft0)}
         | not (inputMouseDown inp) = case ftDrag ft0 of
             DragWidth _ -> ft0 {ftDrag = DragNone}
             _ -> ft0
         | otherwise = case ftDrag ft0 of
-            -- The layout follows a frame behind, so the width moves by what
-            -- the pointer is from where it took the bar, and settles there.
+            -- The width follows the pointer from where it took the bar. The
+            -- bar's own rect is a frame behind the width and moves with it, so
+            -- measuring against it would chase itself; the press's offset from
+            -- the edge does not, and the bar settles under the pointer as the
+            -- layout catches up.
             DragWidth grab ->
-              ft0 {ftWidth = clamp minTreeWidth maxTreeWidth (ftWidth ft0 + (v2X mouse - rectX rect - grab))}
+              ft0 {ftWidth = clamp minTreeWidth maxTreeWidth (v2X mouse - grab)}
             _ -> ft0
       hot = over || isWidth (ftDrag ft1)
   _ <-

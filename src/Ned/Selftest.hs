@@ -355,16 +355,22 @@ selftestIn dir mfile say = do
     click 60 70
     expectRows "a folder closed by a press on it" ["sub", "outer.txt"]
 
-    -- The bar between the tree and the text drags to resize it.
+    -- The bar between the tree and the text drags to resize it. The drag goes
+    -- a step at a time, as a real one does: the width has to track the pointer
+    -- the whole way, not run away from it as it does when each step measures
+    -- against the bar the last frame drew, which itself moves with the width.
     let widthNow = FT.ftWidth <$> treeNow
     was <- widthNow
     frame base {inputMousePos = V2 (was + 2) 300, inputMouseDown = True, inputMousePressed = True}
-    frame base {inputMousePos = V2 (was + 102) 300, inputMouseDown = True}
-    frame base {inputMousePos = V2 (was + 102) 300, inputMouseReleased = True}
+    let dragTo step = do
+          frame base {inputMousePos = V2 (was + 2 + fromIntegral step) 300, inputMouseDown = True}
+          wider <- widthNow
+          when (abs (wider - (was + fromIntegral step)) > 1) $
+            fail (printf "selftest: the tree's bar at a drag of %d is %.0f wide" (step :: Int) wider)
+    forM_ [10, 20 .. 100] dragTo
+    forM_ [90, 80 .. 0] dragTo
+    frame base {inputMousePos = V2 (was + 2) 300, inputMouseReleased = True}
     idle
-    wider <- widthNow
-    when (abs (wider - (was + 100)) > 1) $
-      fail (printf "selftest: dragging the tree's bar took it from %.0f to %.0f" was wider)
     modifyIORef' ref (\a -> a {appTree = (appTree a) {FT.ftWidth = was}})
     idle
 

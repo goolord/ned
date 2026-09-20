@@ -7,22 +7,24 @@ import Control.Exception (SomeException, try)
 import Foreign.C.Types (CBool (..), CInt (..))
 import Foreign.Ptr (Ptr, castPtr)
 import Control.Monad (forM_, unless, void, when)
-import Data.IORef (newIORef, readIORef)
+import Data.Foldable (toList)
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import qualified Data.Text as T
 import qualified Data.Text.NanoRope as Rope
 import GHC.Clock (getMonotonicTime)
 import NanoUI
 import NanoUI.Backend.Sdl
-import NanoUI.Context (Context (..))
+import NanoUI.Context (Context (..), getWakeAt)
 import NanoUI.Input (UiCursorKind (..))
 import NanoUI.Runner (shouldRedrawFrame)
 import NanoUI.Testing (newPixelContext, uiCursorKind)
 import qualified Ned.Buffer as B
 import Ned.App
+import qualified Ned.FileTree as FT
 import Ned.View (Editor (..), cellWidth, defaultFontSize)
-import System.Directory (createDirectoryIfMissing)
+import System.Directory (createDirectoryIfMissing, makeAbsolute)
 import System.Exit (exitFailure)
-import System.FilePath ((</>))
+import System.FilePath (equalFilePath, (</>))
 import System.IO (hPutStrLn, stderr)
 import Text.Printf (printf)
 
@@ -47,8 +49,9 @@ foreign import ccall unsafe "SDL_SetWindowSize"
 selftestIn :: FilePath -> Maybe FilePath -> (String -> IO ()) -> IO ()
 selftestIn dir mfile say = do
   ctx0 <- newPixelContext >>= (`withTheme` tomorrowNightMinDarkTheme)
+  blankApp <- newAppIn
   tLoad0 <- getMonotonicTime
-  app0 <- maybe (pure newApp) (`openPath` newApp) mfile
+  app0 <- maybe (pure blankApp) (`openPath` blankApp) mfile
   tLoad1 <- B.lineCount (edBuffer (appEditor app0)) `seq` getMonotonicTime
   say (printf "loaded %d lines in %.1f ms" (B.lineCount (edBuffer (appEditor app0))) ((tLoad1 - tLoad0) * 1000))
   ref <- newIORef app0
@@ -73,6 +76,14 @@ selftestIn dir mfile say = do
 
     idle
     shot "01-open.bmp"
+
+    -- Everything below places the pointer by what the editor's own rectangle
+    -- holds, so the tree is put away first and taken up again at the end.
+    treeShown <- appTreeShown <$> readIORef ref
+    unless treeShown (fail "selftest: the file tree should start out shown")
+    chord 'b'
+    stillShown <- appTreeShown <$> readIORef ref
+    when stillShown (fail "selftest: Ctrl+B did not put the file tree away")
 
     -- A run drawn as one op has to end where its cells do, or the span after
     -- it is drawn over its tail. At the sizes zooming passes through, where
@@ -251,6 +262,111 @@ selftestIn dir mfile say = do
         reopened <- menuNow
         when (reopened /= "File") $ fail "selftest: a click on a closed menu's button did not open it"
         clickFile
+
+    -- The file tree, on a folder made here so that what it lists is known.
+    -- The tree is put on it by hand, as opening a file in it would be.
+    treeDir <- makeAbsolute (dir </> "tree")
+    createDirectoryIfMissing True (treeDir </> "sub")
+    writeFile (treeDir </> "sub" </> "inner.txt") "inner\n"
+    writeFile (treeDir </> "outer.txt") "outer\n"
+    -- A file the tree opens goes through the guard every other open does, and
+    -- the text here has changes; they are put down rather than asked about.
+    modifyIORef' ref $ \a ->
+      a {appEditor = (appEditor a) {edBuffer = B.markSaved (edBuffer (appEditor a))}}
+    chord 'b'
+    modifyIORef' ref (\a -> a {appTree = FT.setRoot treeDir (appTree a)})
+    idle
+    let treeNow = appTree <$> readIORef ref
+        names = map FT.rowName . toList . FT.ftRows <$> treeNow
+        expectRows what want = do
+          got <- names
+          when (got /= want) $
+            fail ("selftest: " <> what <> ": expected " <> show want <> ", got " <> show got)
+    expectRows "the tree's rows" ["sub", "outer.txt"]
+
+    -- A press inside the tree, below its rows, gives it the keyboard without
+    -- taking anything; from there the arrows walk it.
+    frame base {inputMousePos = V2 100 600, inputMouseDown = True, inputMousePressed = True}
+    frame base {inputMousePos = V2 100 600, inputMouseReleased = True}
+    idle
+    key plain KeyDown
+    key plain KeyRight
+    expectRows "a folder opened with Right" ["sub", "inner.txt", "outer.txt"]
+    shot "09-tree.bmp"
+    key plain KeyLeft
+    expectRows "a folder closed with Left" ["sub", "outer.txt"]
+
+    -- Enter on a file opens it, and the tree keeps the folder it is on.
+    key plain KeyRight
+    key plain KeyDown
+    key plain KeyEnter
+    idle
+    openedPath <- appPath <$> readIORef ref
+    unless (maybe False (equalFilePath (treeDir </> "sub" </> "inner.txt")) openedPath) $
+      fail ("selftest: Enter in the tree opened " <> show openedPath)
+    opened <- Rope.toText . B.bufRope . edBuffer . appEditor <$> readIORef ref
+    when (opened /= "inner\n") $ fail ("selftest: the tree opened a file holding " <> show opened)
+    root <- FT.ftRoot <$> treeNow
+    when (root /= treeDir) $ fail ("selftest: opening a file in the tree moved it to " <> show root)
+    expectRows "the tree after opening a file" ["sub", "inner.txt", "outer.txt"]
+    treeHasKeys <- appTreeFocus <$> readIORef ref
+    when treeHasKeys (fail "selftest: opening a file left the keyboard in the tree")
+    typed "x"
+    typedInto <- Rope.toText . B.bufRope . edBuffer . appEditor <$> readIORef ref
+    when (typedInto == opened) $ fail "selftest: the text took nothing after the tree opened it"
+
+    -- Every row of the tree is the one widget, so nano-ui runs no frame for a
+    -- pointer that crosses from one row to the next, and the tree has to ask
+    -- for one itself. Without that the row drawn under the pointer waits for
+    -- whatever wants the next frame, which between caret blinks is half a
+    -- second.
+    frame base {inputMousePos = V2 60 70}
+    wakeNow <- getMonotonicTime
+    wakeAt <- getWakeAt ctx
+    when (wakeAt <= 0 || wakeAt - wakeNow > 0.1) $
+      fail (printf "selftest: the tree asked for no frame with the pointer over it (in %.3f s)" (wakeAt - wakeNow))
+    -- The caret asks for a frame of its own at the next blink, which is up to
+    -- a blink away and would be taken for the tree's. Moving it first puts
+    -- that a whole blink off, so a frame wanted sooner than this is the
+    -- tree's and nothing else.
+    key plain KeyHome
+    frame base {inputMousePos = V2 900 400}
+    awayNow <- getMonotonicTime
+    awayWake <- getWakeAt ctx
+    when (awayWake > 0 && awayWake - awayNow < 0.1) $
+      fail (printf "selftest: the tree asked for a frame in %.3f s with the pointer off it" (awayWake - awayNow))
+
+    -- A press on a folder's row closes it again. The rows start under the
+    -- menu bar and the tree's own heading, a row every line height.
+    frame base {inputMousePos = V2 60 70, inputMouseDown = True, inputMousePressed = True}
+    frame base {inputMousePos = V2 60 70, inputMouseReleased = True}
+    idle
+    expectRows "a folder closed by a press on it" ["sub", "outer.txt"]
+
+    -- The bar between the tree and the text drags to resize it.
+    let widthNow = FT.ftWidth <$> treeNow
+    was <- widthNow
+    frame base {inputMousePos = V2 (was + 2) 300, inputMouseDown = True, inputMousePressed = True}
+    frame base {inputMousePos = V2 (was + 102) 300, inputMouseDown = True}
+    frame base {inputMousePos = V2 (was + 102) 300, inputMouseReleased = True}
+    idle
+    wider <- widthNow
+    when (abs (wider - (was + 100)) > 1) $
+      fail (printf "selftest: dragging the tree's bar took it from %.0f to %.0f" was wider)
+    modifyIORef' ref (\a -> a {appTree = (appTree a) {FT.ftWidth = was}})
+    idle
+
+    -- A folder holding more than the view does scrolls, and the wheel moves
+    -- it the way it moves the text.
+    forM_ [1 :: Int .. 60] $ \i -> writeFile (treeDir </> printf "file-%02d.txt" i) ""
+    modifyIORef' ref (\a -> a {appTree = FT.refresh (appTree a)})
+    idle
+    frame base {inputMousePos = V2 100 300, inputScroll = V2 0 4}
+    idle
+    scrolledTree <- FT.ftScroll <$> treeNow
+    when (scrolledTree <= 0) $ fail ("selftest: the wheel left the tree at " <> show scrolledTree)
+    shot "10-tree-scrolled.bmp"
+
     -- Resize the window a step at a time, as a drag of its border does, and
     -- time the frames; then the same under a view of one label, for what the
     -- toolkit itself spends on a new size.

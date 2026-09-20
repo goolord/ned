@@ -23,6 +23,11 @@ cabal run ned -- path/to/file.hs
 - Auto indent, Tab and Shift+Tab over a selection, tabs or spaces as the
   file already has them. Indentation is drawn, a dot a space and a rule a
   tab; View > Hide Indentation Marks turns that off.
+- A file tree beside the text, on the folder the open file is in, whose
+  folders open and close and whose files open on a click. Its right button
+  offers the folder above, a refresh, and closing everything; the bar between
+  it and the text drags to resize it, and Ctrl+B puts it away. A folder is
+  read the first time it is opened, so nothing walks a tree nobody looked at.
 - Incremental find with matches marked in the view, and go to line.
 - Zoom, a line number gutter, and a status bar with the position, language,
   indentation and line endings.
@@ -36,9 +41,10 @@ cabal run ned -- path/to/file.hs
 | Ctrl+Z, Ctrl+Y or Ctrl+Shift+Z | Undo, redo |
 | Ctrl+X, Ctrl+C, Ctrl+V | Cut, copy, paste; with nothing selected, cut and copy take the line |
 | Ctrl+A | Select all |
+| Ctrl+B | Show or hide the file tree |
 | Ctrl+F | Find; Enter and Shift+Enter go to the next and previous match, Esc closes |
 | Ctrl+G | Go to line |
-| Arrows, Home, End | Move; with Shift, select. Home goes to the indentation first |
+| Arrows, Home, End | Move; with Shift, select. Home goes to the indentation first. In the file tree they walk it, Left and Right close and open a folder, and Enter opens a file |
 | Ctrl+Left, Ctrl+Right | Move by words |
 | Ctrl+Home, Ctrl+End | Start and end of the file |
 | Alt+Up, Alt+Down | Move by pages (nano-ui at this commit reports no Page Up or Page Down) |
@@ -61,7 +67,11 @@ cabal run ned -- path/to/file.hs
   that scroll by themselves. Their draw ops are keyed on everything they read (the text's version, caret,
   selection, scroll, zoom), so a frame where none of that changed builds
   nothing and repaints nothing, and the window blocks in the event wait
-  between caret blinks.
+  between caret blinks. The file tree is another such widget: it reads a
+  folder once, when it is opened, and draws the rows on screen and no others.
+  Its rows share the one widget, which the toolkit cannot tell apart, so while
+  the pointer is over the tree it asks for a frame every 30 ms to keep the row
+  under the pointer lit; it stops the moment the pointer leaves.
 - The lexer works a line at a time and carries only the state a line starts
   in (a block comment, a string over lines), so it runs on the visible lines.
   The state at the top of the view is cached and survives edits below it.
@@ -76,6 +86,7 @@ cabal run ned -- path/to/file.hs
 | `Ned.Buffer` | The rope, caret, selection, movement, editing, history and search. Pure |
 | `Ned.Highlight` | Languages and the line lexer. Pure |
 | `Ned.View` | The editor widget: input, scrolling and drawing |
+| `Ned.FileTree` | The file tree widget: what has been read of the folder, and drawing it |
 | `Ned.App` | Menus, files, the find bar, the status bar |
 | `Ned.Selftest` | Drives the application in a hidden window |
 
@@ -121,5 +132,7 @@ tell what a frame costs nano-ui from what it costs the editor.
 - One file at a time, no replace, no soft wrap.
 - Closing the window does not ask about unsaved changes; Ctrl+Q and the File
   menu do.
+- The file tree does not watch the folder it is on: a file another program
+  writes shows up on Refresh, in the tree's own menu.
 - Highlighting is lexical. A view that jumps into the middle of a file
   guesses the lexer state from the 500 lines above it.

@@ -4,6 +4,7 @@ module Ned.App
   ( runNed
   , App (..)
   , newApp
+  , newAppIn
   , appView
   , openPath
   , loadFile
@@ -32,10 +33,12 @@ import NanoUI.Context (Context (..), getFocusId, markDirty)
 import NanoUI.Monad (askContext, askFrameInput, askHost, askInput)
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
+import Ned.FileTree (FileTree, fileTreePanel, ftPressed)
+import qualified Ned.FileTree as FT
 import Ned.Highlight (Lang (..), LexState (..), languageFor, plainText)
 import Ned.View
 import GHC.Clock (getMonotonicTime)
-import System.Directory (doesFileExist, makeAbsolute)
+import System.Directory (doesFileExist, getCurrentDirectory, makeAbsolute)
 import System.Environment (lookupEnv)
 import System.Exit (exitSuccess)
 import System.FilePath (takeDirectory, takeFileName)
@@ -93,6 +96,10 @@ data App = App
   , appPending :: !(Maybe Pending)
   , appTitle :: !Text
   -- ^ The window's title as last set.
+  , appTree :: !FileTree
+  , appTreeShown :: !Bool
+  , appTreeFocus :: !Bool
+  -- ^ Whether the tree has the keyboard, and not the editor.
   }
 
 newApp :: App
@@ -112,7 +119,17 @@ newApp =
     , appGotoText = ""
     , appPending = Nothing
     , appTitle = ""
+    , appTree = FT.newFileTree "."
+    , appTreeShown = True
+    , appTreeFocus = False
     }
+
+-- | A fresh application with its tree on the directory the program was
+-- started in, which is where 'newApp' cannot look.
+newAppIn :: IO App
+newAppIn = do
+  cwd <- getCurrentDirectory
+  pure newApp {appTree = FT.newFileTree cwd}
 
 --------------------------------------------------------------------------------
 -- Files
@@ -165,6 +182,9 @@ openPath path0 app = do
           , appPath = Just path
           , appFormat = format
           , appStatus = msg
+          , -- The tree follows the file: it opens the folders down to it, and
+            -- moves to the folder the file is in when it is somewhere else.
+            appTree = FT.reveal path (appTree app)
           }
   if not exists
     then pure (fresh B.empty (FileFormat LF False) ("New file " <> T.pack path))
@@ -198,7 +218,8 @@ titleFor app =
 -- | Run the editor, on a file if one is given.
 runNed :: Maybe FilePath -> IO ()
 runNed mpath = do
-  app0 <- maybe (pure newApp) (`openPath` newApp) mpath
+  blankApp <- newAppIn
+  app0 <- maybe (pure blankApp) (`openPath` blankApp) mpath
   ref <- newIORef app0
   -- NED_TRACE names a file to log a line a frame to: the time, the window's
   -- size, and what the frame cost.
@@ -233,8 +254,15 @@ runNed mpath = do
 -- changed it after the part showing it was declared (a menu button opening
 -- its menu, a menu row editing the text, the find field setting what is
 -- marked) has to ask for the frame that shows it.
-chromeSig :: App -> (Text, Bool, Bool, Bool, Text)
-chromeSig a = (appOpenMenu a, appBar a == BarNone, appBarFocus a, isJust (appPending a), appStatus a)
+chromeSig :: App -> (Text, Bool, Bool, Bool, Text, (Bool, Bool, Int, Float))
+chromeSig a =
+  ( appOpenMenu a
+  , appBar a == BarNone
+  , appBarFocus a
+  , isJust (appPending a)
+  , appStatus a
+  , (appTreeShown a, appTreeFocus a, FT.ftVersion (appTree a), FT.ftWidth (appTree a))
+  )
 
 editorSig :: App -> (Int, Int, Int, Text, (Bool, Bool, Bool), Float, Text)
 editorSig a =
@@ -334,6 +362,10 @@ appView ref = do
             Just b -> onBuffer (const b) >> status ""
             Nothing -> status ("No match for " <> needle)
       zoom f = onEditor (\ed -> ed {edFontSize = max 8 (min 48 (f (edFontSize ed)))})
+      onTree f = modify (\a -> a {appTree = f (appTree a)})
+      -- Putting the tree away hands the keyboard back to the editor.
+      toggleTree = modify $ \a ->
+        a {appTreeShown = not (appTreeShown a), appTreeFocus = False}
 
   ------------------------------------------------------------ file dialogs ---
   for_ (appOpenDlg app0) $ \did ->
@@ -368,6 +400,7 @@ appView ref = do
       'q' -> guarded PendingQuit
       'f' -> openBar BarFind
       'g' -> openBar BarGoto
+      'b' -> toggleTree
       '=' -> zoom (* 1.1)
       '+' -> zoom (* 1.1)
       '-' -> zoom (/ 1.1)
@@ -400,6 +433,11 @@ appView ref = do
         item "Find..." "Ctrl+F" (openBar BarFind)
         item "Go to Line..." "Ctrl+G" (openBar BarGoto)
       viewMenu = do
+        item
+          (if appTreeShown app0 then "Hide File Tree" else "Show File Tree")
+          "Ctrl+B"
+          toggleTree
+        menuSeparator
         item "Zoom In" "Ctrl+=" (zoom (* 1.1))
         item "Zoom Out" "Ctrl+-" (zoom (/ 1.1))
         item "Reset Zoom" "Ctrl+0" (zoom (const defaultFontSize))
@@ -427,13 +465,62 @@ appView ref = do
       [("File", fileMenu), ("Edit", editMenu), ("View", viewMenu)]
     separator
 
-    -- The editor runs on the state as the chords and menus above left it.
+    -- The tree and the editor run on the state as the chords and menus above
+    -- left it. The tree is wrapped in a scope, so that putting it away does
+    -- not shift the editor's widget ids, and with them what it has laid out
+    -- and what has the keyboard.
     app1 <- uiIO (readIORef ref)
-    let wantFocus = not (appBarFocus app1) && not blocked && T.null (appOpenMenu app1)
-    (edResp, ed) <- editorView wantFocus (appEditor app1)
-    modify (\a -> a {appEditor = ed, appBarFocus = appBarFocus a && not (edPressed ed)})
+    let unblocked = not blocked && T.null (appOpenMenu app1)
+    (mTreeResp, (edResp, ed)) <- rowWith (grow . gap 0 . padAll 0) $ do
+      mTreeResp <- scope $
+        if not (appTreeShown app1)
+          then pure Nothing
+          else do
+            -- The find bar's field takes the keyboard from the tree as it
+            -- does from the editor, so the arrows do not walk both at once.
+            (resp, ft, opened) <-
+              fileTreePanel
+                (appTreeFocus app1 && not (appBarFocus app1) && unblocked)
+                (appPath app1)
+                (appTree app1)
+            modify (\a -> a {appTree = ft, appTreeFocus = appTreeFocus a || ftPressed ft})
+            -- A file the tree was clicked on opens as any other does, with
+            -- the text asked about if it has changes to lose, and the
+            -- keyboard going to it so that it can be typed into at once.
+            for_ opened $ \path -> do
+              modify (\a -> a {appTreeFocus = False})
+              guarded (PendingOpenPath path)
+            pure (Just resp)
+      -- The tree may have just opened a file, which is the editor's buffer
+      -- now. Who has the keyboard is read from before the tree ran, though:
+      -- the keys of this frame are the tree's, and an Enter that opened a
+      -- file there is not one to put a newline in the file it opened.
+      app1b <- uiIO (readIORef ref)
+      let wantFocus = not (appBarFocus app1) && not (appTreeFocus app1) && unblocked
+      (,) mTreeResp <$> editorView wantFocus (appEditor app1b)
+    modify $ \a ->
+      a
+        { appEditor = ed
+        , appBarFocus = appBarFocus a && not (edPressed ed)
+        , appTreeFocus = appTreeFocus a && not (edPressed ed)
+        }
     app2 <- uiIO (readIORef ref)
     uiIO (writeIORef drawn (editorSig app2))
+
+    -- Scoped for the same reason the panel is: the editor's own menu below
+    -- keeps its ids whether or not the tree is there to hang one on.
+    scope $ for_ mTreeResp $ \treeResp ->
+      contextMenu treeResp $ do
+        let ft = appTree app2
+            pick lbl ok action =
+              if ok then whenM (menuItem lbl) action else menuItemDisabled lbl
+        pick "Reveal Current File" (isJust (appPath app2)) (for_ (appPath app2) (onTree . FT.reveal))
+        pick "Open Parent Folder" (FT.hasParentRoot ft) (onTree FT.parentRoot)
+        menuSeparator
+        pick "Collapse All" True (onTree FT.collapseAll)
+        pick "Refresh" True (onTree FT.refresh)
+        menuSeparator
+        pick "Hide File Tree" True toggleTree
 
     _ <- contextMenu edResp $ do
       let buf = edBuffer ed

@@ -4,3 +4,6 @@
 
 * First version: a source code editor on nano-rope and nano-ui, with syntax
   highlighting, undo and redo, find, go to line, and LF and CRLF files.
+* A file tree beside the editor, on the folder the open file is in: its
+  folders open and close, a click on a file opens it, the bar between it and
+  the text resizes it, and Ctrl+B puts it away.

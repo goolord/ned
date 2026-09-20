@@ -38,6 +38,7 @@ library
     ghc-options:      -O2
     exposed-modules:
         Ned.Buffer
+        Ned.FileTree
         Ned.Highlight
         Ned.View
         Ned.App

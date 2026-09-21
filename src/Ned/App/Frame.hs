@@ -30,6 +30,7 @@ import qualified Ned.Buffer as B
 import Ned.Editor
 import qualified Ned.FileTree as FT
 import Ned.Highlight (langName)
+import Ned.Picker (pickerSig)
 
 --------------------------------------------------------------------------------
 -- What a frame answers to
@@ -61,7 +62,9 @@ appChords :: Commands -> App -> NanoUI ()
 appChords cmds app = do
   inp <- askInput
   let mods = inputModifiers inp
-      blocked = isJust (appPending app)
+      -- The question about unsaved changes and the finder are both modals:
+      -- while one is up it is the only thing that reads a key.
+      blocked = isJust (appPending app) || isJust (appPicker app)
   when (modCtrl mods && not (modAlt mods) && not blocked) $
     forM_ (T.unpack (inputChars inp)) $ \case
       's' | modShift mods -> cmdSave cmds True
@@ -73,6 +76,7 @@ appChords cmds app = do
       'f' -> cmdOpenBar cmds BarFind
       'g' -> cmdOpenBar cmds BarGoto
       'b' -> cmdToggleTree cmds
+      'p' -> cmdOpenPicker cmds
       '=' -> cmdZoom cmds (* 1.1)
       '+' -> cmdZoom cmds (* 1.1)
       '-' -> cmdZoom cmds (/ 1.1)
@@ -101,7 +105,7 @@ syncTitle cmds app =
 --
 -- The tree's width is not in here: the pane grid marks its own damage while
 -- one of its bars is dragged.
-chromeSig :: App -> (Text, Bool, Bool, Bool, Text, (Bool, Bool, Int))
+chromeSig :: App -> (Text, Bool, Bool, Bool, Text, (Bool, Bool, Int), Int)
 chromeSig a =
   ( appOpenMenu a
   , appBar a == BarNone
@@ -109,6 +113,9 @@ chromeSig a =
   , isJust (appPending a)
   , appStatus a
   , (appTreeShown a, appTreeFocus a, FT.ftVersion (appTree a))
+  , -- The finder gathers on a thread of its own, so it is the one part of the
+    -- window that changes between frames without anybody having touched a key.
+    pickerSig (appPicker a)
   )
 
 -- | What of the application the editor draws.

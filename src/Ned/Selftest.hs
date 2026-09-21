@@ -1,23 +1,28 @@
 -- | Drives the application in a hidden window on scripted input, checks what
 -- the editing did, and writes screenshots of it. Run with
 -- @ned --selftest DIR@.
+--
+-- The finder's own thread is the one thing here that runs on the clock rather
+-- than on frames, so the part that tests it waits on it between frames.
 module Ned.Selftest (selftest) where
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, try)
 import Control.Monad (forM_, unless, void, when)
 import Data.Foldable (toList)
 import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.Maybe (isJust)
 import qualified Data.Text as T
 import qualified Data.Text.NanoRope as Rope
 import GHC.Clock (getMonotonicTime)
 import NanoUI
 import NanoUI.Backend.Sdl
 import NanoUI.Context (Context (..), getWakeAt)
-import NanoUI.Input (UiCursorKind (..))
 import NanoUI.Testing (cursorKindIs, newPixelContext, uiCursorKind)
 import qualified Ned.Buffer as B
 import Ned.App
 import qualified Ned.FileTree as FT
+import qualified Ned.Picker as P
 import Ned.Editor (Editor (..), cellWidth, defaultFontSize)
 import Ned.View (appView)
 import System.Directory (createDirectoryIfMissing, makeAbsolute)
@@ -25,6 +30,9 @@ import System.Exit (exitFailure)
 import System.FilePath (equalFilePath, (</>))
 import System.IO (hPutStrLn, stderr)
 import Text.Printf (printf)
+import NanoUI.Backend (lineWidthIO)
+import NanoUI.Input (emptyInput)
+import NanoUI.Input (inputKeysFromList)
 
 -- | A Windows build of an SDL program has no console to print to, so the
 -- outcome goes to @selftest.log@ in the directory as well.
@@ -376,6 +384,146 @@ selftestIn dir mfile say = do
     scrolledTree <- FT.ftScroll <$> treeNow
     when (scrolledTree <= 0) $ fail ("selftest: the wheel left the tree at " <> show scrolledTree)
     shot "10-tree-scrolled.bmp"
+
+    -- The fuzzy finder, over the same folder the tree is on. It walks the
+    -- folder on a thread of its own, so the frames go round until it says it
+    -- has found everything; nothing else in the window waits on it.
+    chord 'p'
+    let pickerNow = appPicker <$> readIORef ref
+        settle :: Int -> IO P.Picker
+        settle 0 = fail "selftest: the finder never finished looking"
+        settle k =
+          idle >> pickerNow >>= \case
+            Just pk | P.pickerDone pk -> pure pk
+            Just _ -> threadDelay 20000 >> settle (k - 1)
+            Nothing -> fail "selftest: Ctrl+P did not put the finder up"
+        landedOn what name pk =
+          unless (maybe False ((== name) . P.itemText) (P.pickerCurrent pk)) $
+            fail ("selftest: " <> what <> " landed on " <> show (P.itemText <$> P.pickerCurrent pk))
+        clearQuery n = forM_ [1 .. n :: Int] (\_ -> key plain KeyBackspace) >> idle
+    gathered <- settle 200
+    -- The folder holds 60 numbered files, outer.txt, and inner.txt inside sub.
+    when (P.pickerGathered gathered /= 62) $
+      fail ("selftest: the finder found " <> show (P.pickerGathered gathered) <> " files, not 62")
+    shot "11-picker.bmp"
+
+    -- A query narrows the rows, and the row the keyboard is on is previewed.
+    typed "inner"
+    idle
+    narrowed <- settle 20
+    when (P.pickerCount narrowed /= 1) $
+      fail ("selftest: \"inner\" matched " <> show (P.pickerCount narrowed) <> " files, not 1")
+    landedOn "the query \"inner\"" "sub/inner.txt" narrowed
+    shot "12-picker-query.bmp"
+
+    -- Enter opens what the keyboard is on and puts the finder away. The text
+    -- has changes typed into it above, which are put down rather than asked
+    -- about, as they are everywhere else in this test.
+    modifyIORef' ref $ \a ->
+      a {appEditor = (appEditor a) {edBuffer = B.markSaved (edBuffer (appEditor a))}}
+    key plain KeyEnter
+    idle
+    pickedPath <- appPath <$> readIORef ref
+    unless (maybe False (equalFilePath (treeDir </> "sub" </> "inner.txt")) pickedPath) $
+      fail ("selftest: the finder opened " <> show pickedPath)
+    stillUp <- pickerNow
+    when (isJust stillUp) (fail "selftest: picking a file left the finder up")
+
+    -- A file with something in it, to see the preview colour it. A finder
+    -- gathers when it opens, so the file is written before this one does.
+    writeFile (treeDir </> "demo.hs") $
+      unlines $
+        [ "-- | A module the preview has something to colour."
+        , "module Demo (greet) where"
+        , ""
+        , "greet :: String -> IO ()"
+        , "greet name = putStrLn (\"hello, \" <> name <> \"!\")"
+        , ""
+        , "-- A line long enough that the preview has to cut it off where the pane ends rather than draw it on over the rows beside it."
+        , "numbers :: [Int]"
+        , "numbers = [1 .. 40]"
+        ]
+          -- More lines than the pane holds, so that it has somewhere to scroll.
+          <> concat [["", "line" <> show i <> " :: Int", "line" <> show i <> " = " <> show i] | i <- [1 :: Int .. 20]]
+    chord 'p'
+    _ <- settle 200
+    typed "demo"
+    idle
+    previewed <- settle 20
+    landedOn "the query \"demo\"" "demo.hs" previewed
+    shot "13-picker-preview.bmp"
+
+    -- The preview is read rather than walked, so the chords a pager scrolls
+    -- with move it and the arrows are left to the rows.
+    chord 'd'
+    idle
+    shot "14-picker-scrolled.bmp"
+    chord 'u'
+    idle
+
+    -- The arrows and the chords a terminal's finder is walked with both move
+    -- the keyboard down the rows.
+    -- An empty query keeps the rows in the order they were gathered in, which
+    -- is the order a directory is listed in: demo.hs, then the numbered files.
+    clearQuery 4
+    cleared <- settle 20
+    when (P.pickerCount cleared /= 63) $
+      fail ("selftest: an empty query kept " <> show (P.pickerCount cleared) <> " rows, not 63")
+    landedOn "an emptied query" "demo.hs" cleared
+    key plain KeyDown
+    key plain KeyDown
+    chord 'n'
+    walked <- settle 20
+    landedOn "three steps down the rows" "file-03.txt" walked
+    chord 'p'
+    stepped <- settle 20
+    landedOn "a step back up the rows" "file-02.txt" stepped
+
+    -- The rows' scrollbar is down the right of them. Its thumb, held and
+    -- dragged down, scrolls them; the button coming up lets go of it.
+    frame (at 462 130) {inputMouseDown = True, inputMousePressed = True}
+    frame (at 462 400) {inputMouseDown = True}
+    frame (at 462 400) {inputMouseReleased = True}
+    idle
+    dragged <- settle 20
+    when (P.pickerTop dragged <= 0) $
+      fail ("selftest: dragging the thumb left the finder's rows at " <> show (P.pickerTop dragged))
+    frame (at 462 200)
+    idle
+    released <- settle 20
+    when (P.pickerTop released /= P.pickerTop dragged) $
+      fail "selftest: the thumb kept following the pointer after the button came up"
+
+    -- The wheel over the rows scrolls them, and back up again.
+    frame base {inputMousePos = V2 300 250}
+    frame base {inputMousePos = V2 300 250, inputScroll = V2 0 4}
+    idle
+    wheeled <- settle 20
+    when (P.pickerTop wheeled <= 0) $
+      fail ("selftest: the wheel left the finder's rows at " <> show (P.pickerTop wheeled))
+    frame base {inputMousePos = V2 300 250, inputScroll = V2 0 (-40)}
+    idle
+    unwheeled <- settle 20
+    when (P.pickerTop unwheeled /= 0) $
+      fail ("selftest: the wheel back up left the finder's rows at " <> show (P.pickerTop unwheeled))
+
+    -- A press on a row opens that row's file, as a press on the tree does.
+    -- The rows start under the panel's title bar and its prompt, a row every
+    -- line height, so the fourth of them is the third numbered file.
+    click 300 185
+    idle
+    clicked <- appPath <$> readIORef ref
+    unless (maybe False (equalFilePath (treeDir </> "file-03.txt")) clicked) $
+      fail ("selftest: a press on the fourth row opened " <> show clicked)
+
+    -- Escape puts the finder away with nothing picked.
+    chord 'p'
+    idle
+    key plain KeyEscape
+    idle
+    escaped <- pickerNow
+    when (isJust escaped) (fail "selftest: Escape did not put the finder away")
+
 
     -- Resize the window a step at a time, as a drag of its border does, and
     -- time the frames; then the same under a view of one label, for what the

@@ -14,6 +14,7 @@ cabal run ned -- path/to/file.hs
 
 - Syntax highlighting for Haskell, Rust, C/C++, JavaScript, Python and more.
 - Resizable file tree and drag-and-drop file opening.
+- Fuzzy file finder with a live preview, matching with fzf's own algorithm.
 - Keyboard and mouse selection, clipboard, undo/redo and auto-indent.
 - Incremental find, go to line, zoom and indentation guides.
 - UTF-8 editing with line endings and byte order marks preserved.
@@ -50,6 +51,7 @@ Keep `C:\msys64\ucrt64\bin` on `PATH` when running `ned.exe`.
 | Ctrl+N / Ctrl+O / Ctrl+S / Ctrl+Shift+S | New / open / save / save as |
 | Ctrl+Z / Ctrl+Y | Undo / redo |
 | Ctrl+B | Toggle file tree |
+| Ctrl+P | Find a file; Up / Down or Ctrl+P / Ctrl+N walk the rows, Ctrl+U / Ctrl+D scroll the preview, Enter opens |
 | Ctrl+F | Find; Enter / Shift+Enter for next / previous match |
 | Ctrl+G | Go to line |
 | Tab / Shift+Tab | Indent / unindent |

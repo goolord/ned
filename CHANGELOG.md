@@ -4,6 +4,15 @@
 
 * First version: a source code editor on nano-rope and nano-ui, with syntax
   highlighting, undo and redo, find, go to line, and LF and CRLF files.
+* A fuzzy file finder on Ctrl+P: a prompt over the files under the tree's
+  root, ranked by fzf's own matching algorithm (vendored as C in
+  `ned-fzf`), each row a file's name with its folder in a column beside it
+  and the characters that answered the query coloured. The file the keyboard
+  is on is previewed beside the rows in the colours the editor would open it
+  in, with its length and language; the keys that work in the finder are
+  listed along its foot. The files are walked on a thread of its own and shown
+  as they are found, so the window never waits on a disk, and what a build or
+  a version control system leaves behind is walked past.
 * A file tree beside the editor, on the folder the open file is in: its
   folders open and close, a click on a file opens it, the bar between it and
   the text resizes it, and Ctrl+B puts it away. A resized window resizes the

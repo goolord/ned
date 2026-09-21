@@ -2,8 +2,9 @@
 --
 -- From the top: what the frame answers to, the title bar the menus are along,
 -- the tree and the editor side by side in their pane grid, the find bar under
--- them, the status bar under that, and the overlays over the lot. The window
--- keeps no title bar of the desktop's, so the one along the top is its own:
+-- them, the status bar under that, and the overlays over the lot: the fuzzy
+-- finder, and the question about unsaved changes. The window keeps no title
+-- bar of the desktop's, so the one along the top is its own:
 -- it carries the name and the three buttons, and what the desktop drags and
 -- resizes the window by is handed over from there.
 --
@@ -55,6 +56,7 @@ import Ned.App.State
 import Ned.Editor (Editor (..))
 import Ned.FileTree (FileTree (..), defaultTreeWidth, minTreeWidth, rootName)
 import qualified Ned.FileTree.Geometry as TG
+import Ned.Picker (itemPath, pickerOverlay)
 import Ned.Theme (paneChrome)
 import Ned.View.Chrome
 import Ned.View.Editor (editorView)
@@ -102,7 +104,7 @@ appView ref = do
     -- Whether the question about unsaved changes was up as the frame found
     -- things, which is what the chords above were read under too: one that
     -- puts the question up leaves this frame's keys where they were going.
-    let blocked = isJust (appPending app0)
+    let blocked = isJust (appPending app0) || isJust (appPicker app0)
         unblocked = not blocked && T.null (appOpenMenu app1)
         -- The tree pane: the panel, and what a frame's clicks on it left
         -- behind. The find bar's field takes the keyboard from the tree as it
@@ -182,6 +184,14 @@ appView ref = do
     statusBar app3
 
   --------------------------------------------------------------- overlays ---
+  -- The finder is declared whether or not it is up, so that nothing after it
+  -- moves when it comes and goes, and under the question about unsaved
+  -- changes, which a file it picks may put up over it.
+  appP <- uiIO (readIORef ref)
+  (picker, picked) <- pickerOverlay (appPicker appP)
+  modify (\a -> a {appPicker = picker})
+  for_ picked (guarded . PendingOpenPath . itemPath)
+
   app4 <- uiIO (readIORef ref)
   syncTitle cmds app4
   (_, _) <-

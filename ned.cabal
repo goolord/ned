@@ -66,6 +66,9 @@ library
         Ned.FileTree.Model
         Ned.FileTree.Geometry
 
+        -- The fuzzy finder over it.
+        Ned.Picker
+
         -- The application around both.
         Ned.File
         Ned.App
@@ -89,8 +92,10 @@ library
         nano-rope ^>=0.1,
         nano-ui ^>=0.1,
         nano-ui-sdl ^>=0.1,
+        ned-fzf ^>=0.1,
         primitive ^>=0.9,
-        text ^>=2.1
+        text ^>=2.1,
+        vector ^>=0.13
 
 executable ned
     import:           extensions

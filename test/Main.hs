@@ -1,5 +1,6 @@
 -- | Tests of the editor's core, which needs no window: the buffer against a
--- model kept as one 'Text', the history, search, the lexer, and files.
+-- model kept as one 'Text', the history, search, the lexer, files, and the
+-- walk the finder looks through them with.
 module Main (main) where
 
 import Control.Monad (unless)
@@ -11,7 +12,8 @@ import Ned.File (Eol (..), FileFormat (..), Loaded (..), loadFile, saveFile)
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
 import Ned.Highlight
-import System.Directory (getTemporaryDirectory, removeFile)
+import Ned.Picker (Item (..), Source (..), fileSource)
+import System.Directory (createDirectoryIfMissing, getTemporaryDirectory, removeFile, removePathForcibly)
 import System.Exit (exitFailure)
 import System.FilePath ((</>))
 import qualified Data.ByteString as BS
@@ -180,6 +182,32 @@ main = do
   check "not UTF-8 is lossy" (Right True) (loadedLossy <$> latin)
   check "not UTF-8 shows replacements" (Right "caf\xFFFD\n") (text . loadedBuffer <$> latin)
   removeFile path
+
+  -- What the finder looks through ---------------------------------------------
+  -- A folder with something to skip, something nested, and more files than one
+  -- batch holds, so that the gatherer hands over more than once.
+  let root = tmp </> "ned-test-picker"
+  removePathForcibly root
+  createDirectoryIfMissing True (root </> "src" </> "deep")
+  createDirectoryIfMissing True (root </> "dist-newstyle" </> "build")
+  createDirectoryIfMissing True (root </> ".git")
+  writeFile (root </> "README.md") ""
+  writeFile (root </> "src" </> "Main.hs") ""
+  writeFile (root </> "src" </> "deep" </> "Inner.hs") ""
+  writeFile (root </> "dist-newstyle" </> "build" </> "Main.o") ""
+  writeFile (root </> ".git" </> "HEAD") ""
+  found <- newIORef ([] :: [Item])
+  srcGather fileSource root "" (\items -> True <$ modifyIORef' found (<> items))
+  gathered <- readIORef found
+  check
+    "the walk finds every file, nearest the root first, and skips what a build leaves behind"
+    ["README.md", "src/Main.hs", "src/deep/Inner.hs"]
+    (map itemText gathered)
+  check
+    "a row opens the file it was found at"
+    [root </> "src" </> "Main.hs"]
+    [itemPath i | i <- gathered, itemText i == "src/Main.hs"]
+  removePathForcibly root
 
   n <- readIORef failures
   if n == 0

@@ -14,6 +14,10 @@ module Ned.Widget
   , contentHash
   , hashText
 
+    -- * Icons
+  , folderIcon
+  , fileIcon
+
     -- * Focus
   , takeFocus
   , dropFocus
@@ -24,7 +28,7 @@ import Data.Bits (xor)
 import Data.IORef (writeIORef)
 import Data.Text (Text)
 import qualified Data.Text as T
-import NanoUI (WidgetId (..))
+import NanoUI (Color, DrawOp (..), Rect (..), WidgetId (..))
 import NanoUI.Context (Context (..), getFocusId)
 import Ned.Text (clamp)
 
@@ -95,6 +99,43 @@ fnv acc v = (acc `xor` v) * 1099511628211
 
 fnvBasis :: Int
 fnvBasis = 1469598103934665603
+
+--------------------------------------------------------------------------------
+-- Icons
+--------------------------------------------------------------------------------
+
+-- | The icons, built out of the shapes the toolkit has rather than loaded
+-- from an image: two of them, because two is all a list of files has to say.
+-- A folder is a body under a tab. A file is a page with its top corner taken
+-- off, which is the shape everyone reads as a document.
+--
+-- The corner is taken off rather than shaded over: the page is drawn as the
+-- five-sided shape it ends up being, so what shows through the cut is
+-- whatever the row behind it is, and one icon draws the same over a row that
+-- is picked, hovered or plain. A shade would have to know the row's colour,
+-- and at eleven pixels it did not read as a fold anyway.
+--
+-- Both are square-cornered. The one radius in the window belongs to the
+-- things a pointer grabs or picks; an icon is neither.
+--
+-- Both are centred on @cy@, in a column @treeIcon@ wide starting at @ix@.
+folderIcon :: Float -> Float -> Color -> [DrawOp]
+folderIcon ix cy col =
+  [ FillRect (Rect fx (cy - 5) 5 2) col
+  , FillRect (Rect fx (cy - 3) 12 8) col
+  ]
+  where
+    fx = fromIntegral (round ix :: Int) + 2
+
+fileIcon :: Float -> Float -> Color -> [DrawOp]
+fileIcon ix cy col =
+  [ FillRect (Rect fx fy 5 4) col
+  , FillRect (Rect fx (fy + 4) 9 8) col
+  , FillTriangle (fx + 5) fy (fx + 9) (fy + 4) (fx + 5) (fy + 4) col
+  ]
+  where
+    fx = fromIntegral (round ix :: Int) + 4
+    fy = cy - 6
 
 --------------------------------------------------------------------------------
 -- Focus

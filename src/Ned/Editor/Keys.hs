@@ -16,6 +16,7 @@ import Effectful (Eff, type (:>))
 import NanoUI
 import NanoUI.Context (Context (..))
 import Ned.Buffer (Buffer)
+import NanoUI.Input (foldInputKeys)
 import qualified Ned.Buffer as B
 
 -- | Run the frame's keys and typed characters on the buffer. Chords the

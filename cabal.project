@@ -1,9 +1,16 @@
 packages: .
 
--- TEMPORARY (diagnosing resize lag): local checkout, same commit as the pin.
-packages:
-  ../nano-ui/packages/nano-ui
-  ../nano-ui/packages/nano-ui-sdl
+-- The fzf matcher the file finder ranks with, vendored here with the C it
+-- binds; see ned-fzf/cbits/README.md for where that came from.
+packages: ned-fzf
+
+source-repository-package
+  type: git
+  location: git@github.com:goolord/nano-ui.git
+  tag: a9689da9aa9f821500dc76f32649079359269946
+  subdir:
+    packages/nano-ui
+    packages/nano-ui-sdl
 
 source-repository-package
   type: git

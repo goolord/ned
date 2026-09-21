@@ -186,6 +186,7 @@ appMenus cmds app = [("File", fileMenu), ("Edit", editMenu), ("View", viewMenu)]
     fileMenu = do
       item "New" "Ctrl+N" (cmdGuarded cmds PendingNew)
       item "Open..." "Ctrl+O" (cmdGuarded cmds PendingOpen)
+      item "Find File..." "Ctrl+P" (cmdOpenPicker cmds)
       item "Save" "Ctrl+S" (cmdSave cmds False)
       item "Save As..." "Ctrl+Shift+S" (cmdSave cmds True)
       menuSeparator

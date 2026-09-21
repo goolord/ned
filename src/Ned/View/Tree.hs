@@ -24,12 +24,11 @@ import Effectful (Eff, type (:>))
 -- 'Row' here is a row of the tree, not nano-ui's layout direction.
 import NanoUI hiding (Row)
 import NanoUI.Context (Context (..), getPrevRect)
-import NanoUI.Input (UiCursorKind (..))
 import NanoUI.Monad (askContext)
 import Ned.FileTree
 import qualified Ned.FileTree.Geometry as TG
 import Ned.Theme (TreeColors (..), languageTint, treeColors)
-import Ned.Widget (contentHash, hashText, takeFocus, thumbSpan)
+import Ned.Widget (contentHash, fileIcon, folderIcon, hashText, takeFocus, thumbSpan)
 import System.FilePath (equalFilePath)
 
 --------------------------------------------------------------------------------
@@ -206,39 +205,6 @@ drawTree cdc sc rect@(Rect x y w h) =
                   3
                   (if tsThumbHot sc then tcThumbHot tc else tcThumb tc)
               ]
-
--- | The icons, built out of the shapes the toolkit has rather than loaded
--- from an image: two of them, because two is all the tree has to say. A
--- folder is a body under a tab. A file is a page with its top corner taken
--- off, which is the shape everyone reads as a document.
---
--- The corner is taken off rather than shaded over: the page is drawn as the
--- five-sided shape it ends up being, so what shows through the cut is
--- whatever the row behind it is, and one icon draws the same over a row that
--- is picked, hovered or plain. A shade would have to know the row's colour,
--- and at eleven pixels it did not read as a fold anyway.
---
--- Both are square-cornered. The one radius in the window belongs to the
--- things a pointer grabs or picks; an icon is neither.
---
--- Both are centred on @cy@, in a column @treeIcon@ wide starting at @ix@.
-folderIcon :: Float -> Float -> Color -> [DrawOp]
-folderIcon ix cy col =
-  [ FillRect (Rect fx (cy - 5) 5 2) col
-  , FillRect (Rect fx (cy - 3) 12 8) col
-  ]
-  where
-    fx = fromIntegral (round ix :: Int) + 2
-
-fileIcon :: Float -> Float -> Color -> [DrawOp]
-fileIcon ix cy col =
-  [ FillRect (Rect fx fy 5 4) col
-  , FillRect (Rect fx (fy + 4) 9 8) col
-  , FillTriangle (fx + 5) fy (fx + 9) (fy + 4) (fx + 5) (fy + 4) col
-  ]
-  where
-    fx = fromIntegral (round ix :: Int) + 4
-    fy = cy - 6
 
 -- | A name cut to fit, with an ellipsis where it was cut.
 elide :: FontMetrics -> Float -> Text -> Text

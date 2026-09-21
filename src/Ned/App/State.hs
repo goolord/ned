@@ -1,9 +1,10 @@
 -- | Everything the application is, between frames.
 --
--- The editor and the file tree keep their own state; this is what is left
--- over and belongs to neither: which file is open and in what format, which
--- menu is down, which bar is up, what has the keyboard, and the change that
--- is waiting to be agreed to. A frame reads one of these and writes the next.
+-- The editor, the file tree and the finder keep their own state; this is what
+-- is left over and belongs to none of them: which file is open and in what
+-- format, which menu is down, which bar is up, what has the keyboard, and the
+-- change that is waiting to be agreed to. A frame reads one of these and
+-- writes the next.
 module Ned.App.State
   ( App (..)
   , Bar (..)
@@ -23,6 +24,7 @@ import Ned.File
 import Ned.FileTree (FileTree)
 import qualified Ned.FileTree as FT
 import Ned.Highlight (languageFor, plainText)
+import Ned.Picker (Picker)
 import System.Directory (doesFileExist, getCurrentDirectory, makeAbsolute)
 import System.FilePath (takeFileName)
 
@@ -59,6 +61,9 @@ data App = App
   , appTreeShown :: !Bool
   , appTreeFocus :: !Bool
   -- ^ Whether the tree has the keyboard, and not the editor.
+  , appPicker :: !(Maybe Picker)
+  -- ^ The fuzzy finder, while it is up. It is a modal over the window, so
+  -- while it is there nothing else reads a key.
   }
 
 newApp :: App
@@ -81,6 +86,7 @@ newApp =
     , appTree = FT.newFileTree "."
     , appTreeShown = True
     , appTreeFocus = False
+    , appPicker = Nothing
     }
 
 -- | A fresh application with its tree on the directory the program was

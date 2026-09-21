@@ -39,6 +39,7 @@ import Ned.FileTree.Geometry
 import Ned.FileTree.Model
 import Ned.Text (clamp)
 import Ned.Widget
+import NanoUI.Input (foldInputKeys)
 
 --------------------------------------------------------------------------------
 -- One frame

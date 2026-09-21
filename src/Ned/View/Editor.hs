@@ -23,7 +23,6 @@ import Effectful (Eff, type (:>))
 import GHC.Float (castDoubleToWord64, castFloatToWord32)
 import NanoUI
 import NanoUI.Context (Context (..), getPrevRect)
-import NanoUI.Input (UiCursorKind (..))
 import NanoUI.Monad (askContext)
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B

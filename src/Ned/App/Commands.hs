@@ -26,7 +26,9 @@ import qualified Ned.Buffer as B
 import Ned.Editor
 import Ned.File
 import Ned.FileTree (FileTree)
+import qualified Ned.FileTree as FT
 import Ned.Highlight (LexState (..), languageFor, plainText)
+import qualified Ned.Picker as P
 import Ned.Text (clamp)
 import System.Exit (exitSuccess)
 import System.FilePath (takeDirectory, takeFileName)
@@ -57,6 +59,8 @@ data Commands = Commands
   -- ^ The next match, or the previous one.
   , cmdZoom :: (Float -> Float) -> NanoUI ()
   , cmdToggleTree :: NanoUI ()
+  , cmdOpenPicker :: NanoUI ()
+  -- ^ Put the fuzzy finder up over the files under the tree's root.
   , cmdCloseMenu :: NanoUI ()
   }
 
@@ -80,6 +84,7 @@ commands ctx ref =
     , cmdFind = find
     , cmdZoom = zoom
     , cmdToggleTree = toggleTree
+    , cmdOpenPicker = openPicker
     , cmdCloseMenu = closeMenu
     }
   where
@@ -165,3 +170,14 @@ commands ctx ref =
     -- Putting the tree away hands the keyboard back to the editor.
     toggleTree = modify $ \a ->
       a {appTreeShown = not (appTreeShown a), appTreeFocus = False}
+    -- The finder looks through the folder the tree is on, which is the one
+    -- the reader has said they are working in. It sets its own thread
+    -- gathering as it is made, so this is back before the first file is
+    -- found, and asking for a finder that is already up does nothing.
+    openPicker = do
+      a <- uiIO (readIORef ref)
+      case appPicker a of
+        Just _ -> pure ()
+        Nothing -> do
+          pk <- uiIO (P.openPicker P.fileSource (FT.ftRoot (appTree a)))
+          modify (\a' -> a' {appPicker = Just pk})

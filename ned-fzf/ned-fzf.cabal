@@ -1,0 +1,71 @@
+cabal-version:      3.4
+name:               ned-fzf
+version:            0.1.0.0
+synopsis:           fzf's fuzzy matcher for Haskell
+description:
+    Bindings to the C port of fzf's matching algorithm used by
+    telescope-fzf-native. The C source is bundled with the package, together
+    with a scan that scores a whole candidate list in one call, so a picker
+    filtering a large file list does not cross the FFI per candidate.
+license:            MIT
+license-file:       LICENSE
+author:             goolord
+maintainer:         zacharyachurchill@gmail.com
+homepage:           https://github.com/goolord/ned
+bug-reports:        https://github.com/goolord/ned/issues
+category:           Text
+build-type:         Simple
+extra-doc-files:
+    CHANGELOG.md
+    README.md
+extra-source-files:
+    cbits/LICENSE.fzf
+    cbits/README.md
+
+source-repository head
+    type:     git
+    location: https://github.com/goolord/ned.git
+    subdir:   ned-fzf
+
+common warnings
+    ghc-options:
+        -Wall
+        -Wextra
+        -Wcompat
+        -Widentities
+        -Wmissing-export-lists
+        -Wunused-packages
+
+library
+    import:           warnings
+    default-language: GHC2024
+    exposed-modules:
+        Ned.Fuzzy
+        Ned.Fuzzy.Raw
+    include-dirs:     cbits
+    install-includes:
+        fzf.h
+        ned_fzf.h
+    c-sources:
+        cbits/fzf.c
+        cbits/ned_fzf.c
+    build-depends:
+        base ^>=4.22.0.0,
+        bytestring ^>=0.12,
+        text ^>=2.1,
+        vector ^>=0.13
+    hs-source-dirs:   lib
+
+test-suite fuzzy-spec
+    import:           warnings
+    default-language: GHC2024
+    type:             exitcode-stdio-1.0
+    default-extensions: OverloadedStrings
+    main-is:          FuzzySpec.hs
+    hs-source-dirs:   test
+    build-depends:
+        base ^>=4.22.0.0,
+        hspec ^>=2.11,
+        ned-fzf,
+        text ^>=2.1,
+        vector ^>=0.13

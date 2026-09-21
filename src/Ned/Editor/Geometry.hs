@@ -26,6 +26,7 @@ import NanoUI
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
 import Ned.Widget (Scroller (..))
+import NanoUI.Backend (lineWidthIO)
 
 scrollBarW, textPad :: Float
 scrollBarW = 12

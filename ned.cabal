@@ -54,7 +54,6 @@ library
         -- The window.
         Ned.Theme
         Ned.Widget
-        Ned.Sdl
 
         -- The editor's state, and what a frame of it works out.
         Ned.Editor
@@ -92,9 +91,6 @@ library
         nano-ui-sdl ^>=0.1,
         primitive ^>=0.9,
         text ^>=2.1
-
-    -- For the window calls nano-ui-sdl has none of; see "Ned.Sdl".
-    pkgconfig-depends: sdl3 >=3.2
 
 executable ned
     import:           extensions

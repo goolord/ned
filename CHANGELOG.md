@@ -9,6 +9,14 @@
   the text resizes it, and Ctrl+B puts it away. A resized window resizes the
   text: the tree is the pane grid's pinned pane and keeps the width it was
   left at.
+* The window has no border of its own. The bar along the top is its title
+  bar: the menus at the left, the file's name in the middle, and the buttons
+  that put the window away, fill the screen with it and close it at the
+  right. What is left of the bar between the menus and those buttons drags
+  the window, and its edges still resize it. The window draws its own line
+  around itself, since it has no frame to be told apart from the desktop by,
+  and keeps the desktop's shadow under it; a window filling the screen draws
+  neither.
 * The file tree draws a rule down each level it is deep, a folder or a page
   on every row, and the page in the colour of the language the file would
   open as; the file the editor has is marked in the caret's colour.

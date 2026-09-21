@@ -42,6 +42,11 @@ runNed mpath = do
     defaultSdlOptions
       { sdlWindowTitle = titleFor app0
       , sdlWindowSize = Size 1100 760
+      , -- The window has no title bar of the desktop's: its title, its
+        -- buttons and the strip that drags it are all in the bar along the
+        -- top of the frame, in "Ned.View.Chrome". It keeps the desktop's
+        -- frame, which is what still resizes it and carries its shadow.
+        sdlWindowDecorations = DecorationsFrame
       , sdlAppTheme = Just tomorrowNightMinDarkTheme
       }
     view

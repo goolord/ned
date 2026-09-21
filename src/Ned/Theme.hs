@@ -36,6 +36,8 @@ module Ned.Theme
     -- * The chrome
   , menuChrome
   , paneChrome
+  , windowEdge
+  , closeRed
   , TreeColors (..)
   , treeColors
   , languageTint
@@ -132,6 +134,21 @@ menuChrome theme = accentColor (lerpColor (themeWindow theme) (styleFg (themePan
 -- since it is reached with the same keyboard.
 paneChrome :: Theme -> Theme
 paneChrome theme = accentColor (themeMuted theme) theme
+
+-- | The line around the whole window, which is the only edge a window with
+-- no frame of its own has to show for itself. It is the seam the bars inside
+-- the window are drawn in, a step brighter: the seams inside separate one
+-- grey from another, and this one has whatever is on the desktop behind it
+-- to hold its own against.
+windowEdge :: Theme -> Color
+windowEdge theme = lerpColor (themeSeparator theme) (styleFg (themePanel theme)) 0.25
+
+-- | What the close button lights up in under the pointer. Closing the window
+-- is the one thing in its chrome that cannot be taken back, so it is the one
+-- piece of chrome allowed a hue, and it is a red darker and warmer than the
+-- theme's own, which is a colour for code rather than for a warning.
+closeRed :: Color
+closeRed = rgb 0x9C2C21
 
 -- | The file tree's colours, worked out from the theme once a frame.
 --

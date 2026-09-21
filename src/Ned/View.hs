@@ -1,11 +1,16 @@
 -- | One frame of the window, and the row its two panes share.
 --
--- From the top: what the frame answers to, the menus along it, the tree and
--- the editor side by side in their pane grid, the find bar under them, the
--- status bar under that, and the overlays over the lot. What each of those is
--- made of is one module down -- the editor's widgets in "Ned.View.Editor", the
--- tree's in "Ned.View.Tree", the bars and menus in "Ned.View.Chrome" -- so what
--- is left here is the order they go in and the room each of them gets.
+-- From the top: what the frame answers to, the title bar the menus are along,
+-- the tree and the editor side by side in their pane grid, the find bar under
+-- them, the status bar under that, and the overlays over the lot. The window
+-- keeps no title bar of the desktop's, so the one along the top is its own:
+-- it carries the name and the three buttons, and what the desktop drags and
+-- resizes the window by is handed over from there.
+--
+-- What each of those is made of is one module down -- the editor's widgets in
+-- "Ned.View.Editor", the tree's in "Ned.View.Tree", the bars, the menus and
+-- the window's own chrome in "Ned.View.Chrome" -- so what is left here is the
+-- order they go in and the room each of them gets.
 --
 -- Nothing in this module or the three under it decides anything. What a key
 -- does to the text is in "Ned.Editor.Keys", what a frame of the editor works
@@ -85,13 +90,8 @@ appView ref = do
   appChords cmds app0
 
   ----------------------------------------------------------------- layout ---
-  columnWith (grow . gap 0 . padAll 0) $ do
-    menuBar
-      (appOpenMenu app0)
-      (\m -> modify (\a -> a {appOpenMenu = m}))
-      (appMenuSwallow app0)
-      (\m -> modify (\a -> a {appMenuSwallow = m}))
-      (appMenus cmds app0)
+  windowBorder $ columnWith (grow . gap 0 . padAll 0) $ do
+    titleBar cmds app0
     separator
 
     -- The tree and the editor run on the state as the chords and menus above

@@ -23,14 +23,13 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import NanoUI
 import NanoUI.Backend.Sdl
-import NanoUI.Monad (askHost, askInput)
+import NanoUI.Monad (askInput)
 import Ned.App.Commands
 import Ned.App.State
 import qualified Ned.Buffer as B
 import Ned.Editor
 import qualified Ned.FileTree as FT
 import Ned.Highlight (langName)
-import Ned.Sdl (setWindowTitle)
 
 --------------------------------------------------------------------------------
 -- What a frame answers to
@@ -88,8 +87,7 @@ syncTitle :: Commands -> App -> NanoUI ()
 syncTitle cmds app =
   when (titleFor app /= appTitle app) $ do
     cmdModify cmds (\a -> a {appTitle = titleFor app})
-    host <- askHost
-    for_ host $ \env -> uiIO (setWindowTitle env (titleFor app))
+    setWindowTitleUi (titleFor app)
 
 --------------------------------------------------------------------------------
 -- Whether the next frame draws

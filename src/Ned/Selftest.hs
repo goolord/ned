@@ -19,7 +19,6 @@ import qualified Ned.Buffer as B
 import Ned.App
 import qualified Ned.FileTree as FT
 import Ned.Editor (Editor (..), cellWidth, defaultFontSize)
-import Ned.Sdl (setWindowSize)
 import Ned.View (appView)
 import System.Directory (createDirectoryIfMissing, makeAbsolute)
 import System.Exit (exitFailure)
@@ -384,7 +383,7 @@ selftestIn dir mfile say = do
     let resizeRun name ui = do
           t0 <- getMonotonicTime
           forM_ [1 :: Int .. 100] $ \i -> do
-            setWindowSize env (1500 + 8 * i) (900 + 4 * i)
+            setWindowSize env (Size (1500 + 8 * fromIntegral i) (900 + 4 * fromIntegral i))
             (ctx', inp') <- syncDisplay ctx env base
             when (i == 100) (say ("  window is now " <> show (inputWindowSize inp')))
             void (sdlDrawFrame ctx' ui env inp' True)

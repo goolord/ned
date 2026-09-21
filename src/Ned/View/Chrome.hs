@@ -1,12 +1,14 @@
--- | The bars around the editor: the menus along the top, the find and
--- go-to-line bar under the text, and the status along the bottom.
+-- | The bars around the editor: the window's own title bar along the top,
+-- the find and go-to-line bar under the text, and the status along the
+-- bottom.
 --
 -- None of this edits anything itself. Every row and button asks for a
 -- 'Commands', so what a menu says and what it does sit on the same line, and
 -- the frame in "Ned.View" is left to say where the bars go.
 module Ned.View.Chrome
-  ( -- * The menus
-    menuBar
+  ( -- * The window's own chrome
+    titleBar
+  , windowBorder
   , appMenus
   , editorMenu
   , treeMenu
@@ -23,6 +25,7 @@ import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
 import NanoUI
+import NanoUI.Backend.Sdl (CaptionOptions (..), defaultCaptionOptions, defaultResizeBorder, windowCaptionWith, windowMaximizedUi)
 import NanoUI.Context (Context (..), getFocusId)
 import NanoUI.Monad (askContext, askFrameInput, askInput)
 import Ned.App.Commands
@@ -34,31 +37,126 @@ import Ned.File (Eol (..), FileFormat (..))
 import Ned.FileTree (hasParentRoot)
 import qualified Ned.FileTree as FT
 import Ned.Highlight (langName)
-import Ned.Theme (menuChrome)
+import Ned.Theme (closeRed, menuChrome, windowEdge)
 import System.FilePath (takeFileName)
 import Text.Read (readMaybe)
 
 --------------------------------------------------------------------------------
--- The menus
+-- The title bar
 --------------------------------------------------------------------------------
 
--- | A horizontal menu bar. @open@ is the label of the open drop-down, or
--- empty. A click on a menu's button toggles the menu.
+-- | How tall the bar along the top is: the height the toolkit's own caption
+-- buttons are drawn at, since they sit in it.
+titleBarHeight :: Float
+titleBarHeight = captionBarHeight
+
+-- | How thick the line around the whole window is. One pixel: it is there
+-- to say where the window ends, not to be seen. What colour it is is
+-- "Ned.Theme"'s 'windowEdge'.
+--
+-- It is drawn square, because the window is. The window the desktop rounds
+-- is the one the frame is the edge of, a frame's width outside the view; the
+-- view's own corners are square whatever is done there, and the toolkit
+-- squares the shadow to match rather than leave it curving round corners the
+-- window does not have.
+windowBorderWidth :: Float
+windowBorderWidth = 1
+
+-- | The line around the whole window, with the frame inside it. The window
+-- keeps none of the desktop's title bar and nothing of its frame is drawn,
+-- so this line is all there is to tell the window from what is behind it on
+-- the desktop.
+--
+-- A window filling the screen draws none: what is beside it is the screen's
+-- own edge, and a line there would be a line against nothing. The container
+-- stays either way, so nothing inside loses its place when the line comes
+-- and goes.
+windowBorder :: NanoUI a -> NanoUI a
+windowBorder body = do
+  theme <- uiTheme
+  maximized <- windowMaximizedUi
+  windowFrame
+    WindowFrame
+      { frameWidth = if maximized then 0 else windowBorderWidth
+      , frameRadius = 0
+      , frameColor = windowEdge theme
+      }
+    body
+
+-- | The window's title bar, which is also its menu bar: the menus at the
+-- left, the file's name in the middle, and the buttons that put the window
+-- away, fill the screen with it and close it at the right.
+--
+-- The desktop's own title bar is gone, so this row is the only thing there
+-- is to take hold of the window by. What is left of it between the menus and
+-- those buttons is handed over as the strip that drags the window, which is
+-- 'windowCaptionWith''s to do: it wants the rectangles of everything in the
+-- row that takes a click of its own, and the menu buttons hand theirs back
+-- as they are drawn.
+titleBar :: Commands -> App -> NanoUI ()
+titleBar cmds app = do
+  closing <-
+    styled menuChrome $
+      rowWith (titleBarPad . tight . fillW . fixedH titleBarHeight . gap 2) $ do
+        taken <- menus cmds app
+        flex
+        -- The same words the desktop has for the window, since this bar is
+        -- now the only place they are written.
+        labelWith (tight . fontMuted . alignMid) (titleFor app)
+        flex
+        -- The window's three buttons sit against each other and against the
+        -- end of the bar, as a window's own do, so they are in a row of
+        -- their own that the bar's gap does not reach into.
+        rowWith (tight . gap 0 . fillH) $
+          -- The sides and the bottom resize the window from outside it,
+          -- where the desktop's own frame is, so inside them the line the
+          -- window draws round itself is as far in as an edge reaches. The
+          -- top has no frame outside it and never can have -- that strip
+          -- would be painted as a caption -- so the top of the bar is what
+          -- the top edge is grasped by, and it takes the room it needs.
+          windowCaptionWith
+            defaultCaptionOptions
+              { capResizeBorder = windowBorderWidth
+              , capResizeTop = defaultResizeBorder
+              , -- The close button reaches a corner of a window with square
+                -- corners, so its own is square too.
+                capButtons = defaultCaptionConfig {capCornerRadius = 0, capCloseColor = Just closeRed}
+              }
+            taken
+  -- Closing throws away the same unsaved text File > Exit does, so it asks
+  -- the same question first.
+  when closing (cmdGuarded cmds PendingQuit)
+
+-- | The bar's padding. The menu titles start in from the edge rather than
+-- hard against it; the window's own buttons at the other end do finish hard
+-- against it, so that the close button reaches the corner the way every
+-- other window's does.
+titleBarPad :: Layout -> Layout
+titleBarPad l = l {layoutPadding = Padding 6 0 0 0}
+
+-- | The menu bar's buttons and the menus that hang from them, and where each
+-- button is, which is where the window cannot be dragged by.
 --
 -- A popup is dismissed by the press of a click outside it, and a button is
 -- clicked by the release. A click on the open menu's own button is both: the
 -- press closes the menu, and the release would open it again. So a press
--- that closes a menu over its own button is remembered in @swallow@, and the
+-- that closes a menu over its own button is remembered in the state, and the
 -- click that follows it does nothing.
-menuBar :: Text -> (Text -> NanoUI ()) -> Text -> (Text -> NanoUI ()) -> [(Text, NanoUI ())] -> NanoUI ()
-menuBar open setOpen swallow setSwallow entries = do
+menus :: Commands -> App -> NanoUI [Rect]
+menus cmds app = do
   -- The pointer as it is, where a button under an open menu sees none.
   pointer <- askFrameInput
-  -- The titles start in from the edge rather than hard against it.
-  styled menuChrome $ rowWith (padXY 6 0 . tight . fillW . fixedH 30 . gap 2) $ do
-    for_ entries $ \(title, body) -> do
+  rects <- traverse (entry pointer) (appMenus cmds app)
+  when (inputMouseReleased pointer && not (T.null swallow)) (setSwallow "")
+  pure rects
+  where
+    open = appOpenMenu app
+    swallow = appMenuSwallow app
+    setOpen m = cmdModify cmds (\a -> a {appOpenMenu = m})
+    setSwallow m = cmdModify cmds (\a -> a {appMenuSwallow = m})
+    entry pointer (title, body) = do
       let isOpen = open == title
-      btn <- menuButton' title isOpen
+      btn <- menuButtonWith' fillH title isOpen
       let cfg = (defaultPopupConfig (AnchorRect (respRect btn))) {cfgPlacement = PlacementBelow, cfgOffset = 0}
           onButton = rectContains (respRect btn) (inputMousePos pointer)
       when (respClicked btn && swallow /= title) (setOpen (if isOpen then "" else title))
@@ -67,8 +165,7 @@ menuBar open setOpen swallow setSwallow entries = do
       when (respClicked popupResp) $ do
         setOpen ""
         when (inputMousePressed pointer && onButton) (setSwallow title)
-    flex
-  when (inputMouseReleased pointer && not (T.null swallow)) (setSwallow "")
+      pure (respRect btn)
 
 -- | A row of a menu, greyed when it does not apply. Picking one closes the
 -- menu bar's menu, which a context menu has none of and loses nothing by.

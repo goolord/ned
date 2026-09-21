@@ -1,7 +1,6 @@
 -- | What the editor and the file tree have in common. Both are custom nano-ui
 -- widgets that scroll themselves a row at a time under a scrollbar of their
--- own, key their drawing on everything it reads, and keep the keyboard for as
--- long as it is theirs.
+-- own, and both draw their icons out of the toolkit's shapes.
 module Ned.Widget
   ( -- * Scrolling
     Scroller (..)
@@ -10,26 +9,12 @@ module Ned.Widget
   , thumbScroll
   , followRow
 
-    -- * Content keys
-  , contentHash
-  , hashText
-
     -- * Icons
   , folderIcon
   , fileIcon
-
-    -- * Focus
-  , takeFocus
-  , dropFocus
   ) where
 
-import Control.Monad (when)
-import Data.Bits (xor)
-import Data.IORef (writeIORef)
-import Data.Text (Text)
-import qualified Data.Text as T
-import NanoUI (Color, DrawOp (..), Rect (..), WidgetId (..))
-import NanoUI.Context (Context (..), getFocusId)
+import NanoUI (Color, DrawOp (..), Rect (..))
 import Ned.Text (clamp)
 
 --------------------------------------------------------------------------------
@@ -79,28 +64,6 @@ followRow row view y
     r = fromIntegral row
 
 --------------------------------------------------------------------------------
--- Content keys
---------------------------------------------------------------------------------
-
--- | A custom widget's content key: a number that changes when any of the
--- values its drawing reads does (FNV-1a over them). Zero means "no key" to
--- nano-ui, so a hash that lands there becomes 1.
-contentHash :: [Int] -> Int
-contentHash fields = if h == 0 then 1 else h
-  where
-    h = foldl' fnv fnvBasis fields
-
--- | A text as one of the values of a 'contentHash'.
-hashText :: Text -> Int
-hashText = T.foldl' (\acc c -> fnv acc (fromEnum c)) fnvBasis
-
-fnv :: Int -> Int -> Int
-fnv acc v = (acc `xor` v) * 1099511628211
-
-fnvBasis :: Int
-fnvBasis = 1469598103934665603
-
---------------------------------------------------------------------------------
 -- Icons
 --------------------------------------------------------------------------------
 
@@ -136,26 +99,3 @@ fileIcon ix cy col =
   where
     fx = fromIntegral (round ix :: Int) + 4
     fy = cy - 6
-
---------------------------------------------------------------------------------
--- Focus
---------------------------------------------------------------------------------
-
--- | Give a widget the keyboard, without the ring that Tab would draw on it.
--- Tab walks the focus off to the next widget and a click on a menu takes it
--- there, so a widget that wants the keyboard takes it back every frame.
-takeFocus :: Context -> WidgetId -> IO ()
-takeFocus ctx wid = do
-  focus <- getFocusId ctx
-  when (focus /= wid) $ do
-    writeIORef (ctxFocusId ctx) wid
-    writeIORef (ctxFocusVisible ctx) False
-
--- | Take the keyboard off a widget that should not act on it. The pane grid
--- is focusable like any other nano-ui container, and its own keys act on its
--- panes; ned's widgets own the keyboard this side of it, so a focus left on
--- the grid by a Tab is dropped before the grid can read a key.
-dropFocus :: Context -> WidgetId -> IO ()
-dropFocus ctx wid = do
-  focus <- getFocusId ctx
-  when (focus == wid) (writeIORef (ctxFocusId ctx) (WidgetId 0))

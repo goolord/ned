@@ -23,7 +23,6 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import NanoUI
 import NanoUI.Backend.Sdl
-import NanoUI.Monad (askInput)
 import Ned.App.Commands
 import Ned.App.State
 import qualified Ned.Buffer as B

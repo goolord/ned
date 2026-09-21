@@ -26,7 +26,6 @@ import NanoUI
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
 import Ned.Widget (Scroller (..))
-import NanoUI.Backend (lineWidthIO)
 
 scrollBarW, textPad :: Float
 scrollBarW = 12
@@ -55,9 +54,12 @@ geometry cellW fm buf =
 -- and 8.25 at size 15, so cells a rounded advance wide part from the glyphs of
 -- a run drawn as one op, by a cell every 32 characters. The width of a long
 -- run over its length is the advance to within a pixel across a line.
-cellWidth :: FontMetrics -> IO Float
-cellWidth fm = do
-  w <- lineWidthIO fm cellRuler
+--
+-- It takes what measures a line in the font, which a view has as
+-- 'lineWidthUi' and anything outside one as the backend's own.
+cellWidth :: Monad m => (Text -> m Float) -> m Float
+cellWidth measure = do
+  w <- measure cellRuler
   pure (max 1 (w / fromIntegral (T.length cellRuler)))
 
 -- | Short enough for the host to keep its shaped line from frame to frame.

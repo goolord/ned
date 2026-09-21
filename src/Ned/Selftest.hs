@@ -17,8 +17,8 @@ import qualified Data.Text.NanoRope as Rope
 import GHC.Clock (getMonotonicTime)
 import NanoUI
 import NanoUI.Backend.Sdl
-import NanoUI.Context (Context (..), getWakeAt)
-import NanoUI.Testing (cursorKindIs, newPixelContext, uiCursorKind)
+import NanoUI.Context (Context (..))
+import NanoUI.Testing (cursorKindIs, needsRedraw, newPixelContext, uiCursorKind)
 import qualified Ned.Buffer as B
 import Ned.App
 import qualified Ned.FileTree as FT
@@ -102,7 +102,7 @@ selftestIn dir mfile say = do
     -- other fractions.
     forM_ [8, 11, defaultFontSize, 16.5, 20, 33, 48] $ \pt -> do
       (fm, _) <- ctxResolveFont ctx pt WeightNormal FontStyleNormal FontMono
-      cellW <- cellWidth fm
+      cellW <- cellWidth (lineWidthIO fm)
       let run = T.replicate 150 "e"
       drawn <- lineWidthIO fm run
       when (abs (drawn - 150 * cellW) > 1) $
@@ -330,26 +330,26 @@ selftestIn dir mfile say = do
     typedInto <- text
     when (typedInto == opened) $ fail "selftest: the text took nothing after the tree opened it"
 
-    -- Every row of the tree is the one widget, so nano-ui runs no frame for a
-    -- pointer that crosses from one row to the next, and the tree has to ask
-    -- for one itself. Without that the row drawn under the pointer waits for
-    -- whatever wants the next frame, which between caret blinks is half a
-    -- second.
-    frame base {inputMousePos = V2 60 70}
-    wakeNow <- getMonotonicTime
-    wakeAt <- getWakeAt ctx
-    when (wakeAt <= 0 || wakeAt - wakeNow > 0.1) $
-      fail (printf "selftest: the tree asked for no frame with the pointer over it (in %.3f s)" (wakeAt - wakeNow))
-    -- The caret asks for a frame of its own at the next blink, which is up to
-    -- a blink away and would be taken for the tree's. Moving it first puts
-    -- that a whole blink off, so a frame wanted sooner than this is the
-    -- tree's and nothing else.
-    key plain KeyHome
-    frame base {inputMousePos = V2 900 400}
-    awayNow <- getMonotonicTime
-    awayWake <- getWakeAt ctx
-    when (awayWake > 0 && awayWake - awayNow < 0.1) $
-      fail (printf "selftest: the tree asked for a frame in %.3f s with the pointer off it" (awayWake - awayNow))
+    -- Every row of the tree is the one widget, so a pointer that moves from
+    -- one row to the next crosses onto no other widget. The tree asks for a
+    -- frame on every move over it, or the row drawn under the pointer would
+    -- wait for whatever wants the next frame, which between caret blinks is
+    -- half a second. The text asks for none: nothing it draws follows a
+    -- pointer that is only passing over it. What the pointer passed on the
+    -- way fades out first, so that a frame wanted for a fade is not taken
+    -- for one wanted for the move.
+    let quiet inp n = do
+          frame inp {inputDeltaTime = 0.05}
+          busy <- needsRedraw ctx inp inp
+          when (busy && n > (0 :: Int)) (quiet inp (n - 1))
+        over = base {inputMousePos = V2 60 70}
+        away = base {inputMousePos = V2 900 400}
+    quiet over 100
+    overNeeds <- needsRedraw ctx over over {inputMousePos = V2 60 73}
+    unless overNeeds (fail "selftest: a pointer moving over the tree asked for no frame")
+    quiet away 100
+    awayNeeds <- needsRedraw ctx away away {inputMousePos = V2 903 400}
+    when awayNeeds (fail "selftest: a pointer moving over the text asked for a frame")
 
     -- A press on a folder's row closes it again. The rows start under the
     -- menu bar and the tree's own heading, a row every line height.

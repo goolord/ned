@@ -29,17 +29,14 @@ module Ned.FileTree
   , minTreeWidth
   ) where
 
-import Control.Monad (when)
 import Data.Primitive.SmallArray (indexSmallArray, sizeofSmallArray)
 import Effectful (Eff, type (:>))
 -- 'Row' here is a row of the tree, not nano-ui's layout direction.
 import NanoUI hiding (Row)
-import NanoUI.Monad (askInput)
 import Ned.FileTree.Geometry
 import Ned.FileTree.Model
 import Ned.Text (clamp)
 import Ned.Widget
-import NanoUI.Input (foldInputKeys)
 
 --------------------------------------------------------------------------------
 -- One frame
@@ -101,16 +98,6 @@ treeFrame wantFocus rect lineH ft0 = do
         | otherwise = case ftDrag ft0 of
             DragThumb grab -> (ft0 {ftScroll = thumbScroll bar grab localY}, Nothing)
             _ -> (ft0, Nothing)
-
-  -- nano-ui runs a frame for a pointer that only moved when it came over
-  -- another widget. Every row here is the same widget, so a pointer crossing
-  -- from one row to the next asks for nothing, and the row drawn under it
-  -- would stay where it was until something else wanted a frame: in an editor
-  -- that sleeps between caret blinks, half a second. While the pointer is
-  -- over the tree it asks for its own frames. A frame whose rows have not
-  -- changed builds no draw ops and repaints nothing, so this costs the wake
-  -- and no more, and it stops as soon as the pointer leaves.
-  when inside (wakeAfter 0.03)
 
   -- A directory opened by this frame's click is read before the frame draws it.
   ftLoaded <- uiIO (loadPending ftMouse)

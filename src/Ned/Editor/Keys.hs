@@ -14,15 +14,13 @@ module Ned.Editor.Keys
 import qualified Data.Text as T
 import Effectful (Eff, type (:>))
 import NanoUI
-import NanoUI.Context (Context (..))
 import Ned.Buffer (Buffer)
-import NanoUI.Input (foldInputKeys)
 import qualified Ned.Buffer as B
 
 -- | Run the frame's keys and typed characters on the buffer. Chords the
 -- application owns (save, open, find and so on) are left alone.
-applyKeys :: Ui :> es => Context -> Input -> Int -> Buffer -> Eff es Buffer
-applyKeys ctx inp page buf0 = do
+applyKeys :: Ui :> es => Input -> Int -> Buffer -> Eff es Buffer
+applyKeys inp page buf0 = do
   let mods = inputModifiers inp
       shift = modShift mods
       ctrl = modCtrl mods
@@ -68,26 +66,26 @@ applyKeys ctx inp page buf0 = do
       'Z' -> pure (B.redo b)
       'z' -> pure (B.undo b)
       'y' -> pure (B.redo b)
-      'c' -> uiIO (clipboardCopy ctx b)
-      'x' -> uiIO (clipboardCut ctx b)
-      'v' -> uiIO (clipboardPaste ctx b)
+      'c' -> clipboardCopy b
+      'x' -> clipboardCut b
+      'v' -> clipboardPaste b
       _ -> pure b
 
 -- | Copy, cut and paste through the host's clipboard. With nothing selected,
 -- copy and cut take the whole line.
-clipboardCopy, clipboardCut, clipboardPaste :: Context -> Buffer -> IO Buffer
-clipboardCopy ctx b = b <$ copyFrom ctx (orLine b)
-clipboardCut ctx b = do
-  copied <- copyFrom ctx (orLine b)
+clipboardCopy, clipboardCut, clipboardPaste :: Ui :> es => Buffer -> Eff es Buffer
+clipboardCopy b = b <$ copyFrom (orLine b)
+clipboardCut b = do
+  copied <- copyFrom (orLine b)
   pure (if copied then B.deleteSelection (orLine b) else b)
-clipboardPaste ctx b = maybe b (`B.insertText` b) <$> ctxClipboardGet ctx
+clipboardPaste b = maybe b (`B.insertText` b) <$> getClipboard
 
 -- | Put the selection on the clipboard, and say whether it went. An empty
 -- line has nothing to take, and what the clipboard holds stays.
-copyFrom :: Context -> Buffer -> IO Bool
-copyFrom ctx b =
+copyFrom :: Ui :> es => Buffer -> Eff es Bool
+copyFrom b =
   let t = B.selectedText b
-   in if T.null t then pure False else ctxClipboardSet ctx t
+   in if T.null t then pure False else setClipboard t
 
 orLine :: Buffer -> Buffer
 orLine b = if B.hasSelection b then b else B.selectLineAt (B.bufCursor b) b

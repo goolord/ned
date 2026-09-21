@@ -19,7 +19,6 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import NanoUI
 import NanoUI.Backend.Sdl
-import NanoUI.Context (Context)
 import Ned.App.State
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
@@ -44,7 +43,7 @@ data Commands = Commands
   , cmdOnEditor :: (Editor -> Editor) -> NanoUI ()
   , cmdOnBuffer :: (Buffer -> Buffer) -> NanoUI ()
   -- ^ Edit the text, and scroll the caret back into view.
-  , cmdOnBufferIO :: (Context -> Buffer -> IO Buffer) -> NanoUI ()
+  , cmdOnBufferIO :: (Buffer -> NanoUI Buffer) -> NanoUI ()
   -- ^ The same, for the clipboard, which has to ask the host.
   , cmdOnTree :: (FileTree -> FileTree) -> NanoUI ()
   , cmdRun :: Pending -> NanoUI ()
@@ -66,8 +65,8 @@ data Commands = Commands
   }
 
 -- | The commands over one application's state.
-commands :: Context -> IORef App -> Commands
-commands ctx ref =
+commands :: IORef App -> Commands
+commands ref =
   Commands
     { cmdRead = uiIO (readIORef ref)
     , cmdModify = modify
@@ -94,7 +93,7 @@ commands ctx ref =
     onBuffer f = onEditor (\ed -> revealCaret ed {edBuffer = f (edBuffer ed)})
     onBufferIO f = do
       a <- uiIO (readIORef ref)
-      b <- uiIO (f ctx (edBuffer (appEditor a)))
+      b <- f (edBuffer (appEditor a))
       onBuffer (const b)
     closeMenu = modify (\a -> a {appOpenMenu = ""})
     status msg = modify (\a -> a {appStatus = msg})

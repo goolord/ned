@@ -45,7 +45,7 @@ module Ned.Picker
 
 import Control.Concurrent (forkIO)
 import Control.Exception (SomeException, displayException, fromException, try)
-import Control.Monad (unless, when)
+import Control.Monad (unless, void, when)
 import qualified Data.IntMap.Strict as IM
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (mapAccumL)
@@ -60,9 +60,6 @@ import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import Effectful (Eff, type (:>))
 import NanoUI
-import NanoUI.Input (foldInputKeys)
-import NanoUI.Context (Context (..), getPrevRect)
-import NanoUI.Monad (askContext, askInput)
 import Ned.Editor (cellWidth, defaultFontSize)
 import qualified Ned.Fuzzy as Fuzzy
 import Ned.Highlight
@@ -127,15 +124,17 @@ data Picker = Picker
   , pkCursor :: !Int
   -- ^ Which hit the keyboard is on.
   , pkScroll :: !Double
-  -- ^ The hit at the top of the list; its fraction is how far it is scrolled
-  -- out of view.
+  -- ^ The hit at the top of the list, as the rows' scroller last had it; its
+  -- fraction is how far it is scrolled out of view.
   , pkHovered :: !Int
+  , pkToTop :: !Bool
+  -- ^ Whether the rows go back to the top on the next frame: a new query, or
+  -- a finder just put up, whose scroller may still be where the last one
+  -- was left.
   , pkNameCells :: !Int
   -- ^ How many cells the rows' column of names is wide: the longest name
   -- the rows have shown since the query last changed. It only grows, so
   -- that the folders beside the names stay put while the list is scrolled.
-  , pkGrab :: !(Maybe Float)
-  -- ^ Where the scrollbar's thumb is held, below its top, while it is dragged.
   , pkPreview :: !Preview
   }
 
@@ -159,6 +158,8 @@ data Preview = Preview
   , pvMore :: !Bool
   -- ^ Whether the file goes on past what was read.
   , pvScroll :: !Double
+  -- ^ Below zero for a preview that has not been placed yet: it opens on
+  -- what it is about, and after that it is where the reader scrolled it.
   , pvVersion :: !Int
   -- ^ Bumped whenever the lines change, for the drawing's content key.
   }
@@ -208,7 +209,7 @@ openPicker source root = do
       , pkCursor = 0
       , pkScroll = 0
       , pkHovered = -1
-      , pkGrab = Nothing
+      , pkToTop = True
       , pkNameCells = 0
       , pkPreview = emptyPreview
       }
@@ -261,18 +262,18 @@ batchSink cell gen batch = atomicModifyIORef' cell take'
 pickerSig :: Maybe Picker -> Int
 pickerSig Nothing = 0
 pickerSig (Just pk) =
-  contentHash
-    [ hashText (pkQuery pk)
-    , fromEnum (pkTyped pk == pkQuery pk)
-    , pkTaken pk
-    , hitCount pk
-    , pkCursor pk
-    , round (pkScroll pk * 64)
-    , pkHovered pk
-    , fromEnum (pkDone pk)
-    , fromEnum (isJust (pkStale pk))
-    , pvVersion (pkPreview pk)
-    , round (pvScroll (pkPreview pk) * 64)
+  contentKeyOf
+    [ keyPart (pkQuery pk)
+    , keyPart (pkTyped pk == pkQuery pk)
+    , keyPart (pkTaken pk)
+    , keyPart (hitCount pk)
+    , keyPart (pkCursor pk)
+    , keyPart (pkScroll pk)
+    , keyPart (pkHovered pk)
+    , keyPart (pkDone pk)
+    , keyPart (isJust (pkStale pk))
+    , keyPart (pvVersion (pkPreview pk))
+    , keyPart (pvScroll (pkPreview pk))
     ]
 
 --------------------------------------------------------------------------------
@@ -395,6 +396,7 @@ rematch fresh pk = do
       , pkHits = hits
       , pkCursor = if fresh then 0 else min (pkCursor pk) (max 0 (U.length (Fuzzy.matchedIndices hits) - 1))
       , pkScroll = if fresh then 0 else pkScroll pk
+      , pkToTop = fresh || pkToTop pk
       , pkNameCells = if fresh then 0 else pkNameCells pk
       }
 
@@ -575,11 +577,6 @@ pickerPad = 8
 pickerMark = 3
 pickerIcon = 18
 
--- | The lane the rows' scrollbar has, which is nothing until there is more to
--- show than the view holds.
-pickerBarW :: Float
-pickerBarW = 10
-
 rowHeight, codeHeight :: FontMetrics -> Float
 rowHeight fm = fromIntegral (ceiling (fmLineHeight fm) :: Int) + 2
 codeHeight fm = max 1 (fromIntegral (ceiling (fmLineHeight fm) :: Int))
@@ -597,20 +594,18 @@ pickerOverlay mpk = do
   winH <- windowHeight
   -- The panel takes the window but for a strip of it round the edge, enough
   -- to see that the editor is still there under it. The modal's own frame --
-  -- its padding at the sides and foot, and its title bar over the top -- is
-  -- taken off first, so that the strip is the same all the way round.
+  -- its title bar and padding -- is inside the panel, and the body fills
+  -- what the frame leaves.
   --
-  -- Whole pixels: the modal fits itself to the panel in whole pixels, and a
-  -- panel a fraction of a pixel taller than that overflows it, which puts a
-  -- scrollbar's lane down the modal's right that covers the panel's edge.
-  let bodyW = whole (clamp 480 1600 (winW - 2 * pickerMargin - modalSides))
-      bodyH = whole (clamp 260 1100 (winH - 2 * pickerMargin - modalChrome))
+  -- Whole pixels, so that the panel's edges land on the pixel grid.
+  let panelW = whole (clamp 500 1620 (winW - 2 * pickerMargin))
+      panelH = whole (clamp 320 1160 (winH - 2 * pickerMargin))
       whole v = fromIntegral (floor v :: Int)
   (closeResp, out) <-
-    modal (isJust mpk) (maybe "" (srcTitle . pkSource) mpk) $
+    modalWith (fixedWH panelW panelH) (isJust mpk) (maybe "" (srcTitle . pkSource) mpk) $
       case mpk of
         Nothing -> pure (Nothing, Nothing)
-        Just pk -> pickerBody bodyW bodyH pk
+        Just pk -> pickerBody pk
   let (kept, chosen) = fromMaybe (Nothing, Nothing) out
       left = if respClicked closeResp then Nothing else kept
   -- Whatever put it away -- Escape, a pick, the panel's own button -- the
@@ -620,27 +615,28 @@ pickerOverlay mpk = do
     _ -> pure ()
   pure (left, chosen)
 
--- | How much of the window is left round the panel, and what the modal's frame
--- adds to the panel: its padding at either side, and its title bar, the rule
--- under it, the gap under that and its padding at the foot.
-pickerMargin, modalSides, modalChrome :: Float
+-- | How much of the window is left round the panel.
+pickerMargin :: Float
 pickerMargin = 20
-modalSides = 20
-modalChrome = 61
 
 -- | The panel: the prompt over the rows, with the preview beside them, and the
 -- keys that work here along the foot.
-pickerBody :: Ui :> es => Float -> Float -> Picker -> Eff es (Maybe Picker, Maybe Item)
-pickerBody bodyW bodyH pk0 = do
-  ctx <- askContext
-  (fm, _) <- uiIO (ctxResolveFont ctx pickerFontSize WeightNormal FontStyleNormal FontMono)
-  cellW <- uiIO (cellWidth fm)
-  columnWith (tight . gap 0 . fixedW bodyW . fixedH bodyH) $ do
+pickerBody :: Ui :> es => Picker -> Eff es (Maybe Picker, Maybe Item)
+pickerBody pk0 = do
+  fm <- resolveFontUi pickerFontSize WeightNormal FontStyleNormal FontMono
+  cellW <- cellWidth (lineWidthUi fm)
+  columnWith (tight . gap 0 . fillW . fillH) $ do
     (typed, settled) <- promptRow pk0
     pk1 <- uiIO (restock pk0 typed settled)
+    -- The rule under the prompt spans the body, so where it was laid out
+    -- last frame says how wide the body is, which the column of rows takes
+    -- its share of. A share of the row it sits in would be squeezed by a
+    -- preview of long lines beside it.
+    ruleId <- currentId
     separator
+    bodyW <- maybe 900 rectW <$> lastRect ruleId
     (pk3, chosen, closed) <- rowWith (grow . gap 0 . padAll 0) $ do
-      (pk2, chosen, closed) <- rowsPane fm cellW bodyW pk1
+      (pk2, chosen, closed) <- rowsPane fm cellW (rowsWidth bodyW cellW) pk1
       separator
       pk3 <- uiIO (ensurePreview pk2) >>= previewPane fm cellW
       pure (pk3, chosen, closed)
@@ -690,8 +686,7 @@ promptRow pk =
       searchInputConfigured'
         defaultSearchInputConfig {sicPlaceholder = srcPrompt (pkSource pk), sicDebounceMs = liveDebounceMs}
         (pkTyped pk)
-    ctx <- askContext
-    uiIO (takeFocus ctx (respId resp))
+    holdFocus (respId resp)
     labelWith (tight . fontMuted . alignMid) (counted pk)
     pure (txt, respChanged resp || respSubmitted resp)
 
@@ -716,29 +711,29 @@ counted pk
 -- The rows
 --------------------------------------------------------------------------------
 
--- | The rows that answer the query, in one widget that scrolls itself: a list
--- of a hundred thousand draws the twenty that are on screen and no others.
+-- | The rows that answer the query, in a scroller that builds only the rows
+-- in its view: a list of a hundred thousand draws the twenty that are on
+-- screen and no others. The scroller is nano-ui's, and so are the wheel, the
+-- scrollbar and its thumb; the rows in view are one custom widget between
+-- two spacers that stand for the rows above and below them, since each
+-- character a query matched is coloured on its own.
 --
 -- This is where the finder's keys are read, since it is the rows they move.
 -- What comes back is the finder as the frame leaves it, an item that was
 -- picked, and whether the finder was put away.
 rowsPane :: Ui :> es => FontMetrics -> Float -> Float -> Picker -> Eff es (Picker, Maybe Item, Bool)
-rowsPane fm cellW bodyW pk0 = do
-  ctx <- askContext
+rowsPane fm cellW rowsW pk0 = do
   inp <- askInput
-  wid <- nextId
-  prev <- uiIO (getPrevRect ctx wid)
-  let rect = fromMaybe (Rect 0 0 320 400) prev
-      lineH = rowHeight fm
-      viewRows = realToFrac (rectH rect / lineH) :: Double
+  sid <- currentId
+  let lineH = rowHeight fm
       count = hitCount pk0
       mods = inputModifiers inp
       ctrl = modCtrl mods && not (modAlt mods)
       chord c = ctrl && T.any (== c) (inputChars inp)
 
-      -- The keyboard. Enter takes what the keyboard is on and Escape puts the
-      -- finder away; the rest is walking the rows, either with the arrows or
-      -- with the chords a terminal's own finder walks them with.
+      -- The keyboard. Enter takes what the keyboard is on; the rest is
+      -- walking the rows, either with the arrows or with the chords a
+      -- terminal's own finder walks them with.
       step k = case k of
         KeyUp -> -1
         KeyDown -> 1
@@ -748,101 +743,96 @@ rowsPane fm cellW bodyW pk0 = do
           + (if chord 'n' then 1 else 0)
           - (if chord 'p' then 1 else 0)
       chosenByKey = inputKeysElem KeyEnter (inputKeys inp)
-      closed = inputKeysElem KeyEscape (inputKeys inp)
+  -- Escape puts the finder away, unless it is the Escape that closes the
+  -- prompt's own right-click menu.
+  closed <- takeEscape
 
-      -- The pointer. A press takes the row under it, as a press on the file
-      -- tree takes a file.
+  -- The pointer. A press takes the row under it, as a press on the file tree
+  -- takes a file. The rows are where the scroller's view last put them.
+  metrics0 <- getScrollMetricsUi sid
+  let viewport = maybe (Rect 0 0 320 400) scrollViewport metrics0
+      offset0 = maybe 0 (v2Y . scrollOffset) metrics0
       mouse = inputMousePos inp
-      inside = rectContains rect mouse
-      localY = v2Y mouse - rectY rect
-      overBar = inside && v2X mouse >= rectX rect + rectW rect - pickerBarW && fromIntegral count > viewRows
-      pointed = floor (pkScroll pk0 + realToFrac (localY / lineH)) :: Int
-      onRow = inside && not overBar && pointed >= 0 && pointed < count && isNothing grab
+      pointed = floor ((v2Y mouse - rectY viewport + offset0) / lineH) :: Int
+      onRow = rectContains viewport mouse && pointed >= 0 && pointed < count
       pressed = onRow && inputMousePressed inp
-
-      -- The scrollbar. A press on it takes hold of the thumb, and the rows
-      -- follow the pointer until the button comes up, wherever it has gone.
-      bar = rowsScroller (rectH rect) viewRows count
-      grab
-        | inputMousePressed inp && overBar = Just (thumbGrab bar (pkScroll pk0) localY)
-        | inputMouseDown inp = pkGrab pk0
-        | otherwise = Nothing
-
       cursor = clamp 0 (max 0 (count - 1)) (if pressed then pointed else pkCursor pk0 + moved)
 
-      -- The wheel, three rows a notch, and then the row the keyboard is on
-      -- kept in view.
-      V2 _ wheelY = if inside then inputScroll inp else V2 0 0
-      scrolled = maybe (pkScroll pk0 + realToFrac wheelY * 3) (\g -> thumbScroll bar g localY) grab
-      followed = if moved /= 0 then followRow cursor viewRows scrolled else scrolled
-      atRow = clamp 0 (max 0 (fromIntegral count - viewRows)) followed
+  -- Three rows a notch, a new query back at the top, and the row the keyboard
+  -- moved to kept in view.
+  setScrollStepUi sid (3 * lineH)
+  when (pkToTop pk0) (scrollToUi sid (V2 0 0) ScrollInstant)
+  when (moved /= 0) (scrollRectIntoViewUi sid (Rect 0 (fromIntegral cursor * lineH) 1 lineH) ScrollNearest ScrollInstant)
+  offset <- maybe offset0 (v2Y . scrollOffset) <$> getScrollMetricsUi sid
 
-      pk1 = pk0 {pkCursor = cursor, pkScroll = atRow, pkHovered = if onRow then pointed else -1, pkGrab = grab}
+  let hovered = if onRow then pointed else -1
+      first = clamp 0 (max 0 (count - 1)) (floor (offset / lineH))
+      last' = min (count - 1) (first + ceiling (rectH viewport / lineH))
+      pk1 = pk0 {pkCursor = cursor, pkScroll = realToFrac (offset / lineH), pkHovered = hovered, pkToTop = False}
       -- Stale rows answer the last query and not the one in the prompt, so
       -- nothing is opened from them.
       chosen = if (chosenByKey || pressed) && isNothing (pkStale pk0) then currentItem pk1 else Nothing
 
-  -- nano-ui runs a frame for a pointer that only moved when it came over
-  -- another widget, and every row here is the one widget; while the pointer is
-  -- over the rows the finder asks for its own frames, so the row under it
-  -- keeps up. A gatherer that is still running wants them for the same reason:
-  -- nothing else knows that more rows have arrived.
-  when (inside || isJust grab || not (pkDone pk1)) (wakeAfter 0.03)
+  -- A gatherer that is still running asks for frames of its own: nothing
+  -- else knows that more rows have arrived.
+  when (not (pkDone pk1)) (wakeAfter 0.03)
 
-  let first = max 0 (floor atRow)
-      last' = min (count - 1) (first + ceiling (rectH rect / lineH))
   shown <- uiIO (visibleRows pk1 first last')
   let widest = foldl' (\m (PickRow item _) -> max m (T.length (rowLead item))) 0 shown
       pk2 = pk1 {pkNameCells = max (pkNameCells pk1) (min nameCap widest)}
-
-  let scene =
+      scene =
         RowScene
           { rsRows = shown
           , rsFirst = first
-          , rsCount = count
-          , rsScroll = atRow
           , rsLineH = lineH
           , rsTextH = fmLineHeight fm
           , rsCellW = cellW
-          , rsViewRows = viewRows
           , rsCursor = cursor
-          , rsHovered = pkHovered pk1
-          , rsEmpty = emptyNote pk1
+          , rsHovered = hovered
           , rsNameCells = pkNameCells pk2
           , rsKey =
-              contentHash
-                [ hashText (pkQuery pk1)
-                , pkTaken pk1
-                , count
-                , cursor
-                , round (atRow * 64)
-                , pkHovered pk1
-                , fromEnum (pkDone pk1)
-                , pkNameCells pk2
-                , -- How many rows the view holds. The first frame has no
-                  -- rect yet and guesses; the frame after it knows, and
-                  -- draws the rows its guess left out.
-                  first
-                , last'
+              contentKeyOf
+                [ keyPart (pkQuery pk1)
+                , keyPart (pkTaken pk1)
+                , keyPart count
+                , keyPart cursor
+                , keyPart hovered
+                , keyPart (pkNameCells pk2)
+                , keyPart first
+                , keyPart last'
                 ]
           }
+      above = fromIntegral first * lineH
+      inView = fromIntegral (max 0 (last' - first + 1)) * lineH
+      below = fromIntegral (max 0 (count - last' - 1)) * lineH
   _ <-
-    customWidgetWithId
-      wid
-      defaultCustomWidgetSpec
-        { widgetLayout = (fillH . fixedW (rowsWidth bodyW cellW)) defaultLayout
-        , widgetDraw = \cdc r -> drawRows cdc scene r
-        , widgetContent = rsKey scene
-        , widgetCursor = Just (const UiCursorDefault)
-        , widgetDamageSlop = 0
-        }
+    scrollArea (tight . gap 0 . fillH . fixedW rowsW) $
+      if count <= 0
+        then scope (emptyRows pk1)
+        else scope $ do
+          spacer Fit (Fixed above)
+          _ <-
+            customWidget
+              defaultCustomWidgetSpec
+                { widgetLayout = (fillW . fixedH inView) defaultLayout
+                , widgetDraw = \cdc r -> drawRows cdc scene r
+                , widgetContent = rsKey scene
+                , widgetCursor = Just (const UiCursorDefault)
+                , widgetDamageSlop = 0
+                , -- Every row in view is this one widget, so the row under a
+                  -- moving pointer keeps up only with a frame for every move
+                  -- over it.
+                  widgetTrackPointer = True
+                }
+          spacer Fit (Fixed below)
   pure (pk2, chosen, closed)
 
--- | The rows' scrollbar, over a view so many rows high of so many rows.
-rowsScroller :: Float -> Double -> Int -> Scroller
-rowsScroller h viewRows count =
-  let rows = fromIntegral count
-   in Scroller h (viewRows / max 1 rows) (max 0 (rows - viewRows))
+-- | What stands in for the rows when there are none, as text that wraps: a
+-- gatherer's error can be longer than the column is wide.
+emptyRows :: Ui :> es => Picker -> Eff es ()
+emptyRows pk =
+  columnWith (padXY (pickerMark + pickerPad) 6 . tight . fillW) $
+    void (richTextWith (fillW . fontMuted) [inlineText (emptyNote pk)])
 
 -- | How wide the column of rows is: enough for a name and a middling folder,
 -- and never more than its share of the panel. The preview takes what is left,
@@ -895,26 +885,23 @@ data PickRow = PickRow !Item !(U.Vector Int)
 data RowScene = RowScene
   { rsRows :: !(SmallArray PickRow)
   , rsFirst :: !Int
-  , rsCount :: !Int
-  , rsScroll :: !Double
+  -- ^ The hit the first of the rows is.
   , rsLineH :: !Float
   , rsTextH :: !Float
   -- ^ The height of a line of the font the rows are set in, which is the
   -- editor's and not the one the drawing is handed.
   , rsCellW :: !Float
-  , rsViewRows :: !Double
   , rsCursor :: !Int
   , rsHovered :: !Int
-  , rsEmpty :: !Text
   , rsNameCells :: !Int
   , rsKey :: !Int
   }
 
--- | The draw ops of the rows on screen, and of the scrollbar beside them when
--- there is more than the view holds.
+-- | The draw ops of the rows in view, the first of them at the top of the
+-- widget.
 drawRows :: CustomDrawContext -> RowScene -> Rect -> SmallArray DrawOp
-drawRows cdc sc rect@(Rect x y w h) =
-  smallArrayFromList (FillRect rect (tcPanel tc) : body)
+drawRows cdc sc rect@(Rect x y w _) =
+  smallArrayFromList (FillRect rect (tcPanel tc) : concatMap rowOps [0 .. shown - 1])
   where
     theme = cdcTheme cdc
     tc = treeColors theme
@@ -922,27 +909,15 @@ drawRows cdc sc rect@(Rect x y w h) =
     cellW = rsCellW sc
     rows = rsRows sc
     shown = sizeofSmallArray rows
-    yOff = realToFrac (fromIntegral (rsFirst sc) - rsScroll sc) * lineH
-    rowY j = y + yOff + fromIntegral j * lineH
+    rowY j = y + fromIntegral j * lineH
     textY ry = ry + (lineH - rsTextH sc) / 2
-    lane = if fromIntegral (rsCount sc) > rsViewRows sc then pickerBarW else 0
-    body
-      | rsCount sc <= 0 =
-          [ DrawTextStyled
-              (x + pickerMark + pickerPad)
-              (textY y)
-              (TextFont pickerFontSize FontMono WeightNormal FontStyleNormal DecorationNone)
-              (rsEmpty sc)
-              (tcMuted tc)
-          ]
-      | otherwise = concatMap rowOps [0 .. shown - 1] ++ bar
 
     rowOps j =
       let PickRow item pos = indexSmallArray rows j
           i = rsFirst sc + j
           ry = rowY j
           picked = i == rsCursor sc
-          pick = Rect (x + pickerMark + 2) (ry + 1) (max 0 (w - pickerMark - 4 - lane)) (lineH - 2)
+          pick = Rect (x + pickerMark + 2) (ry + 1) (max 0 (w - pickerMark - 4)) (lineH - 2)
           backdrop
             | picked = [FillRoundedRect pick radius (tcPicked tc)]
             | i == rsHovered sc = [FillRoundedRect pick radius (tcHover tc)]
@@ -953,7 +928,7 @@ drawRows cdc sc rect@(Rect x y w h) =
           mark = [FillRect (Rect x (ry + 1) pickerMark (lineH - 2)) (tcCurrent tc) | picked]
           ix = x + pickerMark + pickerPad
           tx = ix + pickerIcon
-          cells = max 0 (floor ((w - (tx - x) - pickerPad - lane) / cellW))
+          cells = max 0 (floor ((w - (tx - x) - pickerPad) / cellW))
           -- The name first, since it is what is being looked for, and the
           -- folder it is in beside it, in a column of its own, since that is
           -- how it is told from another file of the same name. A folder too
@@ -992,16 +967,6 @@ drawRows cdc sc rect@(Rect x y w h) =
 
     font weight = TextFont pickerFontSize FontMono weight FontStyleNormal DecorationNone
     radius = 3
-
-    bar
-      | lane <= 0 = []
-      | otherwise =
-          let (thumbTop, thumbH) = thumbSpan (rowsScroller h (rsViewRows sc) (rsCount sc)) (rsScroll sc)
-           in [ FillRoundedRect
-                  (Rect (x + w - pickerBarW + 2) (y + thumbTop + 2) (pickerBarW - 4) (thumbH - 4))
-                  radius
-                  (tcThumb tc)
-              ]
 
 -- | What a row shows first: a file's name, or the file and line a grep hit is
 -- at.
@@ -1123,134 +1088,140 @@ previewHeading pk =
     showT :: Int -> Text
     showT = T.pack . show
 
+-- | The lines of the file, in a scroller of nano-ui's on both axes: the
+-- wheel, Ctrl+D and Ctrl+U move it, and its scrollbars say where in the file
+-- the view is. A preview that has just been read opens on what it is about:
+-- the top of a file, or the line a grep found, and far enough along that line
+-- to show what was found. What stands in for the lines -- a file that could
+-- not be read -- is text that wraps.
 previewBody :: Ui :> es => FontMetrics -> Float -> Picker -> Eff es Picker
-previewBody fm cellW pk0 = do
-  ctx <- askContext
-  inp <- askInput
-  wid <- nextId
-  prev <- uiIO (getPrevRect ctx wid)
-  let rect = fromMaybe (Rect 0 0 400 400) prev
-      pv = pkPreview pk0
-      lineH = codeHeight fm
-      viewLines = realToFrac (rectH rect / lineH) :: Double
-      count = sizeofSmallArray (pvLines pv)
-      mods = inputModifiers inp
-      ctrl = modCtrl mods && not (modAlt mods)
-      chord c = ctrl && T.any (== c) (inputChars inp)
-      half = fromIntegral (max 1 (floor viewLines `div` 2 :: Int))
+previewBody fm cellW pk0
+  | not (T.null (pvNote pv)) = scope $ do
+      columnWith (padXY pickerPad 6 . tight . grow . fillH) $
+        void (richTextWith (fillW . fontMuted) [inlineText (pvNote pv)])
+      pure pk0
+  | otherwise = scope $ do
+      inp <- askInput
+      sid <- currentId
+      metrics <- getScrollMetricsUi sid
+      let lineH = codeHeight fm
+          lns = pvLines pv
+          count = sizeofSmallArray lns
+          digits = max 2 (length (show (max 1 (pvFirst pv + count))))
+          gutterW = fromIntegral (digits + 2) * cellW
+          widest = foldl' (\m (PreviewLine t _ _) -> max m (T.length t)) 0 lns
+          Rect _ _ viewW viewH = maybe (Rect 0 0 400 400) scrollViewport metrics
+          contentW = max viewW (gutterW + fromIntegral widest * cellW + pickerPad)
+          contentH = max viewH (fromIntegral count * lineH)
+          mods = inputModifiers inp
+          ctrl = modCtrl mods && not (modAlt mods)
+          chord c = ctrl && T.any (== c) (inputChars inp)
+          -- Where a preview that has just been read opens: the hit a third of
+          -- the way down, and the first thing found on it a third of the way
+          -- along, when it is further along than the view reaches.
+          hitAt = case pvHit pv of
+            Just ln | ln - pvFirst pv >= 0 && ln - pvFirst pv < count -> Just (ln - pvFirst pv)
+            _ -> Nothing
+          openY = maybe 0 (\i -> max 0 ((fromIntegral i - viewH / lineH / 3) * lineH)) hitAt
+          openX = case hitAt of
+            Just i
+              | PreviewLine _ _ ((a, b) : _) <- indexSmallArray lns i
+              , gutterW + fromIntegral b * cellW > viewW ->
+                  max 0 (fromIntegral a * cellW - (viewW - gutterW) / 3)
+            _ -> 0
+      when (pvScroll pv < 0) (setScrollOffsetUi sid (V2 openX openY))
       -- The preview is read rather than walked, so it is the wheel and the
-      -- chords a pager scrolls with that move it, and never the arrows: those
-      -- are the rows'.
-      V2 _ wheelY = if rectContains rect (inputMousePos inp) then inputScroll inp else V2 0 0
-      asked = realToFrac wheelY * 3 + (if chord 'd' then half else 0) - (if chord 'u' then half else 0)
-      -- A preview that has just been read opens where it is about: the top of
-      -- a file, or the line a grep found.
-      from = if pvScroll pv < 0 then maybe 0 (\ln -> fromIntegral (ln - pvFirst pv) - viewLines / 3) (pvHit pv) else pvScroll pv
-      atLine = clamp 0 (max 0 (fromIntegral count - viewLines)) (from + asked)
-      pk1 = pk0 {pkPreview = pv {pvScroll = atLine}}
-      first = max 0 (floor atLine)
-      last' = min (count - 1) (first + ceiling (rectH rect / lineH))
-      digits = max 2 (length (show (max 1 (pvFirst pv + count))))
-      scene =
-        CodeScene
-          { csLines = pvLines pv
-          , csBase = pvFirst pv
-          , csFirst = first
-          , csLast = last'
-          , csCount = count
-          , csScroll = atLine
-          , csLineH = lineH
-          , csTextH = fmLineHeight fm
-          , csCellW = cellW
-          , csGutterW = fromIntegral (digits + 2) * cellW
-          , csHit = pvHit pv
-          , csNote = pvNote pv
-          , csKey = contentHash [pvVersion pv, round (atLine * 64), first, last']
-          }
-  _ <-
-    customWidgetWithId
-      wid
-      defaultCustomWidgetSpec
-        { widgetLayout = (grow . fillH) defaultLayout
-        , widgetDraw = \cdc r -> drawCode cdc scene r
-        , widgetContent = csKey scene
-        , widgetCursor = Just (const UiCursorDefault)
-        , widgetDamageSlop = 0
-        }
-  pure pk1
+      -- chords a pager scrolls with that move it, and never the arrows:
+      -- those are the rows'.
+      when (chord 'd') (scrollPagesUi sid (V2 0 0.5) ScrollInstant)
+      when (chord 'u') (scrollPagesUi sid (V2 0 (-0.5)) ScrollInstant)
+      setScrollStepUi sid (3 * lineH)
+      offX <- maybe 0 (v2X . scrollOffset) <$> getScrollMetricsUi sid
+      let scene =
+            CodeScene
+              { csLines = lns
+              , csBase = pvFirst pv
+              , csLineH = lineH
+              , csTextH = fmLineHeight fm
+              , csCellW = cellW
+              , csGutterW = gutterW
+              , csGutterAt = clamp 0 (max 0 (contentW - viewW)) offX
+              , csHit = pvHit pv
+              }
+      _ <-
+        scrollArea2D (tight . gap 0 . grow . fillH) $
+          customWidget
+            defaultCustomWidgetSpec
+              { widgetLayout = fixedWH contentW contentH defaultLayout
+              , widgetDraw = \cdc r -> drawCode cdc scene r
+              , widgetContent = contentKeyOf [keyPart (pvVersion pv), keyPart (csGutterAt scene)]
+              , widgetCursor = Just (const UiCursorDefault)
+              , widgetDamageSlop = 0
+              }
+      pure pk0 {pkPreview = pv {pvScroll = 0}}
+  where
+    pv = pkPreview pk0
 
 -- | Everything the preview's drawing reads.
 data CodeScene = CodeScene
   { csLines :: !(SmallArray PreviewLine)
   , csBase :: !Int
   -- ^ The line of the file the first of the lines is.
-  , csFirst :: !Int
-  , csLast :: !Int
-  , csCount :: !Int
-  , csScroll :: !Double
   , csLineH :: !Float
   , csTextH :: !Float
   , csCellW :: !Float
   , csGutterW :: !Float
+  , csGutterAt :: !Float
+  -- ^ How far along the lines the view is scrolled, which is where the
+  -- numbers are drawn so that they stay down its left.
   , csHit :: !(Maybe Int)
-  , csNote :: !Text
-  , csKey :: !Int
   }
 
--- | The draw ops of the preview: the numbers down its left, and the lines of
--- the file in the colours the editor sets them in.
+-- | The draw ops of the preview: every line of the file that was read, in the
+-- colours the editor sets them in, and the numbers down the left of the view
+-- over whatever is scrolled under them. The scroller shows the part of it in
+-- view and moves it without its ops being built again.
 drawCode :: CustomDrawContext -> CodeScene -> Rect -> SmallArray DrawOp
-drawCode cdc sc rect@(Rect x y w h) =
-  smallArrayFromList (FillRect rect colBackground : body)
+drawCode _ sc rect@(Rect x y w h) =
+  smallArrayFromList (FillRect rect colBackground : concatMap lineOps [0 .. count - 1] ++ gutter)
   where
-    theme = cdcTheme cdc
+    lns = csLines sc
+    count = sizeofSmallArray lns
     lineH = csLineH sc
     cellW = csCellW sc
     gutterW = csGutterW sc
-    yOff = realToFrac (fromIntegral (csFirst sc) - csScroll sc) * lineH
-    lineY ln = y + yOff + fromIntegral (ln - csFirst sc) * lineH
+    lineY ln = y + fromIntegral ln * lineH
     textY ry = ry + (lineH - csTextH sc) / 2
     font kind = TextFont pickerFontSize FontMono (tokenWeight kind) FontStyleNormal DecorationNone
     textX = x + gutterW
-    cells = max 0 (floor ((w - gutterW - pickerPad) / cellW))
-    body
-      | not (T.null (csNote sc)) =
-          [ DrawTextStyled (x + pickerPad) (textY y) (font TokPlain) (csNote sc) (themeMuted theme)
-          ]
-      | otherwise = FillRect (Rect x y gutterW h) colGutter : concatMap lineOps [csFirst sc .. csLast sc]
+    gx = x + csGutterAt sc
+    isHit ln = csHit sc == Just (csBase sc + ln)
 
     lineOps ln =
-      let PreviewLine txt spans found = indexSmallArray (csLines sc) ln
+      let PreviewLine txt spans found = indexSmallArray lns ln
           ry = lineY ln
-          hit = csHit sc == Just (csBase sc + ln)
-          band = [FillRect (Rect x ry w lineH) colCurrentLine | hit]
+          band = [FillRect (Rect x ry w lineH) colCurrentLine | isHit ln]
           -- What the grep found, marked as Ctrl+F marks a match in the
-          -- editor, as far as the pane is wide.
+          -- editor.
           matches =
-            [ FillRect (Rect (textX + fromIntegral a * cellW) ry (fromIntegral (b' - a) * cellW) lineH) colFindMatch
+            [ FillRect (Rect (textX + fromIntegral a * cellW) ry (fromIntegral (b - a) * cellW) lineH) colFindMatch
             | (a, b) <- found
-            , let b' = min cells b
-            , b' > a
+            , b > a
             ]
-          num = T.pack (show (csBase sc + ln + 1))
-          number =
-            DrawTextStyled
-              (x + gutterW - cellW - fromIntegral (T.length num) * cellW)
-              (textY ry)
-              (font TokPlain)
-              num
-              (if hit then colGutterActive else colGutterText)
-       in band ++ matches ++ [number] ++ spanOps (textY ry) 0 (T.take cells txt) (takeSpans cells spans)
+       in band ++ matches ++ spanOps (textY ry) 0 txt spans
+
+    gutter = FillRect (Rect gx y gutterW h) colGutter : map number [0 .. count - 1]
+    number ln =
+      let num = T.pack (show (csBase sc + ln + 1))
+       in DrawTextStyled
+            (gx + gutterW - cellW - fromIntegral (T.length num) * cellW)
+            (textY (lineY ln))
+            (font TokPlain)
+            num
+            (if isHit ln then colGutterActive else colGutterText)
 
     spanOps _ _ _ [] = []
     spanOps ry !cell txt (Span n kind : rest) =
       cellRun (textX + fromIntegral cell * cellW) ry cellW (font kind) (tokenColor kind) (T.take n txt)
         ++ spanOps ry (cell + n) (T.drop n txt) rest
 
--- | The spans of the first so many characters of a line.
-takeSpans :: Int -> [Span] -> [Span]
-takeSpans _ [] = []
-takeSpans n (Span len kind : rest)
-  | n <= 0 = []
-  | len >= n = [Span n kind]
-  | otherwise = Span len kind : takeSpans (n - len) rest

@@ -34,7 +34,6 @@ import Control.Monad (when)
 import Data.Maybe (isNothing)
 import Effectful (Eff, type (:>))
 import NanoUI
-import NanoUI.Monad (askContext, askInput, uiTime)
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
 import Ned.Editor.Geometry
@@ -68,12 +67,11 @@ data EditorFrame = EditorFrame
 -- it is set in, which whoever lays it out has resolved already.
 editorFrame :: Ui :> es => Bool -> Rect -> Float -> FontMetrics -> Editor -> Eff es EditorFrame
 editorFrame focused rect cellW fm ed0 = do
-  ctx <- askContext
   inp <- askInput
   now <- uiTime
 
   let buf0 = edBuffer ed0
-  buf1 <- if focused then applyKeys ctx inp (edViewLines ed0) buf0 else pure buf0
+  buf1 <- if focused then applyKeys inp (edViewLines ed0) buf0 else pure buf0
 
   let g = geometry cellW fm buf1
       mouse = inputMousePos inp

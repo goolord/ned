@@ -26,9 +26,7 @@ module Ned.View
   ) where
 
 import Control.Monad (unless, when)
-import Data.Dynamic (toDyn)
 import Data.Foldable (for_)
-import qualified Data.IntMap.Strict as IM
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Maybe (isJust)
 import qualified Data.Text as T
@@ -36,20 +34,6 @@ import Data.Word (Word64)
 import Effectful (Eff, type (:>))
 import GHC.Clock (getMonotonicTime)
 import NanoUI
-import NanoUI.Context
-  ( Context (..)
-  , DamageState (..)
-  , Slot (..)
-  , WidgetStore (..)
-  , getStore
-  , intKey
-  , markDirty
-  , modifyDamage
-  , setStore
-  , slotKey
-  )
-import NanoUI.Monad (askContext, askInput)
-import NanoUI.Widgets.SplitPane (GridNode (Pane), treeSetRatio, treeSplit)
 import Ned.App.Commands
 import Ned.App.Frame
 import Ned.App.State
@@ -61,7 +45,6 @@ import Ned.Theme (paneChrome)
 import Ned.View.Chrome
 import Ned.View.Editor (editorView)
 import Ned.View.Tree (fileTreePanel)
-import Ned.Widget (dropFocus)
 import Text.Printf (printf)
 
 --------------------------------------------------------------------------------
@@ -77,10 +60,9 @@ import Text.Printf (printf)
 -- frame at the end when what it drew is no longer what the state says.
 appView :: IORef App -> NanoUI ()
 appView ref = do
-  ctx <- askContext
   app0 <- uiIO (readIORef ref)
   drawn <- uiIO (newIORef (editorSig app0))
-  let cmds = commands ctx ref
+  let cmds = commands ref
       modify = cmdModify cmds
       guarded = cmdGuarded cmds
       run = cmdRun cmds
@@ -132,9 +114,9 @@ appView ref = do
           -- tree's is its header, the strip of the pane the root's name
           -- stands on, so a hold there drags the pane as the grid's own bars
           -- are dragged and nothing else does.
-          hdrCtx <- askContext
+          fm <- uiFontMetrics
           let (Rect px py pw _) = pgcRect pctx
-              hh = TG.treeHeaderHeight (ctxFontMetrics hdrCtx)
+              hh = TG.treeHeaderHeight fm
           pure (PaneView (rootName ft) False (Just (Rect px py pw hh)))
         -- The editor pane. Putting the tree away makes this pane the whole
         -- row: the grid calls that maximizing it, and keeps the split where
@@ -209,7 +191,7 @@ appView ref = do
 
   appEnd <- uiIO (readIORef ref)
   drawnSig <- uiIO (readIORef drawn)
-  when (chromeSig appEnd /= chromeSig app0 || editorSig appEnd /= drawnSig) (uiIO (markDirty ctx))
+  when (chromeSig appEnd /= chromeSig app0 || editorSig appEnd /= drawnSig) requestFrame
 
 -- | One label and nothing else, which NED_BLANK swaps the application for: it
 -- tells what a frame costs nano-ui from what it costs the editor.
@@ -235,16 +217,13 @@ tracedView file body = do
 -- The two panes of a nano-ui pane grid, so the bar between them is the
 -- toolkit's to draw, drag and remember.
 --
--- The grid keeps its split tree in the widget store, keyed by its own widget
--- id, and seeds itself with a single pane when it finds none. A grid that had
--- to split itself would put the new pane on the B side and at a half, which
--- is the wrong side for the editor and the wrong width for the tree, so both
--- panes are seeded before its first frame, along with the row's rect, which
--- the first split is laid out from: the tree is the left pane, the editor the
--- right, and the tree starts at the width it always has.
+-- The grid starts from the split it is given: the tree is the left pane, the
+-- editor the right, and the tree starts at the width it always has. A grid
+-- left to split itself would put the new pane on the B side and at a half,
+-- which is the wrong side for the editor and the wrong width for the tree.
 
--- | The tree pane's id, the editor's, and the split between them. The ids
--- are the grid's to give out; these are the ones 'seedTreeEditor' wrote.
+-- | The tree pane's id, the editor's, and the split between them, which are
+-- the ids the grid starts from.
 treePaneId, editorPaneId, treeEditorSplit :: Word64
 treePaneId = 1
 editorPaneId = 2
@@ -259,11 +238,6 @@ dividerW = paneSpacing + 2 * paneLeeway
 paneSpacing = 1
 paneLeeway = 2
 
--- | The id after the seeded tree's: the first a pane made later may take, so
--- that no two panes ever share one.
-treeEditorNext :: Word64
-treeEditorNext = treeEditorSplit + 1
-
 -- | The tree and the editor side by side, as the two panes of a pane grid.
 -- Each pane's content is the given view, and the bar between them resizes
 -- them; the split is kept by the grid, so the tree comes back at the width it
@@ -273,21 +247,17 @@ treeEditorNext = treeEditorSplit + 1
 -- the tree is a fixture the reader set the width of, and a wider window is
 -- room for more text, not for more of a file name. It gives way only when
 -- the window is too narrow to hold it and the editor's minimum both.
+--
+-- The grid is no Tab stop: its own keys act on its panes, and ned's widgets
+-- own the keyboard this side of it.
 treeEditorGrid ::
   Ui :> es =>
   (PaneGridCtx es -> Eff es PaneView) ->
   (PaneGridCtx es -> Eff es PaneView) ->
   Eff es PaneGridResponse
 treeEditorGrid treePane editorPane = do
-  ctx <- askContext
   winW <- windowWidth
-  winH <- windowHeight
-  styled paneChrome $ do
-    -- The grid's own id, which everything it keeps is keyed by. The seeding
-    -- has to be in the store before the grid looks for it.
-    wid <- currentId
-    uiIO (seedTreeEditor ctx wid (Rect 0 0 winW winH) (treeShare winW))
-    uiIO (dropFocus ctx wid)
+  styled paneChrome $
     paneGrid
       defaultPaneGridConfig
         { pgSpacing = paneSpacing
@@ -297,6 +267,8 @@ treeEditorGrid treePane editorPane = do
         , -- The window's width is the editor's to take or give up: the tree
           -- is as wide as it was left, whatever the window does.
           pgFixedPanes = (== treePaneId)
+        , pgInitial = Just (Split treeEditorSplit AxisV (treeShare winW) (Pane treePaneId) (Pane editorPaneId))
+        , pgFocusable = False
         , pgViewPane = \pid pctx -> if pid == treePaneId then treePane pctx else editorPane pctx
         }
   where
@@ -308,29 +280,3 @@ treeEditorGrid treePane editorPane = do
       | otherwise = defaultTreeWidth / usable
       where
         usable = winW - dividerW
-
--- | Put both panes in the store, and the row's rect in the damage state,
--- before the grid's first frame. The grid reads the tree it keeps under the
--- key of its own widget id, and lays a split out from the rect the widget had
--- last frame; on the first frame there is none, and the grid would lay the row
--- out at a half before the seeded share of it took effect. The rect is the
--- window's, since the row spans it and has not been laid out yet.
-seedTreeEditor :: Context -> WidgetId -> Rect -> Float -> IO ()
-seedTreeEditor ctx wid rect share = do
-  st <- getStore ctx
-  let k = intKey wid
-  when (IM.notMember k (storeDyn st)) $ do
-    setStore ctx $
-      st
-        { storeDyn = IM.insert k (toDyn panes) (storeDyn st)
-        , -- Above every id in the tree, so a pane made by a gesture later
-          -- cannot take an id a pane's own state is already under.
-          storeInt = IM.insert (slotKey SlotPaneNext k) (fromIntegral treeEditorNext) (storeInt st)
-        }
-    modifyDamage ctx $ \ds -> ds {dsPrevRects = IM.insert k rect (dsPrevRects ds)}
-  where
-    panes =
-      treeSetRatio
-        treeEditorSplit
-        share
-        (treeSplit treePaneId treeEditorSplit AxisV False editorPaneId (Pane treePaneId))

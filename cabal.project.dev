@@ -1,0 +1,13 @@
+-- Local development: ned against the nano-ui checkout beside it.
+packages: .
+packages: ned-fzf
+packages: ../nano-ui/packages/nano-ui
+packages: ../nano-ui/packages/nano-ui-sdl
+
+source-repository-package
+  type: git
+  location: git@github.com:goolord/nano-rope.git
+  tag: 6a437b10a37e70123a6b3e65263ff251ef1d4333
+
+package nano-ui-sdl
+  flags: +sdl +simd

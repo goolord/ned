@@ -20,10 +20,7 @@ import Data.Primitive.SmallArray (SmallArray, smallArrayFromList)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Effectful (Eff, type (:>))
-import GHC.Float (castDoubleToWord64, castFloatToWord32)
 import NanoUI
-import NanoUI.Context (Context (..), getPrevRect)
-import NanoUI.Monad (askContext)
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
 import Ned.Editor
@@ -31,7 +28,7 @@ import Ned.Editor.Geometry
 import Ned.Highlight
 import Ned.Text (cellOfCol, cellsAt, foldCase, indentOf)
 import Ned.Theme
-import Ned.Widget (contentHash, hashText, takeFocus, thumbSpan)
+import Ned.Widget (thumbSpan)
 
 --------------------------------------------------------------------------------
 -- The editor
@@ -52,19 +49,18 @@ editorView wantFocus ed0 = do
   widGutter <- nextId
   wid <- nextId
   widBar <- nextId
-  ctx <- askContext
-  (fm, _) <- uiIO (ctxResolveFont ctx (edFontSize ed0) WeightNormal FontStyleNormal FontMono)
-  cellW <- uiIO (cellWidth fm)
+  fm <- resolveFontUi (edFontSize ed0) WeightNormal FontStyleNormal FontMono
+  cellW <- cellWidth (lineWidthUi fm)
   -- The whole editor, from where its three parts were last frame.
-  prevGutter <- uiIO (getPrevRect ctx widGutter)
-  prevBar <- uiIO (getPrevRect ctx widBar)
+  prevGutter <- lastRect widGutter
+  prevBar <- lastRect widBar
   let rect = case (prevGutter, prevBar) of
         (Just (Rect gx gy _ gh), Just (Rect bx _ bw _)) -> Rect gx gy (bx + bw - gx) gh
         _ -> Rect 0 0 800 600
 
   -- Tab would walk the focus off to the menu bar, and a click on a menu takes
   -- it there; the editor takes it back for as long as it is wanted.
-  when wantFocus $ uiIO (takeFocus ctx wid)
+  when wantFocus (holdFocus wid)
 
   fr <- editorFrame wantFocus rect cellW fm ed0
   let ed1 = efEditor fr
@@ -125,27 +121,24 @@ data Part = PartGutter | PartText | PartBar
 editorSceneKey :: Part -> EditorScene -> Int
 editorSceneKey which sc =
   let buf = esBuffer sc
-      scrollY = fromIntegral (castDoubleToWord64 (esScrollY sc))
-      sizeBits = fromIntegral (castFloatToWord32 (esFontSize sc))
-      fields = case which of
-        PartGutter -> [1, B.lineCount buf, scrollY, sizeBits, fst (B.cursorPosition buf)]
-        PartBar -> [2, B.lineCount buf, scrollY, sizeBits, fromEnum (esThumbHot sc)]
+   in contentKeyOf $ case which of
+        PartGutter -> [keyPart (1 :: Int), keyPart (B.lineCount buf), keyPart (esScrollY sc), keyPart (esFontSize sc), keyPart (fst (B.cursorPosition buf))]
+        PartBar -> [keyPart (2 :: Int), keyPart (B.lineCount buf), keyPart (esScrollY sc), keyPart (esFontSize sc), keyPart (esThumbHot sc)]
         PartText ->
-          [ 3
-          , B.bufVersion buf
-          , B.bufCursor buf
-          , B.bufAnchor buf
-          , scrollY
-          , fromIntegral (castFloatToWord32 (esScrollX sc))
-          , sizeBits
-          , fromEnum (esCaretOn sc)
-          , fromEnum (esWhitespace sc)
-          , fromEnum (esFindExact sc)
-          , hashText (esFind sc)
-          , hashText (langName (esLang sc))
-          , hashText (T.pack (show (esLexStart sc)))
+          [ keyPart (3 :: Int)
+          , keyPart (B.bufVersion buf)
+          , keyPart (B.bufCursor buf)
+          , keyPart (B.bufAnchor buf)
+          , keyPart (esScrollY sc)
+          , keyPart (esScrollX sc)
+          , keyPart (esFontSize sc)
+          , keyPart (esCaretOn sc)
+          , keyPart (esWhitespace sc)
+          , keyPart (esFindExact sc)
+          , keyPart (esFind sc)
+          , keyPart (langName (esLang sc))
+          , keyPart (show (esLexStart sc))
           ]
-   in contentHash fields
 
 -- | The draw ops of one part, given the rectangle that part was laid out in.
 -- They are worked out in terms of the whole editor, which starts a gutter to

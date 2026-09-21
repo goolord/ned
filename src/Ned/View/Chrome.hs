@@ -20,14 +20,12 @@ module Ned.View.Chrome
 
 import Control.Monad (when)
 import Data.Foldable (for_)
-import Data.IORef (writeIORef)
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
 import NanoUI
 import NanoUI.Backend.Sdl (CaptionOptions (..), defaultCaptionOptions, defaultResizeBorder, windowCaptionWith, windowMaximizedUi)
-import NanoUI.Context (Context (..), getFocusId)
-import NanoUI.Monad (askContext, askFrameInput, askInput)
+import NanoUI.Monad (askFrameInput)
 import Ned.App.Commands
 import Ned.App.State
 import Ned.Buffer (Buffer)
@@ -273,7 +271,9 @@ editorBar cmds app = case appBar app of
         -- Search as the query is typed, from where the selection starts.
         cmdOnBuffer cmds (\b -> B.setCursor False (fst (B.selectionRange b)) b)
         cmdFind cmds True
-      exact <- barCheckbox "Match case" (edFindExact (appEditor app))
+      -- Centred on the bar's middle line, whose height is the taller find
+      -- field's.
+      exact <- checkboxWith alignMid "Match case" (edFindExact (appEditor app))
       when (exact /= edFindExact (appEditor app)) (cmdOnEditor cmds (\e -> e {edFindExact = exact}))
       separator
       -- The buttons are subtle: a toolbar row does not want three filled
@@ -302,11 +302,7 @@ editorBar cmds app = case appBar app of
       pure (inputKeysElem KeyEnter (inputKeys inp) && appBarFocus app)
     heldShift = modShift . inputModifiers <$> askInput
     -- Keep the keyboard in the bar's field while the bar has it.
-    holdFocus resp = when (appBarFocus app) $ do
-      ctx <- askContext
-      uiIO $ do
-        focus <- getFocusId ctx
-        when (focus /= respId resp) $ writeIORef (ctxFocusId ctx) (respId resp)
+    keepFocus resp = when (appBarFocus app) (holdFocus (respId resp))
     -- A bar: its name, its field, and whatever comes after the field. The
     -- name is set at full strength and semibold, the way the tree's header
     -- and the status bar's file are, so the bar reads as naming what it is
@@ -316,21 +312,9 @@ editorBar cmds app = case appBar app of
       rowWith (padXY 12 5 . tight . fillW . gap 8 . alignMid) $ do
         labelWith (tight . fontSemiBold . alignMid) name
         (resp, txt) <- textInput' value
-        holdFocus resp
+        keepFocus resp
         when (respPressed resp) (cmdModify cmds (\a -> a {appBarFocus = True}))
         rest txt
-
--- | A checkbox on the bar's middle line. The toolkit's own 'checkbox' takes no
--- layout, so it cannot be told to centre itself in a row whose height is set by
--- the taller find field; a column that fills the row and pads equally above and
--- below puts it where the row's 'alignMid' means it to go.
-barCheckbox :: Text -> Bool -> NanoUI Bool
-barCheckbox caption checked =
-  columnWith (tight . gap 0 . fillH) $ do
-    spacer Fit (Grow 1)
-    on <- checkbox caption checked
-    spacer Fit (Grow 1)
-    pure on
 
 --------------------------------------------------------------------------------
 -- The status bar

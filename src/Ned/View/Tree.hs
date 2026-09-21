@@ -23,12 +23,10 @@ import qualified Data.Text as T
 import Effectful (Eff, type (:>))
 -- 'Row' here is a row of the tree, not nano-ui's layout direction.
 import NanoUI hiding (Row)
-import NanoUI.Context (Context (..), getPrevRect)
-import NanoUI.Monad (askContext)
 import Ned.FileTree
 import qualified Ned.FileTree.Geometry as TG
 import Ned.Theme (TreeColors (..), languageTint, treeColors)
-import Ned.Widget (contentHash, fileIcon, folderIcon, hashText, takeFocus, thumbSpan)
+import Ned.Widget (fileIcon, folderIcon, thumbSpan)
 import System.FilePath (equalFilePath)
 
 --------------------------------------------------------------------------------
@@ -59,15 +57,12 @@ fileTreePanel wantFocus current ft0 =
 treeRows :: Ui :> es => Bool -> Maybe FilePath -> FileTree -> Eff es (Response, FileTree, Maybe FilePath)
 treeRows wantFocus current ft0 = do
   wid <- nextId
-  ctx <- askContext
-  let fm = ctxFontMetrics ctx
-      lineH = TG.rowHeight fm
-  prev <- uiIO (getPrevRect ctx wid)
-  let rect = fromMaybe (Rect 0 0 defaultTreeWidth 600) prev
+  lineH <- TG.rowHeight <$> uiFontMetrics
+  rect <- fromMaybe (Rect 0 0 defaultTreeWidth 600) <$> lastRect wid
 
   -- The tree keeps the keyboard for as long as it is the thing being used, as
   -- the editor does with its own.
-  when wantFocus $ uiIO (takeFocus ctx wid)
+  when wantFocus (holdFocus wid)
 
   tf <- treeFrame wantFocus rect lineH ft0
   let ft1 = tfTree tf
@@ -95,6 +90,12 @@ treeRows wantFocus current ft0 = do
         , widgetCursor = Just (const UiCursorDefault)
         , widgetFocusable = True
         , widgetDamageSlop = 0
+        , -- Every row is this one widget, so a pointer moving from one row
+          -- to the next would otherwise ask for no frame, and the row drawn
+          -- under it would stay where it was until something else wanted
+          -- one. The hovered row is in the key, so a move within a row
+          -- repaints nothing.
+          widgetTrackPointer = True
         }
   pure (resp, ft1, tfOpened tf)
 
@@ -116,14 +117,14 @@ data TreeScene = TreeScene
 -- for the rows, which are worked out only when they change.
 treeSceneKey :: TreeScene -> Int
 treeSceneKey sc =
-  contentHash
-    [ tsVersion sc
-    , round (tsScroll sc * 64)
-    , hashText (maybe "" T.pack (tsSelected sc))
-    , hashText (maybe "" T.pack (tsCurrent sc))
-    , tsHovered sc
-    , fromEnum (tsFocused sc)
-    , fromEnum (tsThumbHot sc)
+  contentKeyOf
+    [ keyPart (tsVersion sc)
+    , keyPart (tsScroll sc)
+    , keyPart (tsSelected sc)
+    , keyPart (tsCurrent sc)
+    , keyPart (tsHovered sc)
+    , keyPart (tsFocused sc)
+    , keyPart (tsThumbHot sc)
     ]
 
 -- | The draw ops of the rows on screen, and of the scrollbar over them when

@@ -13,6 +13,10 @@
   listed along its foot. The files are walked on a thread of its own and shown
   as they are found, so the window never waits on a disk, and what a build or
   a version control system leaves behind is walked past.
+* A live grep on Ctrl+Shift+F, in the same finder: ripgrep is run on the
+  query once typing has paused, each line it finds is a row with what it
+  matched coloured, the preview opens on the line, and Enter opens the file
+  with the caret there. It passes over what the file finder does.
 * A file tree beside the editor, on the folder the open file is in: its
   folders open and close, a click on a file opens it, the bar between it and
   the text resizes it, and Ctrl+B puts it away. A resized window resizes the

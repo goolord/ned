@@ -56,7 +56,7 @@ import Ned.App.State
 import Ned.Editor (Editor (..))
 import Ned.FileTree (FileTree (..), defaultTreeWidth, minTreeWidth, rootName)
 import qualified Ned.FileTree.Geometry as TG
-import Ned.Picker (itemPath, pickerOverlay)
+import Ned.Picker (Item (..), pickerOverlay)
 import Ned.Theme (paneChrome)
 import Ned.View.Chrome
 import Ned.View.Editor (editorView)
@@ -190,7 +190,9 @@ appView ref = do
   appP <- uiIO (readIORef ref)
   (picker, picked) <- pickerOverlay (appPicker appP)
   modify (\a -> a {appPicker = picker})
-  for_ picked (guarded . PendingOpenPath . itemPath)
+  -- A grep hit opens its file on the line it was found on.
+  for_ picked $ \item ->
+    guarded (maybe (PendingOpenPath (itemPath item)) (PendingOpenAt (itemPath item)) (itemLine item))
 
   app4 <- uiIO (readIORef ref)
   syncTitle cmds app4

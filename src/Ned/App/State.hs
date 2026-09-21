@@ -37,7 +37,13 @@ data Bar = BarNone | BarFind | BarGoto
   deriving (Eq)
 
 -- | Something that would throw the text away, held until that is agreed to.
-data Pending = PendingNew | PendingOpen | PendingOpenPath FilePath | PendingQuit
+data Pending
+  = PendingNew
+  | PendingOpen
+  | PendingOpenPath FilePath
+  | PendingOpenAt FilePath Int
+  -- ^ A file, with the caret on a line of it, counted from zero.
+  | PendingQuit
 
 data App = App
   { appEditor :: !Editor

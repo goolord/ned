@@ -25,7 +25,7 @@ import qualified Ned.FileTree as FT
 import qualified Ned.Picker as P
 import Ned.Editor (Editor (..), cellWidth, defaultFontSize)
 import Ned.View (appView)
-import System.Directory (createDirectoryIfMissing, makeAbsolute)
+import System.Directory (createDirectoryIfMissing, findExecutable, makeAbsolute)
 import System.Exit (exitFailure)
 import System.FilePath (equalFilePath, (</>))
 import System.IO (hPutStrLn, stderr)
@@ -523,6 +523,38 @@ selftestIn dir mfile say = do
     idle
     escaped <- pickerNow
     when (isJust escaped) (fail "selftest: Escape did not put the finder away")
+
+    -- The live grep, over the same folder, where there is a ripgrep to run.
+    -- Ctrl+Shift+F puts the finder up over the lines of the files. A query is
+    -- run only once typing has paused, so the frames go round until the
+    -- prompt has settled and ripgrep has answered.
+    findExecutable "rg" >>= \case
+      Nothing -> say "skip: no rg on the PATH, so the live grep is not run"
+      Just _ -> do
+        frame base {inputChars = "f", inputModifiers = Modifiers True True False} >> idle
+        let answered :: Int -> IO P.Picker
+            answered 0 = fail "selftest: the grep never answered"
+            answered k =
+              idle >> pickerNow >>= \case
+                Just pk | P.pickerDone pk && P.pickerCount pk > 0 -> pure pk
+                Just _ -> threadDelay 20000 >> answered (k - 1)
+                Nothing -> fail "selftest: Ctrl+Shift+F did not put the grep up"
+        typed "PUTSTRLN"
+        grepped <- answered 200
+        when (P.pickerCount grepped /= 1) $
+          fail ("selftest: \"PUTSTRLN\" grepped " <> show (P.pickerCount grepped) <> " lines, not 1")
+        unless (fmap P.itemLine (P.pickerCurrent grepped) == Just (Just 4)) $
+          fail ("selftest: the grep landed on line " <> show (P.itemLine <$> P.pickerCurrent grepped))
+        shot "15-grep.bmp"
+        -- Enter opens the file with the caret on the line that was found.
+        modifyIORef' ref $ \a ->
+          a {appEditor = (appEditor a) {edBuffer = B.markSaved (edBuffer (appEditor a))}}
+        key plain KeyEnter
+        idle
+        landed <- readIORef ref
+        let buf = edBuffer (appEditor landed)
+        unless (maybe False (equalFilePath (treeDir </> "demo.hs")) (appPath landed) && B.lineOf buf (B.bufCursor buf) == 4) $
+          fail ("selftest: the grep opened " <> show (appPath landed) <> " at line " <> show (B.lineOf buf (B.bufCursor buf)))
 
 
     -- Resize the window a step at a time, as a drag of its border does, and

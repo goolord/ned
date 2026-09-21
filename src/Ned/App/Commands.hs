@@ -13,7 +13,7 @@ module Ned.App.Commands
   , commands
   ) where
 
-import Control.Monad (unless)
+import Control.Monad (unless, when)
 import Data.IORef (IORef, modifyIORef', readIORef, writeIORef)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -30,8 +30,9 @@ import qualified Ned.FileTree as FT
 import Ned.Highlight (LexState (..), languageFor, plainText)
 import qualified Ned.Picker as P
 import Ned.Text (clamp)
+import System.Directory (makeAbsolute)
 import System.Exit (exitSuccess)
-import System.FilePath (takeDirectory, takeFileName)
+import System.FilePath (equalFilePath, takeDirectory, takeFileName)
 
 -- | What the window's parts call on. Every one of these reads the state as it
 -- stands rather than as the frame found it, so a menu row that follows a
@@ -59,8 +60,8 @@ data Commands = Commands
   -- ^ The next match, or the previous one.
   , cmdZoom :: (Float -> Float) -> NanoUI ()
   , cmdToggleTree :: NanoUI ()
-  , cmdOpenPicker :: NanoUI ()
-  -- ^ Put the fuzzy finder up over the files under the tree's root.
+  , cmdOpenPicker :: P.Source -> NanoUI ()
+  -- ^ Put the fuzzy finder up over what is under the tree's root.
   , cmdCloseMenu :: NanoUI ()
   }
 
@@ -112,6 +113,14 @@ commands ctx ref =
         dlg <- askOpenFileDialog defaultFileDialogOptions {dialogDefaultLocation = takeDirectory <$> appPath a}
         modify (\a' -> a' {appOpenDlg = dlg})
       PendingOpenPath path -> uiIO (readIORef ref >>= openPath path >>= writeIORef ref)
+      -- The caret goes to the line only if the file did open: one that could
+      -- not be read leaves the text that was there, and the caret in it.
+      PendingOpenAt path ln -> do
+        run (PendingOpenPath path)
+        opened <- uiIO (makeAbsolute path)
+        a <- uiIO (readIORef ref)
+        when (maybe False (equalFilePath opened) (appPath a)) $
+          onBuffer (B.gotoLine (ln + 1))
       PendingQuit -> uiIO exitSuccess
     guarded action = do
       a <- uiIO (readIORef ref)
@@ -174,10 +183,10 @@ commands ctx ref =
     -- the reader has said they are working in. It sets its own thread
     -- gathering as it is made, so this is back before the first file is
     -- found, and asking for a finder that is already up does nothing.
-    openPicker = do
+    openPicker source = do
       a <- uiIO (readIORef ref)
       case appPicker a of
         Just _ -> pure ()
         Nothing -> do
-          pk <- uiIO (P.openPicker P.fileSource (FT.ftRoot (appTree a)))
+          pk <- uiIO (P.openPicker source (FT.ftRoot (appTree a)))
           modify (\a' -> a' {appPicker = Just pk})

@@ -37,6 +37,7 @@ import Ned.File (Eol (..), FileFormat (..))
 import Ned.FileTree (hasParentRoot)
 import qualified Ned.FileTree as FT
 import Ned.Highlight (langName)
+import qualified Ned.Picker as P
 import Ned.Theme (closeRed, menuChrome, windowEdge)
 import System.FilePath (takeFileName)
 import Text.Read (readMaybe)
@@ -186,7 +187,7 @@ appMenus cmds app = [("File", fileMenu), ("Edit", editMenu), ("View", viewMenu)]
     fileMenu = do
       item "New" "Ctrl+N" (cmdGuarded cmds PendingNew)
       item "Open..." "Ctrl+O" (cmdGuarded cmds PendingOpen)
-      item "Find File..." "Ctrl+P" (cmdOpenPicker cmds)
+      item "Find File..." "Ctrl+P" (cmdOpenPicker cmds P.fileSource)
       item "Save" "Ctrl+S" (cmdSave cmds False)
       item "Save As..." "Ctrl+Shift+S" (cmdSave cmds True)
       menuSeparator
@@ -195,6 +196,7 @@ appMenus cmds app = [("File", fileMenu), ("Edit", editMenu), ("View", viewMenu)]
       editEntries cmds buf0
       menuSeparator
       item "Find..." "Ctrl+F" (cmdOpenBar cmds BarFind)
+      item "Search in Files..." "Ctrl+Shift+F" (cmdOpenPicker cmds P.grepSource)
       item "Go to Line..." "Ctrl+G" (cmdOpenBar cmds BarGoto)
     viewMenu = do
       item

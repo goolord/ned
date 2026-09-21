@@ -12,8 +12,11 @@ import Ned.File (Eol (..), FileFormat (..), Loaded (..), loadFile, saveFile)
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
 import Ned.Highlight
-import Ned.Picker (Item (..), Source (..), fileSource)
-import System.Directory (createDirectoryIfMissing, getTemporaryDirectory, removeFile, removePathForcibly)
+import Ned.Picker (Item (..), Source (..), fileSource, grepSource)
+import Ned.Picker.Grep (grepHit)
+import Ned.Picker.Source (relative)
+import qualified Data.Vector.Unboxed as U
+import System.Directory (createDirectoryIfMissing, findExecutable, getTemporaryDirectory, removeFile, removePathForcibly)
 import System.Exit (exitFailure)
 import System.FilePath ((</>))
 import qualified Data.ByteString as BS
@@ -207,6 +210,50 @@ main = do
     "a row opens the file it was found at"
     [root </> "src" </> "Main.hs"]
     [itemPath i | i <- gathered, itemText i == "src/Main.hs"]
+
+  -- A line of ripgrep's JSON is a row: the line without its indent, the file
+  -- it is in, the line counted from zero, and the characters that matched,
+  -- which ripgrep counts in bytes and a row in characters.
+  -- Where on the line it matched is kept as well, counted along the line as
+  -- it is in the file, indent and all, for the preview to mark.
+  let row = fmap (\i -> (itemText i, itemPath i, itemLine i, U.toList (itemMarks i), itemRanges i))
+  check
+    "a grep hit is a row"
+    (Just ("caf\xE9 = main", "src/Main.hs", Just 2, [7, 8, 9, 10], [(9, 13)]))
+    ( row . grepHit $
+        "{\"type\":\"match\",\"data\":{\"path\":{\"text\":\"src/Main.hs\"},\"lines\":{\"text\":\"  caf\\u00e9 = main\\n\"},\"line_number\":3,\"absolute_offset\":0,\"submatches\":[{\"match\":{\"text\":\"main\"},\"start\":10,\"end\":14}]}}"
+    )
+  check
+    "the rest of ripgrep's messages are not rows"
+    Nothing
+    (row (grepHit "{\"type\":\"begin\",\"data\":{\"path\":{\"text\":\"src/Main.hs\"}}}"))
+  check
+    "a path that is not UTF-8 is not a row"
+    Nothing
+    ( row . grepHit $
+        "{\"type\":\"match\",\"data\":{\"path\":{\"bytes\":\"/w==\"},\"lines\":{\"text\":\"main\\n\"},\"line_number\":1,\"absolute_offset\":0,\"submatches\":[]}}"
+    )
+
+  -- The grep itself, where there is a ripgrep to run: it finds what the file
+  -- finder would offer, and passes over what a build and git leave behind.
+  findExecutable "rg" >>= \case
+    Nothing -> putStrLn "skip: no rg on the PATH, so the live grep is not run"
+    Just _ -> do
+      writeFile (root </> "src" </> "Main.hs") "module Main where\n\nmain = pure ()\n"
+      -- What is skipped would answer the query if it were looked through, so
+      -- that a grep that went into it would be caught.
+      writeFile (root </> "dist-newstyle" </> "build" </> "Main.o") "main = build\n"
+      writeFile (root </> ".git" </> "HEAD") "main = git\n"
+      hits <- newIORef ([] :: [Item])
+      srcGather grepSource root "MAIN =" (\items -> True <$ modifyIORef' hits (<> items))
+      grepped <- readIORef hits
+      check
+        "a grep finds the line, whatever its case, and skips what a build leaves behind"
+        [("src/Main.hs", Just 2, "main = pure ()")]
+        [(relative root (itemPath i), itemLine i, itemText i) | i <- grepped]
+      none <- newIORef ([] :: [Item])
+      srcGather grepSource root "" (\items -> True <$ modifyIORef' none (<> items))
+      readIORef none >>= check "an empty query greps for nothing" 0 . length
   removePathForcibly root
 
   n <- readIORef failures

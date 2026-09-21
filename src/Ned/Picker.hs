@@ -4,16 +4,18 @@
 -- Ctrl+P puts it up over the window. What it is looking through is a 'Source',
 -- which gathers its rows on a thread of its own and feeds them over as it
 -- finds them, so a picker over a hundred thousand files is usable from its
--- first frame and the window never waits on a disk. 'fileSource' is the one
--- the editor has: every file under the tree's root. A source that answers the
--- query itself rather than leaving it to the matcher -- a live grep -- is the
--- same record with 'srcLive' set, and nothing else here changes.
+-- first frame and the window never waits on a disk. The editor has two:
+-- 'fileSource', every file under the tree's root, in "Ned.Picker.File", and
+-- 'grepSource', every line under it that answers the query, in
+-- "Ned.Picker.Grep". The second answers the query itself rather than leaving
+-- it to the matcher, which is what 'srcLive' says, and it is asked again only
+-- once typing has paused: the prompt is a search input, which says when.
 --
 -- Scoring is fzf's own, through "Ned.Fuzzy": one call scores the whole
 -- list, and the rows on screen ask again for which of their characters the
 -- query matched, which is what the finder colours them by.
 --
--- The whole of it is one module, state and frame and drawing together, so
+-- The finder is one module, state and frame and drawing together, so
 -- that what a key does and what it looks like when it happens sit on the same
 -- page. The rows and the preview are set in the editor's monospace font
 -- rather than the chrome's: a path and a line of code are read on the grid,
@@ -36,19 +38,21 @@ module Ned.Picker
   , Item (..)
   , Sink
   , Source (..)
+  , GatherFailed (..)
   , fileSource
+  , grepSource
   ) where
 
 import Control.Concurrent (forkIO)
-import Control.Exception (SomeException, try)
-import Control.Monad (unless, void, when)
-import Data.Char (toLower)
+import Control.Exception (SomeException, displayException, fromException, try)
+import Control.Monad (unless, when)
+import qualified Data.IntMap.Strict as IM
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
-import Data.List (sortOn)
+import Data.List (mapAccumL)
 import Data.Maybe (fromMaybe, isJust, isNothing)
+import GHC.Clock (getMonotonicTime)
 import Data.Primitive.SmallArray (SmallArray, emptySmallArray, indexSmallArray, sizeofSmallArray, smallArrayFromList)
 import qualified Data.ByteString as BS
-import qualified Data.Sequence as Seq
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -62,158 +66,14 @@ import NanoUI.Monad (askContext, askInput)
 import Ned.Editor (cellWidth, defaultFontSize)
 import qualified Ned.Fuzzy as Fuzzy
 import Ned.Highlight
+import Ned.Picker.File (fileSource)
+import Ned.Picker.Grep (grepSource)
+import Ned.Picker.Source
 import Ned.Text (cellsAt, clamp)
 import Ned.Theme
 import Ned.Widget
-import System.Directory (doesDirectoryExist, listDirectory, pathIsSymbolicLink)
-import System.FilePath (makeRelative, (</>))
+import System.FilePath (takeFileName)
 import System.IO (IOMode (ReadMode), withBinaryFile)
-
---------------------------------------------------------------------------------
--- What the finder looks through
---------------------------------------------------------------------------------
-
--- | One row: the text it is drawn and matched by, and what picking it opens.
-data Item = Item
-  { itemText :: !Text
-  -- ^ What the query is matched against, and what the row shows.
-  , itemPath :: !FilePath
-  , itemLine :: !(Maybe Int)
-  -- ^ The line the row is about, counted from zero. A file has none; a grep
-  -- hit is the line it was found on, which is where the preview opens.
-  }
-
--- | Where a gatherer hands its rows over, a batch at a time. It answers
--- 'False' when the picker has moved on -- another query, or the picker put
--- away -- and a gatherer that is told so stops.
-type Sink = [Item] -> IO Bool
-
--- | Where a picker's rows come from.
---
--- The query reaches the gatherer as well as the matcher, and 'srcLive' says
--- which of the two answers it. A list of files is gathered once and the
--- matcher filters it on every keystroke; a grep is gathered again for every
--- query and shown in the order it comes back.
-data Source = Source
-  { srcTitle :: !Text
-  -- ^ What the panel is called.
-  , srcGather :: !(FilePath -> Text -> Sink -> IO ())
-  -- ^ Find the rows under a root for a query, feeding them to the sink. It
-  -- runs on a thread of its own, so it may take as long as it likes.
-  , srcLive :: !Bool
-  -- ^ Whether the query is the gatherer's to answer. A live source is
-  -- gathered again whenever the query changes and is not filtered afterwards.
-  }
-
--- | Every file under the root, nearest the root first.
-fileSource :: Source
-fileSource =
-  Source
-    { srcTitle = "Find File"
-    , srcGather = \root _query sink -> walkFiles root sink
-    , srcLive = False
-    }
-
---------------------------------------------------------------------------------
--- Walking the files
---------------------------------------------------------------------------------
-
--- | How far down a walk goes, how many files it offers, and how many it
--- gathers before handing a batch over. The batch is what makes the rows
--- appear while the walk is still running; the other two are what keep a walk
--- that wandered somewhere enormous from running forever.
-scanDepth, scanLimit, scanBatch :: Int
-scanDepth = 24
-scanLimit = 200000
-scanBatch = 1024
-
--- | Directories a walk never goes into: what a version control system keeps
--- for itself, and what a build leaves behind. None of them holds a file
--- anybody opens, and all of them hold thousands.
---
--- The rest of a dotted directory is walked, so that the workflows under
--- @.github@ are found like anything else.
-skipDir :: FilePath -> Bool
-skipDir name =
-  map toLower name
-    `elem` [ ".git"
-           , ".hg"
-           , ".svn"
-           , ".stack-work"
-           , ".direnv"
-           , ".cache"
-           , ".mypy_cache"
-           , ".pytest_cache"
-           , ".ruff_cache"
-           , ".venv"
-           , ".gradle"
-           , "dist-newstyle"
-           , "node_modules"
-           , "__pycache__"
-           , "target"
-           ]
-
--- | The files under a root, breadth first, handed over in batches as they are
--- found. Breadth first so that what is near the root -- which is what is
--- usually wanted -- is there to pick before the walk has finished.
-walkFiles :: FilePath -> Sink -> IO ()
-walkFiles root feed = go (Seq.singleton (root, 0 :: Int)) 0 [] 0
-  where
-    go queue !found batch !held = case Seq.viewl queue of
-      Seq.EmptyL -> void (flush batch)
-      (dir, depth) Seq.:< rest -> do
-        (dirs, files) <- readEntries dir
-        let items = map item files
-            found' = found + length items
-            queue'
-              | depth >= scanDepth = rest
-              | otherwise = foldl' (\q d -> q Seq.|> (d, depth + 1)) rest dirs
-            batch' = reverse items ++ batch
-            held' = held + length items
-        if held' >= scanBatch
-          then do
-            ok <- flush batch'
-            when (ok && found' < scanLimit) (go queue' found' [] 0)
-          else go queue' found' batch' held'
-
-    item path = Item {itemText = relative root path, itemPath = path, itemLine = Nothing}
-
-    flush [] = pure True
-    flush batch = feed (reverse batch)
-
--- | A path as the rows show it: where it sits under the root, written with
--- forward slashes whatever the platform separates with, since that is how a
--- path is typed at the prompt.
-relative :: FilePath -> FilePath -> Text
-relative root path = T.replace "\\" "/" (T.pack (makeRelative root path))
-
--- | What a directory holds: the directories to walk on, and the files to
--- offer, each by name. A directory that cannot be read holds nothing.
---
--- A directory that is a link is not walked on. It leads somewhere that is
--- either under the root already, and would be listed twice, or outside it,
--- and is not what the finder was asked for; a link back up is neither, and
--- would not end.
-readEntries :: FilePath -> IO ([FilePath], [FilePath])
-readEntries dir = do
-  names <- attempt [] (listDirectory dir)
-  entries <- traverse classify (sortOn (map toLower) names)
-  pure ([p | Just (p, True) <- entries], [p | Just (p, False) <- entries])
-  where
-    -- A directory to walk on, a file to offer, or neither: a directory that
-    -- is skipped is not a file to offer in its place.
-    classify name = do
-      let path = dir </> name
-      isDir <- attempt False (doesDirectoryExist path)
-      if not isDir
-        then pure (Just (path, False))
-        else do
-          link <- attempt False (pathIsSymbolicLink path)
-          pure (if link || skipDir name then Nothing else Just (path, True))
-
--- | An answer from the file system, or a stand-in when it will not give one.
-attempt :: a -> IO a -> IO a
-attempt fallback act = either (\(_ :: SomeException) -> fallback) id <$> try act
 
 --------------------------------------------------------------------------------
 -- The picker
@@ -228,13 +88,19 @@ data Gathered = Gathered
   -- ^ Newest first, so a batch costs nothing to add.
   , gatCount :: !Int
   , gatDone :: !Bool
+  , gatFailed :: !(Maybe Text)
+  -- ^ Why the gatherer stopped short, when it did.
   }
 
 -- | The finder, between frames.
 data Picker = Picker
   { pkSource :: !Source
   , pkRoot :: !FilePath
+  , pkTyped :: !Text
+  -- ^ What is in the prompt. A live source is asked only once typing has
+  -- paused, so for a while this is ahead of the query.
   , pkQuery :: !Text
+  -- ^ What the rows answer.
   , pkSlab :: !Fuzzy.Slab
   -- ^ The matcher's scratch space, which is the frame's alone to write.
   , pkPattern :: !Fuzzy.Pattern
@@ -246,6 +112,13 @@ data Picker = Picker
   , pkTaken :: !Int
   -- ^ How many gathered rows are in 'pkItems' already.
   , pkDone :: !Bool
+  , pkFailed :: !(Maybe Text)
+  , pkStale :: !(Maybe Double)
+  -- ^ While a new query is being gathered for, the rows on screen are the
+  -- last query's, kept until the new one has something to put in their place
+  -- or this moment has passed. Emptying them at once would blank the list for
+  -- as long as ripgrep takes to answer, and a list that blinks at every word
+  -- is harder to read than one that is briefly behind.
   , pkItems :: !(V.Vector Item)
   , pkCands :: !Fuzzy.Candidates
   -- ^ The same rows, laid out for the matcher to scan in one call.
@@ -275,16 +148,24 @@ data Preview = Preview
   -- ^ What is there instead of the lines: a file that could not be read, or
   -- one there is no point showing.
   , pvHit :: !(Maybe Int)
+  , pvFirst :: !Int
+  -- ^ The line of the file the first of 'pvLines' is. A preview of a hit far
+  -- down a file is the lines round it, and not the head of the file.
+  , pvTotal :: !Int
+  -- ^ How many lines the file has, as far as it was read.
+  , pvWhole :: !(V.Vector Text)
+  -- ^ Every line of the file that was read, kept so that another hit in the
+  -- same file is shown from them rather than by reading the file again.
   , pvMore :: !Bool
-  -- ^ Whether the file goes on past the lines that were read.
+  -- ^ Whether the file goes on past what was read.
   , pvScroll :: !Double
   , pvVersion :: !Int
   -- ^ Bumped whenever the lines change, for the drawing's content key.
   }
 
 -- | A line of the preview, lexed when the file was read rather than on every
--- frame.
-data PreviewLine = PreviewLine !Text ![Span]
+-- frame, with the cells on it a grep found, from a cell to the one past it.
+data PreviewLine = PreviewLine !Text ![Span] ![(Int, Int)]
 
 emptyPreview :: Preview
 emptyPreview =
@@ -293,6 +174,9 @@ emptyPreview =
     , pvLines = emptySmallArray
     , pvNote = ""
     , pvHit = Nothing
+    , pvFirst = 0
+    , pvTotal = 0
+    , pvWhole = V.empty
     , pvMore = False
     , pvScroll = 0
     , pvVersion = 0
@@ -303,11 +187,12 @@ openPicker :: Source -> FilePath -> IO Picker
 openPicker source root = do
   slab <- Fuzzy.newSlab
   pattern_ <- Fuzzy.compile (Fuzzy.defaultQuery "")
-  cell <- newIORef (Gathered 0 [] 0 False)
-  gather
+  cell <- newIORef (Gathered 0 [] 0 False Nothing)
+  gather Nothing $
     Picker
       { pkSource = source
       , pkRoot = root
+      , pkTyped = ""
       , pkQuery = ""
       , pkSlab = slab
       , pkPattern = pattern_
@@ -315,6 +200,8 @@ openPicker source root = do
       , pkGen = 0
       , pkTaken = 0
       , pkDone = False
+      , pkFailed = Nothing
+      , pkStale = Nothing
       , pkItems = V.empty
       , pkCands = Fuzzy.candidates V.empty
       , pkHits = Fuzzy.noMatches
@@ -329,36 +216,43 @@ openPicker source root = do
 -- | Put the finder away, and with it the thread that is gathering for it: the
 -- generation moves on, so the next batch it offers is refused and it stops.
 closePicker :: Picker -> IO ()
-closePicker pk = writeIORef (pkCell pk) (Gathered (pkGen pk + 1) [] 0 True)
+closePicker pk = writeIORef (pkCell pk) (Gathered (pkGen pk + 1) [] 0 True Nothing)
 
--- | Start gathering for the query the picker holds, dropping whatever an
--- earlier gather had found.
-gather :: Picker -> IO Picker
-gather pk = do
+-- | Start gathering for the query the picker holds. What an earlier gather
+-- found stays on screen, marked stale, until the moment given if there is one
+-- or until 'harvest' has something to show instead; with none it goes at once.
+gather :: Maybe Double -> Picker -> IO Picker
+gather keepUntil pk = do
   let gen = pkGen pk + 1
       cell = pkCell pk
-  writeIORef cell (Gathered gen [] 0 False)
+  writeIORef cell (Gathered gen [] 0 False Nothing)
   _ <-
     forkIO $ do
-      _ <- try (srcGather (pkSource pk) (pkRoot pk) (pkQuery pk) (batchSink cell gen)) :: IO (Either SomeException ())
-      atomicModifyIORef' cell $ \g -> (if gatGen g == gen then g {gatDone = True} else g, ())
+      ran <- try (srcGather (pkSource pk) (pkRoot pk) (pkQuery pk) (batchSink cell gen))
+      let failed = either (Just . failure) (const Nothing) ran
+      atomicModifyIORef' cell $ \g -> (if gatGen g == gen then g {gatDone = True, gatFailed = failed} else g, ())
   pure
     pk
       { pkGen = gen
       , pkTaken = 0
       , pkDone = False
-      , pkItems = V.empty
-      , pkCands = Fuzzy.candidates V.empty
-      , pkHits = Fuzzy.noMatches
-      , pkCursor = 0
-      , pkScroll = 0
+      , pkFailed = Nothing
+      , pkStale = keepUntil
       }
 
+-- | What a gatherer that threw says in place of the rows.
+failure :: SomeException -> Text
+failure e = case fromException e of
+  Just (GatherFailed msg) -> msg
+  Nothing -> T.pack (displayException e)
+
 batchSink :: IORef Gathered -> Int -> Sink
-batchSink cell gen batch = atomicModifyIORef' cell $ \g ->
-  if gatGen g /= gen
-    then (g, False)
-    else (g {gatBatches = batch : gatBatches g, gatCount = gatCount g + length batch}, True)
+batchSink cell gen batch = atomicModifyIORef' cell take'
+  where
+    take' g
+      | gatGen g /= gen = (g, False)
+      | null batch = (g, True)
+      | otherwise = (g {gatBatches = batch : gatBatches g, gatCount = gatCount g + length batch}, True)
 
 -- | A number that changes when anything the finder shows does, which is what
 -- tells the application that the frame it drew is no longer what the finder
@@ -369,12 +263,14 @@ pickerSig Nothing = 0
 pickerSig (Just pk) =
   contentHash
     [ hashText (pkQuery pk)
+    , fromEnum (pkTyped pk == pkQuery pk)
     , pkTaken pk
     , hitCount pk
     , pkCursor pk
     , round (pkScroll pk * 64)
     , pkHovered pk
     , fromEnum (pkDone pk)
+    , fromEnum (isJust (pkStale pk))
     , pvVersion (pkPreview pk)
     , round (pvScroll (pkPreview pk) * 64)
     ]
@@ -427,33 +323,60 @@ pickerCurrent = currentItem
 -- the query against it.
 --
 -- The query is the matcher's when the source gathered everything at once, and
--- the gatherer's when the source answers it itself; a live source that is
--- handed a new query starts again rather than filtering what the old one
--- found.
-restock :: Picker -> Text -> IO Picker
-restock pk0 query
-  | srcLive (pkSource pk0) && changed = gather pk0 {pkQuery = query} >>= harvest
+-- the gatherer's when the source answers it itself. The matcher is quick
+-- enough to be asked on every keystroke, and takes the prompt as it stands; a
+-- live source is asked only when the prompt says typing has paused, and then
+-- starts again rather than filtering what the old query found. What the old
+-- query found stays up until the new one has rows, which is when the keyboard
+-- goes back to the top.
+restock :: Picker -> Text -> Bool -> IO Picker
+restock pk0 typed settled
+  | live = do
+      now <- getMonotonicTime
+      pk1 <-
+        if settled && typed /= pkQuery pk0
+          then gather (Just (now + staleFor)) pk0 {pkTyped = typed, pkQuery = typed}
+          else pure pk0 {pkTyped = typed}
+      pk <- harvest now pk1
+      if isJust (pkStale pk1) && isNothing (pkStale pk)
+        then rematch True pk
+        else if pkTaken pk /= pkTaken pk1 then rematch False pk else pure pk
   | otherwise = do
-      pk <- harvest pk0 {pkQuery = query}
+      pk <- harvest 0 pk0 {pkTyped = typed, pkQuery = typed}
       if changed || pkTaken pk /= pkTaken pk0 then rematch changed pk else pure pk
   where
-    changed = query /= pkQuery pk0
+    live = srcLive (pkSource pk0)
+    changed = typed /= pkQuery pk0
+
+-- | How long the last query's rows are kept up while a new one finds nothing,
+-- in seconds. A search that has not found anything by then may not, and rows
+-- that answer another query are not left standing in for none.
+staleFor :: Double
+staleFor = 1
 
 -- | Fold the batches the gatherer has left into the rows the matcher scans.
-harvest :: Picker -> IO Picker
-harvest pk = do
+-- Stale rows are kept until the gatherer has handed some over, or has
+-- finished, or has run out of the time it was given.
+harvest :: Double -> Picker -> IO Picker
+harvest now pk = do
   g <- readIORef (pkCell pk)
-  if gatGen g /= pkGen pk || (gatCount g == pkTaken pk && gatDone g == pkDone pk)
-    then pure pk
-    else do
-      let items = V.fromList (concat (reverse (gatBatches g)))
-      pure
-        pk
-          { pkItems = items
-          , pkCands = Fuzzy.candidates (V.map itemText items)
-          , pkTaken = gatCount g
-          , pkDone = gatDone g
-          }
+  pure (taken g)
+  where
+    taken g
+      | gatGen g /= pkGen pk = pk
+      | Just until_ <- pkStale pk, gatCount g == 0, not (gatDone g), now < until_ = pk
+      | Just _ <- pkStale pk = replaced
+      | gatCount g == pkTaken pk = finished
+      | otherwise = replaced
+      where
+        finished = pk {pkDone = gatDone g, pkFailed = gatFailed g, pkStale = Nothing}
+        replaced =
+          let items = V.fromList (concat (reverse (gatBatches g)))
+           in finished
+                { pkItems = items
+                , pkCands = Fuzzy.candidates (V.map itemText items)
+                , pkTaken = gatCount g
+                }
 
 -- | Score every row against the query and keep the best.
 --
@@ -486,65 +409,148 @@ matchQuery pk = if srcLive (pkSource pk) then "" else pkQuery pk
 
 -- | How much of a file the preview reads, and how many of its lines it keeps.
 -- A preview is looked at rather than read, and a file the editor would open
--- in a moment is not worth reading twice.
-previewBytes, previewLines :: Int
+-- in a moment is not worth reading twice. A hit is further in than the head
+-- of a file, as far as a grep found it, so a preview of one reads further.
+previewBytes, hitBytes, previewLines :: Int
 previewBytes = 128 * 1024
+hitBytes = 4 * 1024 * 1024
 previewLines = 600
 
--- | Read the file the keyboard is on, if it is not the one already read.
+-- | Read the file the keyboard is on, if it is not the one already read. A
+-- grep hit in the file that is up already is the lines round it, from what
+-- was read of the file for the last one.
 ensurePreview :: Picker -> IO Picker
 ensurePreview pk = case currentItem pk of
   Nothing
-    | not (isJust (pvOf (pkPreview pk))) -> pure pk
-    | otherwise -> pure pk {pkPreview = emptyPreview {pvVersion = pvVersion (pkPreview pk) + 1}}
+    | not (isJust (pvOf pv0)) -> pure pk
+    | otherwise -> pure (shown emptyPreview)
   Just item
-    | pvOf (pkPreview pk) == Just (itemPath item) && pvHit (pkPreview pk) == itemLine item -> pure pk
-    | otherwise -> do
-        pv <- readPreview item
-        pure pk {pkPreview = pv {pvVersion = pvVersion (pkPreview pk) + 1}}
+    | pvOf pv0 == Just (itemPath item) && pvHit pv0 == itemLine item -> pure pk
+    | pvOf pv0 == Just (itemPath item) && not (V.null (pvWhole pv0)) ->
+        pure (shown (windowPreview item (fileRanges pk (itemPath item)) (pvMore pv0) (pvWhole pv0)))
+    | otherwise -> shown <$> readPreview item (fileRanges pk (itemPath item))
+  where
+    pv0 = pkPreview pk
+    shown pv = pk {pkPreview = pv {pvVersion = pvVersion pv0 + 1}}
 
--- | The head of a file, lexed for colour. Only the first 'previewBytes' are
--- read: what is past that is past what anybody previews, and reading it would
--- put a frame on hold for a file the reader may be arrowing straight past.
-readPreview :: Item -> IO Preview
-readPreview item = do
-  raw <- try (withBinaryFile (itemPath item) ReadMode (\h -> BS.hGet h previewBytes))
+-- | Where a grep found what it was looking for in a file, line by line: every
+-- hit in it that has been gathered, and not only the one the keyboard is on,
+-- as Ctrl+F marks every match in view. A file's hits are handed over together
+-- once ripgrep has finished with it, so they are all here by the time it can
+-- be previewed.
+fileRanges :: Picker -> FilePath -> IM.IntMap [(Int, Int)]
+fileRanges pk path
+  | not (srcLive (pkSource pk)) = IM.empty
+  | otherwise =
+      IM.fromListWith
+        (<>)
+        [ (ln, itemRanges it)
+        | it <- V.toList (pkItems pk)
+        , Just ln <- [itemLine it]
+        , not (null (itemRanges it))
+        , itemPath it == path
+        ]
+
+-- | The head of a file, or the lines round a hit in it. Only the first
+-- 'previewBytes' are read: what is past that is past what anybody previews,
+-- and reading it would put a frame on hold for a file the reader may be
+-- arrowing straight past.
+readPreview :: Item -> IM.IntMap [(Int, Int)] -> IO Preview
+readPreview item found = do
+  let limit = if isJust (itemLine item) then hitBytes else previewBytes
+  raw <- try (withBinaryFile (itemPath item) ReadMode (\h -> BS.hGet h limit))
   pure $ case raw of
     Left (_ :: SomeException) -> note "This file cannot be read."
-    Right bytes
+    Right got
       | BS.null bytes -> note "This file is empty."
       | BS.elem 0 bytes -> note "This is not a text file."
-      | otherwise ->
-          blank
-            { pvLines = smallArrayFromList (lexAll (languageFor (itemPath item)) ls)
-            , pvMore = cut || length whole > previewLines
-            }
+      | otherwise -> windowPreview item found cut (V.fromList (dropLast cut (T.lines text)))
       where
+        -- The mark a file may start with is not a character of its first
+        -- line, to the editor or to ripgrep, which counts a hit on that line
+        -- from after it.
+        bytes = fromMaybe got (BS.stripPrefix "\xEF\xBB\xBF" got)
         text = TE.decodeUtf8With (\_ _ -> Just '\xFFFD') bytes
         -- A file longer than the read ends mid-line, and half a line shown
         -- whole is a line that says something the file does not.
-        cut = BS.length bytes >= previewBytes
-        whole = dropLast cut (T.lines text)
-        ls = take previewLines whole
+        cut = BS.length got >= limit
   where
-    -- A preview nobody has scrolled yet opens where the file is about, which
-    -- the drawing works out once it knows how tall the pane is.
-    blank = emptyPreview {pvOf = Just (itemPath item), pvHit = itemLine item, pvScroll = -1}
-    note msg = blank {pvNote = msg}
+    note msg = (previewOf item) {pvNote = msg}
     dropLast False xs = xs
     dropLast True xs = if null xs then xs else init xs
 
+-- | A preview of an item, before anything is read of it. One nobody has
+-- scrolled yet opens where the file is about, which the drawing works out
+-- once it knows how tall the pane is.
+previewOf :: Item -> Preview
+previewOf item = emptyPreview {pvOf = Just (itemPath item), pvHit = itemLine item, pvScroll = -1}
+
+-- | What the preview keeps of the lines of a file that were read: the head of
+-- it, or the lines round a hit, lexed for colour, with what a grep found on
+-- them marked. A hit past what was read is said to be, rather than the lines
+-- that were read shown in its place.
+--
+-- The lines round a hit are lexed from the first of them, not from the top of
+-- the file, so a hit inside a long comment may be coloured as code.
+windowPreview :: Item -> IM.IntMap [(Int, Int)] -> Bool -> V.Vector Text -> Preview
+windowPreview item found cut whole
+  | Just ln <- itemLine item
+  , ln >= total =
+      kept
+        { pvNote =
+            if cut
+              then "This line is further into the file than the preview reads."
+              else "This line is past the end of the file, which has changed since it was searched."
+        }
+  | otherwise =
+      kept
+        { pvLines = smallArrayFromList (lexAll (languageFor (itemPath item)) [(l, IM.findWithDefault [] ln found) | (ln, l) <- zip [from ..] (V.toList ls)])
+        , pvFirst = from
+        }
+  where
+    kept = (previewOf item) {pvWhole = whole, pvTotal = total, pvMore = cut}
+    total = V.length whole
+    -- The hit in the middle of what is kept, unless the file ends first.
+    from = maybe 0 (\ln -> max 0 (min (total - previewLines) (ln - previewLines `div` 2))) (itemLine item)
+    ls = V.slice from (min previewLines (total - from)) whole
+
 -- | The lines with what the lexer made of each, the state carrying from one
 -- to the next as it does in the editor. Tabs are laid out before lexing, so
--- that a span's length is the cells it covers.
-lexAll :: Lang -> [Text] -> [PreviewLine]
+-- that a span's length is the cells it covers; what a grep found on a line is
+-- counted in characters, and is laid out alongside.
+lexAll :: Lang -> [(Text, [(Int, Int)])] -> [PreviewLine]
 lexAll lang = go LexNormal
   where
     go _ [] = []
-    go st (l : rest) =
+    go st ((l, ranges) : rest) =
       let t = expandTabs l
           (spans, st') = lexLine lang st t
-       in PreviewLine t spans : go st' rest
+       in PreviewLine t spans (laidOut l ranges) : go st' rest
+
+-- | Ranges of the characters of a line, in order along it, as where they are
+-- once its tabs are laid out: their places in what 'expandTabs' makes of the
+-- line, which are the cells the preview draws them in, a character to a cell.
+-- The line is walked once for all of them, so a minified line with a match in
+-- every word costs no more than one match does.
+laidOut :: Text -> [(Int, Int)] -> [(Int, Int)]
+laidOut line = snd . mapAccumL range start
+  where
+    start = (0, 0, 0, T.unpack line)
+    range at (a, b) =
+      let (at', a') = seek at a
+          (at'', b') = seek at' b
+       in (at'', (a', b'))
+    -- Walk on to a character, keeping how far the walk has come along the
+    -- line, along the grid its tab stops are on, and along the laid-out text.
+    -- One out of order is walked to again from the start of the line.
+    seek at@(!k, !cell, !i, cs) o
+      | o <= 0 = (at, 0)
+      | o == k = (at, i)
+      | o < k = seek start o
+      | c : rest <- cs =
+          let n = cellsAt cell c
+           in seek (k + 1, cell + n, i + (if c == '\t' then n else 1), rest) o
+      | otherwise = (at, i)
 
 -- | A line with its tabs laid out as the spaces they stand for.
 expandTabs :: Text -> Text
@@ -630,8 +636,8 @@ pickerBody bodyW bodyH pk0 = do
   (fm, _) <- uiIO (ctxResolveFont ctx pickerFontSize WeightNormal FontStyleNormal FontMono)
   cellW <- uiIO (cellWidth fm)
   columnWith (tight . gap 0 . fixedW bodyW . fixedH bodyH) $ do
-    query <- promptRow pk0
-    pk1 <- uiIO (restock pk0 query)
+    (typed, settled) <- promptRow pk0
+    pk1 <- uiIO (restock pk0 typed settled)
     separator
     (pk3, chosen, closed) <- rowWith (grow . gap 0 . padAll 0) $ do
       (pk2, chosen, closed) <- rowsPane fm cellW bodyW pk1
@@ -671,21 +677,38 @@ keyHints =
 -- count is of the frame before this one: it is drawn above the rows and so
 -- before they are worked out, and the application asks for another frame when
 -- the answer has moved on.
-promptRow :: Ui :> es => Picker -> Eff es Text
+--
+-- It is a search input, which says as well as what is typed whether typing
+-- has paused: that is when a live source is asked again, so that a grep is run
+-- for the word and not for every letter of it on the way. Enter says the
+-- same, since it is asking for what was typed: the rows from before the
+-- pause are for something else, and Enter does not open one of them.
+promptRow :: Ui :> es => Picker -> Eff es (Text, Bool)
 promptRow pk =
   rowWith (padXY 0 0 . tight . fillW . gap 8 . alignMid) $ do
-    (resp, txt) <- textInput' (pkQuery pk)
+    (resp, txt) <-
+      searchInputConfigured'
+        defaultSearchInputConfig {sicPlaceholder = srcPrompt (pkSource pk), sicDebounceMs = liveDebounceMs}
+        (pkTyped pk)
     ctx <- askContext
     uiIO (takeFocus ctx (respId resp))
     labelWith (tight . fontMuted . alignMid) (counted pk)
-    pure txt
+    pure (txt, respChanged resp || respSubmitted resp)
+
+-- | How long typing has to pause before a live source is asked, in
+-- milliseconds.
+liveDebounceMs :: Float
+liveDebounceMs = 200
 
 -- | What answered, out of what there is: @48/1203@, with the gatherer's own
--- progress while it is still running.
+-- progress while it is still running. A live source's rows all answer, so
+-- what there is is not said.
 counted :: Picker -> Text
-counted pk =
-  showT (hitCount pk) <> "/" <> showT (pkTaken pk) <> (if pkDone pk then "" else "\x2026")
+counted pk
+  | srcLive (pkSource pk) = showT (hitCount pk) <> pending
+  | otherwise = showT (hitCount pk) <> "/" <> showT (pkTaken pk) <> pending
   where
+    pending = if pkDone pk && pkTyped pk == pkQuery pk then "" else "\x2026"
     showT :: Int -> Text
     showT = T.pack . show
 
@@ -755,7 +778,9 @@ rowsPane fm cellW bodyW pk0 = do
       atRow = clamp 0 (max 0 (fromIntegral count - viewRows)) followed
 
       pk1 = pk0 {pkCursor = cursor, pkScroll = atRow, pkHovered = if onRow then pointed else -1, pkGrab = grab}
-      chosen = if chosenByKey || pressed then currentItem pk1 else Nothing
+      -- Stale rows answer the last query and not the one in the prompt, so
+      -- nothing is opened from them.
+      chosen = if (chosenByKey || pressed) && isNothing (pkStale pk0) then currentItem pk1 else Nothing
 
   -- nano-ui runs a frame for a pointer that only moved when it came over
   -- another widget, and every row here is the one widget; while the pointer is
@@ -767,7 +792,7 @@ rowsPane fm cellW bodyW pk0 = do
   let first = max 0 (floor atRow)
       last' = min (count - 1) (first + ceiling (rectH rect / lineH))
   shown <- uiIO (visibleRows pk1 first last')
-  let widest = foldl' (\m (PickRow item _) -> max m (T.length (fileNameOf (itemText item)))) 0 shown
+  let widest = foldl' (\m (PickRow item _) -> max m (T.length (rowLead item))) 0 shown
       pk2 = pk1 {pkNameCells = max (pkNameCells pk1) (min nameCap widest)}
 
   let scene =
@@ -832,10 +857,13 @@ nameCap :: Int
 nameCap = 36
 
 -- | What stands in for the rows when there are none: whether nothing answered
--- the query, or there is nothing to answer it yet.
+-- the query, or there is nothing to answer it yet, or the gatherer could not
+-- look.
 emptyNote :: Picker -> Text
 emptyNote pk
   | hitCount pk > 0 = ""
+  | Just msg <- pkFailed pk = msg
+  | srcLive (pkSource pk) && T.null (T.strip (pkQuery pk)) = "Type to search."
   | pkTaken pk == 0 && not (pkDone pk) = "Looking\x2026"
   | T.null (pkQuery pk) = "Nothing here."
   | otherwise = "No match for " <> pkQuery pk
@@ -843,6 +871,7 @@ emptyNote pk
 -- | The rows on screen, each with the characters of it the query matched.
 -- Asking costs about as much as scoring the row again, so it is asked for the
 -- twenty rows that are drawn and not for the hundred thousand that are not.
+-- A live source has said already, and is not asked.
 visibleRows :: Picker -> Int -> Int -> IO (SmallArray PickRow)
 visibleRows pk first last' = do
   rows <- traverse oneRow [first .. last']
@@ -850,11 +879,11 @@ visibleRows pk first last' = do
   where
     plain = T.null (matchQuery pk)
     oneRow i = case hitItem pk i of
-      Nothing -> pure (PickRow (Item "" "" Nothing) U.empty)
+      Nothing -> pure (PickRow (Item "" "" Nothing U.empty []) U.empty)
       Just item -> do
         pos <-
           if plain
-            then pure U.empty
+            then pure (itemMarks item)
             else Fuzzy.matchPositions (pkSlab pk) (pkPattern pk) (itemText item)
         pure (PickRow item pos)
 
@@ -930,15 +959,26 @@ drawRows cdc sc rect@(Rect x y w h) =
           -- how it is told from another file of the same name. A folder too
           -- long for what is left loses its front: the end of it is the part
           -- nearest the file.
-          full = itemText item
-          name = fileNameOf full
-          base = T.length full - T.length name
-          folder = if base > 0 then T.take (base - 1) full else ""
+          --
+          -- A grep hit is the other way about: where it was found is muted,
+          -- and the line it found is what is read, and loses its end.
+          hitRow = isJust (itemLine item)
+          name = rowLead item
+          base = T.length (itemText item) - T.length name
+          folder = rowTrail item
           folderCell = max (rsNameCells sc + 3) (T.length name + 3)
-          (folderShown, dropped) = clipFront (cells - folderCell) folder
+          (folderShown, dropped)
+            | hitRow = (T.take (cells - folderCell) folder, 0)
+            | otherwise = clipFront (cells - folderCell) folder
           matched k = U.elem k pos
-          nameColor k = if matched (base + k) then themeYellow theme else tcName tc
-          folderColor k = if matched (k + dropped) then themeYellow theme else tcMuted tc
+          nameColor k
+            | hitRow = tcMuted tc
+            | matched (base + k) = themeYellow theme
+            | otherwise = tcName tc
+          folderColor k
+            | matched (k + dropped) = themeYellow theme
+            | hitRow = tcName tc
+            | otherwise = tcMuted tc
           run cell0 txt colorOf =
             concat
               [ cellGlyphs (tx + fromIntegral (cell0 + c) * cellW) (textY ry) cellW (font WeightNormal) col seg
@@ -962,6 +1002,23 @@ drawRows cdc sc rect@(Rect x y w h) =
                   radius
                   (tcThumb tc)
               ]
+
+-- | What a row shows first: a file's name, or the file and line a grep hit is
+-- at.
+rowLead :: Item -> Text
+rowLead item = case itemLine item of
+  Nothing -> fileNameOf (itemText item)
+  Just ln -> T.pack (takeFileName (itemPath item)) <> ":" <> T.pack (show (ln + 1))
+
+-- | What a row shows beside that: the folder a file is in, or the line a grep
+-- hit is on.
+rowTrail :: Item -> Text
+rowTrail item = case itemLine item of
+  Just _ -> full
+  Nothing -> if base > 0 then T.take (base - 1) full else ""
+  where
+    full = itemText item
+    base = T.length full - T.length (fileNameOf full)
 
 -- | The name at the end of a path the rows show, which is always written with
 -- forward slashes.
@@ -1038,17 +1095,19 @@ previewPane fm cellW pk0 =
 
 -- | Where the file is and what it is. The folder is muted and the name is not,
 -- as they are in the rows; the length and the language are said the way the
--- status bar says them of the file that is open.
+-- status bar says them of the file that is open. The path is worked out from
+-- the file rather than taken from the row, which for a grep hit is a line of
+-- code.
 previewHeading :: Ui :> es => Picker -> Eff es ()
 previewHeading pk =
   rowWith (padXY 10 6 . tight . fillW . gap 12 . alignMid) $ case currentItem pk of
     Nothing -> labelWith (tight . fontMuted . alignMid) " "
     Just item -> do
-      let full = itemText item
+      let full = relative (pkRoot pk) (itemPath item)
           name = fileNameOf full
           folder = T.dropEnd (T.length name) full
           pv = pkPreview pk
-          n = sizeofSmallArray (pvLines pv)
+          n = pvTotal pv
           lines'
             | pvMore pv = "More than " <> showT n <> " lines"
             | n == 1 = "1 line"
@@ -1086,15 +1145,16 @@ previewBody fm cellW pk0 = do
       asked = realToFrac wheelY * 3 + (if chord 'd' then half else 0) - (if chord 'u' then half else 0)
       -- A preview that has just been read opens where it is about: the top of
       -- a file, or the line a grep found.
-      from = if pvScroll pv < 0 then maybe 0 (\ln -> fromIntegral ln - viewLines / 3) (pvHit pv) else pvScroll pv
+      from = if pvScroll pv < 0 then maybe 0 (\ln -> fromIntegral (ln - pvFirst pv) - viewLines / 3) (pvHit pv) else pvScroll pv
       atLine = clamp 0 (max 0 (fromIntegral count - viewLines)) (from + asked)
       pk1 = pk0 {pkPreview = pv {pvScroll = atLine}}
       first = max 0 (floor atLine)
       last' = min (count - 1) (first + ceiling (rectH rect / lineH))
-      digits = max 2 (length (show (max 1 count)))
+      digits = max 2 (length (show (max 1 (pvFirst pv + count))))
       scene =
         CodeScene
           { csLines = pvLines pv
+          , csBase = pvFirst pv
           , csFirst = first
           , csLast = last'
           , csCount = count
@@ -1122,6 +1182,8 @@ previewBody fm cellW pk0 = do
 -- | Everything the preview's drawing reads.
 data CodeScene = CodeScene
   { csLines :: !(SmallArray PreviewLine)
+  , csBase :: !Int
+  -- ^ The line of the file the first of the lines is.
   , csFirst :: !Int
   , csLast :: !Int
   , csCount :: !Int
@@ -1158,11 +1220,19 @@ drawCode cdc sc rect@(Rect x y w h) =
       | otherwise = FillRect (Rect x y gutterW h) colGutter : concatMap lineOps [csFirst sc .. csLast sc]
 
     lineOps ln =
-      let PreviewLine txt spans = indexSmallArray (csLines sc) ln
+      let PreviewLine txt spans found = indexSmallArray (csLines sc) ln
           ry = lineY ln
-          hit = csHit sc == Just ln
+          hit = csHit sc == Just (csBase sc + ln)
           band = [FillRect (Rect x ry w lineH) colCurrentLine | hit]
-          num = T.pack (show (ln + 1))
+          -- What the grep found, marked as Ctrl+F marks a match in the
+          -- editor, as far as the pane is wide.
+          matches =
+            [ FillRect (Rect (textX + fromIntegral a * cellW) ry (fromIntegral (b' - a) * cellW) lineH) colFindMatch
+            | (a, b) <- found
+            , let b' = min cells b
+            , b' > a
+            ]
+          num = T.pack (show (csBase sc + ln + 1))
           number =
             DrawTextStyled
               (x + gutterW - cellW - fromIntegral (T.length num) * cellW)
@@ -1170,7 +1240,7 @@ drawCode cdc sc rect@(Rect x y w h) =
               (font TokPlain)
               num
               (if hit then colGutterActive else colGutterText)
-       in band ++ [number] ++ spanOps (textY ry) 0 (T.take cells txt) (takeSpans cells spans)
+       in band ++ matches ++ [number] ++ spanOps (textY ry) 0 (T.take cells txt) (takeSpans cells spans)
 
     spanOps _ _ _ [] = []
     spanOps ry !cell txt (Span n kind : rest) =

@@ -66,8 +66,11 @@ library
         Ned.FileTree.Model
         Ned.FileTree.Geometry
 
-        -- The fuzzy finder over it.
+        -- The fuzzy finder over it, and what it looks through.
         Ned.Picker
+        Ned.Picker.Source
+        Ned.Picker.File
+        Ned.Picker.Grep
 
         -- The application around both.
         Ned.File
@@ -89,12 +92,15 @@ library
         effectful-core ^>=2.6,
         containers ^>=0.8,
         filepath ^>=1.5,
+        microaeson ^>=0.1.0.3,
         nano-rope ^>=0.1,
         nano-ui ^>=0.1,
         nano-ui-sdl ^>=0.1,
         ned-fzf ^>=0.1,
         primitive ^>=0.9,
+        process ^>=1.6,
         text ^>=2.1,
+        typed-process ^>=0.2.13,
         vector ^>=0.13
 
 executable ned
@@ -120,4 +126,5 @@ test-suite ned-test
         filepath,
         ned,
         nano-rope,
-        text
+        text,
+        vector

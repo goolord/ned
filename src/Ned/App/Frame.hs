@@ -30,7 +30,7 @@ import qualified Ned.Buffer as B
 import Ned.Editor
 import qualified Ned.FileTree as FT
 import Ned.Highlight (langName)
-import Ned.Picker (pickerSig)
+import Ned.Picker (fileSource, grepSource, pickerSig)
 
 --------------------------------------------------------------------------------
 -- What a frame answers to
@@ -73,10 +73,12 @@ appChords cmds app = do
       'o' -> cmdGuarded cmds PendingOpen
       'n' -> cmdGuarded cmds PendingNew
       'q' -> cmdGuarded cmds PendingQuit
+      'f' | modShift mods -> cmdOpenPicker cmds grepSource
+      'F' -> cmdOpenPicker cmds grepSource
       'f' -> cmdOpenBar cmds BarFind
       'g' -> cmdOpenBar cmds BarGoto
       'b' -> cmdToggleTree cmds
-      'p' -> cmdOpenPicker cmds
+      'p' -> cmdOpenPicker cmds fileSource
       '=' -> cmdZoom cmds (* 1.1)
       '+' -> cmdZoom cmds (* 1.1)
       '-' -> cmdZoom cmds (/ 1.1)

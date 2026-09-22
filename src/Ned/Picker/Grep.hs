@@ -140,8 +140,7 @@ grep root query sink
           | isDoesNotExistError e -> throwIO (GatherFailed "Searching needs ripgrep (rg) on the PATH.")
           | otherwise -> throwIO e
   where
-    flush [] = sink []
-    flush batch = sink (reverse batch)
+    flush = sink . reverse
 
 -- | What ripgrep said went wrong, from the last line of its complaint: a
 -- pattern it cannot read ends with @error: unclosed group@, say.

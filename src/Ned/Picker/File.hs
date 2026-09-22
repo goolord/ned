@@ -1,23 +1,23 @@
 -- | The files under a root, for the finder to match a query against.
 --
--- The walk runs on the finder's gathering thread and hands the files over as
--- it finds them, nearest the root first, so that what is usually wanted is
--- there to pick before a walk of a hundred thousand files has finished.
+-- The walk runs on the finder's gathering thread and hands the files over
+-- as it finds them, so that what is usually wanted is there to pick before
+-- a walk of a hundred thousand files has finished.
 module Ned.Picker.File
   ( fileSource
   , skippedDirs
   ) where
 
-import Control.Monad (void, when)
+import Control.Exception (IOException, try)
+import Control.Monad (void)
 import Data.Char (toLower)
-import Data.List (sortOn)
-import qualified Data.Sequence as Seq
 import qualified Data.Vector.Unboxed as U
 import Ned.Picker.Source
-import System.Directory (doesDirectoryExist, listDirectory, pathIsSymbolicLink)
-import System.FilePath ((</>))
+import System.Directory (doesDirectoryExist, pathIsSymbolicLink)
+import System.Directory.Recursive (getDirFiltered)
+import System.FilePath (takeFileName)
 
--- | Every file under the root, nearest the root first.
+-- | Every file under the root.
 fileSource :: Source
 fileSource =
   Source
@@ -27,12 +27,11 @@ fileSource =
     , srcLive = False
     }
 
--- | How far down a walk goes, how many files it offers, and how many it
--- gathers before handing a batch over. The batch is what makes the rows
--- appear while the walk is still running; the other two are what keep a walk
--- that wandered somewhere enormous from running forever.
-scanDepth, scanLimit, scanBatch :: Int
-scanDepth = 24
+-- | How many files a walk offers, and how many it gathers before handing a
+-- batch over. The batch is what makes the rows appear while the walk is
+-- still running; the limit is what keeps a walk that wandered somewhere
+-- enormous from running forever.
+scanLimit, scanBatch :: Int
 scanLimit = 200000
 scanBatch = 1024
 
@@ -65,54 +64,45 @@ skippedDirs =
 skipDir :: FilePath -> Bool
 skipDir name = map toLower name `elem` skippedDirs
 
--- | The files under a root, breadth first, handed over in batches as they are
--- found. Breadth first so that what is near the root -- which is what is
--- usually wanted -- is there to pick before the walk has finished.
+-- | The files under a root, handed over in batches as they are found. The
+-- walk is dir-traverse's, which is lazy: the batches pull it along, and a
+-- walk the finder has moved on from is abandoned where it stands, the rest
+-- of it never asked for.
 walkFiles :: FilePath -> Sink -> IO ()
-walkFiles root feed = go (Seq.singleton (root, 0 :: Int)) 0 [] 0
+walkFiles root feed =
+  try (getDirFiltered wanted root >>= go 0 []) >>= \case
+    Right () -> pure ()
+    -- A directory that cannot be read ends the walk where it is, with what
+    -- it has handed over so far.
+    Left (_ :: IOException) -> pure ()
   where
-    go queue !found batch !held = case Seq.viewl queue of
-      Seq.EmptyL -> void (flush batch)
-      (dir, depth) Seq.:< rest -> do
-        (dirs, files) <- readEntries dir
-        let items = map item files
-            found' = found + length items
-            queue'
-              | depth >= scanDepth = rest
-              | otherwise = foldl' (\q d -> q Seq.|> (d, depth + 1)) rest dirs
-            batch' = reverse items ++ batch
-            held' = held + length items
-        if held' >= scanBatch
-          then do
-            ok <- flush batch'
-            when (ok && found' < scanLimit) (go queue' found' [] 0)
-          else go queue' found' batch' held'
+    -- What the walk lists and where it goes on: a file is offered, and a
+    -- directory is walked on unless the finder skips it or it is a link. A
+    -- link leads somewhere that is either under the root already, and would
+    -- be listed twice, or outside it, and is not what the finder was asked
+    -- for; a link back up is neither, and would not end.
+    wanted path = do
+      isDir <- doesDirectoryExist path
+      if isDir
+        then do
+          link <- pathIsSymbolicLink path
+          pure (not link && not (skipDir (takeFileName path)))
+        else pure True
+
+    go _found batch [] = void (feed (reverse batch))
+    go !found batch (path : rest) = do
+      isDir <- doesDirectoryExist path
+      if isDir
+        then go found batch rest
+        else
+          let found' = found + 1
+              batch' = item path : batch
+           in if length batch' >= scanBatch
+                then do
+                  ok <- feed (reverse batch')
+                  if ok && found' < scanLimit
+                    then go found' [] rest
+                    else pure ()
+                else go found' batch' rest
 
     item path = Item {itemText = relative root path, itemPath = path, itemLine = Nothing, itemMarks = U.empty, itemRanges = []}
-
-    flush [] = pure True
-    flush batch = feed (reverse batch)
-
--- | What a directory holds: the directories to walk on, and the files to
--- offer, each by name. A directory that cannot be read holds nothing.
---
--- A directory that is a link is not walked on. It leads somewhere that is
--- either under the root already, and would be listed twice, or outside it,
--- and is not what the finder was asked for; a link back up is neither, and
--- would not end.
-readEntries :: FilePath -> IO ([FilePath], [FilePath])
-readEntries dir = do
-  names <- attempt [] (listDirectory dir)
-  entries <- traverse classify (sortOn (map toLower) names)
-  pure ([p | Just (p, True) <- entries], [p | Just (p, False) <- entries])
-  where
-    -- A directory to walk on, a file to offer, or neither: a directory that
-    -- is skipped is not a file to offer in its place.
-    classify name = do
-      let path = dir </> name
-      isDir <- attempt False (doesDirectoryExist path)
-      if not isDir
-        then pure (Just (path, False))
-        else do
-          link <- attempt False (pathIsSymbolicLink path)
-          pure (if link || skipDir name then Nothing else Just (path, True))

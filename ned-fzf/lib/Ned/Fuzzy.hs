@@ -11,7 +11,7 @@
 -- A filter over a fixed list of candidates, such as a file finder, builds a
 -- 'Candidates' arena once and rescans it on every keystroke:
 --
--- > cands <- pure (candidates paths)
+-- > let cands = candidates paths
 -- > slab <- newSlab
 -- > pat <- compile (defaultQuery "wid/tex")
 -- > hits <- matchCandidates slab pat cands 5000
@@ -63,8 +63,8 @@ import Data.ByteString qualified as B
 import Data.ByteString.Builder qualified as BB
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Unsafe qualified as BU
-import Data.Int (Int32)
-import Data.List (sort)
+import Data.List (scanl', sort)
+import Data.List.NonEmpty qualified as NE
 import Data.Text (Text)
 import Data.Text.Encoding qualified as TE
 import Data.Vector qualified as V
@@ -171,28 +171,31 @@ withPair :: Slab -> Pattern -> (Ptr FzfPattern -> Ptr FzfSlab -> IO a) -> IO a
 withPair (Slab slabFp) (Pattern patFp) act =
   withForeignPtr patFp $ \pp -> withForeignPtr slabFp $ \sp -> act pp sp
 
--- The matched byte offsets, ascending and without repeats. fzf appends them
--- in the order its traceback walks the candidate, which is neither.
 withPositions :: Slab -> Pattern -> ByteString -> IO (U.Vector Int)
 withPositions slab pat bytes =
   B.useAsCString bytes $ \cs ->
     withPair slab pat $ \pp sp -> do
       posPtr <- fzf_get_positions cs pp sp
-      if posPtr == nullPtr
-        then pure U.empty
-        else do
-          dataPtr <- ned_fzf_positions_data posPtr
-          n <- fromIntegral <$> ned_fzf_positions_size posPtr
-          offsets <-
-            if dataPtr == nullPtr || n <= (0 :: Int)
-              then pure []
-              else mapM (fmap fromIntegral . peekElemOff dataPtr) [0 .. n - 1]
-          fzf_free_positions posPtr
-          pure (U.fromList (dedup (sort offsets)))
+      offsets <-
+        if posPtr == nullPtr
+          then pure []
+          else do
+            offs <- readOffsets posPtr
+            fzf_free_positions posPtr
+            pure offs
+      pure (U.fromList (ascendingUniquely offsets))
   where
-    dedup (x : y : rest) | x == y = dedup (y : rest)
-    dedup (x : rest) = x : dedup rest
-    dedup [] = []
+    readOffsets pos = do
+      dataPtr <- ned_fzf_positions_data pos
+      n <- fromIntegral <$> ned_fzf_positions_size pos
+      if dataPtr == nullPtr
+        then pure []
+        else mapM (fmap fromIntegral . peekElemOff dataPtr) [0 .. n - 1]
+
+-- The matched byte offsets, ascending and without repeats: fzf appends them
+-- in the order its traceback walks the candidate, which is neither.
+ascendingUniquely :: [Int] -> [Int]
+ascendingUniquely = fmap NE.head . NE.group . sort
 
 -- | Byte offsets into a UTF-8 buffer as character offsets into the text it
 -- decodes to. ASCII, which paths and code usually are, maps through
@@ -237,13 +240,13 @@ candidates texts =
   Candidates
     { candTexts = texts
     , candArena = arena
-    , candOffsets = S.fromListN (V.length texts + 1) (scanOffsets 0 encoded)
+    , candOffsets = S.fromListN (V.length texts + 1) offsets
     }
   where
     encoded = map TE.encodeUtf8 (V.toList texts)
-    arena = BL.toStrict (BB.toLazyByteString (foldMap (\b -> BB.byteString b <> BB.word8 0) encoded))
-    scanOffsets !acc [] = [acc]
-    scanOffsets !acc (b : rest) = acc : scanOffsets (acc + fromIntegral (B.length b) + 1) rest
+    arena = BL.toStrict (BB.toLazyByteString (foldMap chunk encoded))
+    chunk b = BB.byteString b <> BB.word8 0
+    offsets = scanl' (\off b -> off + fromIntegral (B.length b) + 1) 0 encoded
 
 -- | How many candidates there are.
 candidatesCount :: Candidates -> Int
@@ -306,11 +309,9 @@ matchCandidates slab pat cands limit
       pure
         Matches
           { matchedTotal = fromIntegral total
-          , matchedIndices = U.generate written (fromIntegral . S.unsafeIndex idxs)
-          , matchedScores = U.generate written (intScore . S.unsafeIndex scores)
+          , matchedIndices = U.convert (S.map fromIntegral (S.take written idxs))
+          , matchedScores = U.convert (S.map fromIntegral (S.take written scores))
           }
   where
     n = candidatesCount cands
     cap = max 0 (min n limit)
-    intScore :: Int32 -> Int
-    intScore = fromIntegral

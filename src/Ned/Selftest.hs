@@ -8,7 +8,7 @@ module Ned.Selftest (selftest) where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, try)
-import Control.Monad (forM_, unless, void, when)
+import Control.Monad (filterM, forM_, unless, void, when)
 import Data.Foldable (toList)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Maybe (isJust)
@@ -25,7 +25,7 @@ import qualified Ned.FileTree as FT
 import qualified Ned.Picker as P
 import Ned.Editor (Editor (..), cellWidth, defaultFontSize)
 import Ned.View (appView)
-import System.Directory (createDirectoryIfMissing, findExecutable, makeAbsolute)
+import System.Directory (createDirectoryIfMissing, doesFileExist, findExecutable, listDirectory, makeAbsolute)
 import System.Exit (exitFailure)
 import System.FilePath (equalFilePath, (</>))
 import System.IO (hPutStrLn, stderr)
@@ -463,21 +463,23 @@ selftestIn dir mfile say = do
 
     -- The arrows and the chords a terminal's finder is walked with both move
     -- the keyboard down the rows.
-    -- An empty query keeps the rows in the order they were gathered in, which
-    -- is the order a directory is listed in: demo.hs, then the numbered files.
+    -- An empty query keeps the rows in the order the walk found them, which
+    -- is the order the platform lists the directory in: the walk is
+    -- dir-traverse's, and its order is the listing's.
+    listed <- listDirectory treeDir >>= filterM (doesFileExist . (treeDir </>))
     clearQuery 4
     cleared <- settle 20
     when (P.pickerCount cleared /= 63) $
       fail ("selftest: an empty query kept " <> show (P.pickerCount cleared) <> " rows, not 63")
-    landedOn "an emptied query" "demo.hs" cleared
+    landedOn "an emptied query" (T.pack (listed !! 0)) cleared
     key plain KeyDown
     key plain KeyDown
     chord 'n'
     walked <- settle 20
-    landedOn "three steps down the rows" "file-03.txt" walked
+    landedOn "three steps down the rows" (T.pack (listed !! 3)) walked
     chord 'p'
     stepped <- settle 20
-    landedOn "a step back up the rows" "file-02.txt" stepped
+    landedOn "a step back up the rows" (T.pack (listed !! 2)) stepped
 
     -- The rows' scrollbar is down the right of them. Its thumb, held and
     -- dragged down, scrolls them; the button coming up lets go of it.
@@ -508,13 +510,16 @@ selftestIn dir mfile say = do
       fail ("selftest: the wheel back up left the finder's rows at " <> show (P.pickerTop unwheeled))
 
     -- A press on a row opens that row's file, as a press on the tree does.
-    -- The rows start under the panel's title bar and its prompt, a row every
-    -- line height, so the fourth of them is the third numbered file.
+    -- Which row a y of the window lands on is the font's business, so the
+    -- row is read back from where the finder says the pointer is.
+    frame (at 300 185)
+    hoveredRow <- pickerNow >>= maybe (fail "selftest: the rows took no frame under the pointer") (pure . P.pickerHovered)
+    when (hoveredRow < 0) $ fail "selftest: the pointer over the rows hovered no row"
     click 300 185
     idle
     clicked <- appPath <$> readIORef ref
-    unless (maybe False (equalFilePath (treeDir </> "file-03.txt")) clicked) $
-      fail ("selftest: a press on the fourth row opened " <> show clicked)
+    unless (maybe False (equalFilePath (treeDir </> (listed !! hoveredRow))) clicked) $
+      fail ("selftest: a press on the row the pointer was on, row " <> show hoveredRow <> ", opened " <> show clicked)
 
     -- Escape puts the finder away with nothing picked.
     chord 'p'

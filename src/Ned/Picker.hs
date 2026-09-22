@@ -32,6 +32,7 @@ module Ned.Picker
   , pickerGathered
   , pickerDone
   , pickerCurrent
+  , pickerHovered
   , pickerTop
 
     -- * What it looks through
@@ -48,7 +49,7 @@ import Control.Exception (SomeException, displayException, fromException, try)
 import Control.Monad (unless, void, when)
 import qualified Data.IntMap.Strict as IM
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
-import Data.List (mapAccumL)
+import Data.List (groupBy, mapAccumL, scanl')
 import Data.Maybe (fromMaybe, isJust, isNothing)
 import GHC.Clock (getMonotonicTime)
 import Data.Primitive.SmallArray (SmallArray, emptySmallArray, indexSmallArray, sizeofSmallArray, smallArrayFromList)
@@ -320,6 +321,11 @@ pickerTop = pkScroll
 pickerCurrent :: Picker -> Maybe Item
 pickerCurrent = currentItem
 
+-- | The row the pointer is over, counted from the top of the rows, or -1
+-- when it is over none of them.
+pickerHovered :: Picker -> Int
+pickerHovered = pkHovered
+
 -- | Take in whatever the gatherer has found since the last frame, and answer
 -- the query against it.
 --
@@ -339,7 +345,11 @@ restock pk0 typed settled
           then gather (Just (now + staleFor)) pk0 {pkTyped = typed, pkQuery = typed}
           else pure pk0 {pkTyped = typed}
       pk <- harvest now pk1
-      if isJust (pkStale pk1) && isNothing (pkStale pk)
+      -- The stale rows were stood down because the new query has rows in
+      -- their place, which is a new list: the keyboard goes back to the top.
+      -- Rows that merely arrived from the gatherer leave it where it was.
+      let staleCleared = isJust (pkStale pk1) && isNothing (pkStale pk)
+      if staleCleared
         then rematch True pk
         else if pkTaken pk /= pkTaken pk1 then rematch False pk else pure pk
   | otherwise = do
@@ -359,25 +369,28 @@ staleFor = 1
 -- Stale rows are kept until the gatherer has handed some over, or has
 -- finished, or has run out of the time it was given.
 harvest :: Double -> Picker -> IO Picker
-harvest now pk = do
-  g <- readIORef (pkCell pk)
-  pure (taken g)
+harvest now pk = pure . taken =<< readIORef (pkCell pk)
   where
     taken g
+      -- Another gather is running; what this one left is not ours.
       | gatGen g /= pkGen pk = pk
-      | Just until_ <- pkStale pk, gatCount g == 0, not (gatDone g), now < until_ = pk
-      | Just _ <- pkStale pk = replaced
-      | gatCount g == pkTaken pk = finished
-      | otherwise = replaced
+      | keepStale = pk
+      | gatCount g == pkTaken pk = settled
+      | otherwise =
+          settled
+            { pkItems = items
+            , pkCands = Fuzzy.candidates (V.map itemText items)
+            , pkTaken = gatCount g
+            }
       where
-        finished = pk {pkDone = gatDone g, pkFailed = gatFailed g, pkStale = Nothing}
-        replaced =
-          let items = V.fromList (concat (reverse (gatBatches g)))
-           in finished
-                { pkItems = items
-                , pkCands = Fuzzy.candidates (V.map itemText items)
-                , pkTaken = gatCount g
-                }
+        -- While a new query is being gathered for, the rows on screen are
+        -- kept up until it has something to put in their place.
+        keepStale = case pkStale pk of
+          Just until_ -> gatCount g == 0 && not (gatDone g) && now < until_
+          Nothing -> False
+        settled =
+          pk {pkDone = gatDone g, pkFailed = gatFailed g, pkStale = Nothing}
+        items = V.fromList (concat (reverse (gatBatches g)))
 
 -- | Score every row against the query and keep the best.
 --
@@ -424,7 +437,7 @@ previewLines = 600
 ensurePreview :: Picker -> IO Picker
 ensurePreview pk = case currentItem pk of
   Nothing
-    | not (isJust (pvOf pv0)) -> pure pk
+    | isNothing (pvOf pv0) -> pure pk
     | otherwise -> pure (shown emptyPreview)
   Just item
     | pvOf pv0 == Just (itemPath item) && pvHit pv0 == itemLine item -> pure pk
@@ -525,45 +538,34 @@ lexAll lang = go LexNormal
   where
     go _ [] = []
     go st ((l, ranges) : rest) =
-      let t = expandTabs l
+      let (t, starts) = laidOut l
           (spans, st') = lexLine lang st t
-       in PreviewLine t spans (laidOut l ranges) : go st' rest
+          place o = starts U.! clamp 0 (T.length l) o
+       in PreviewLine t spans [(place a, place b) | (a, b) <- ranges] : go st' rest
 
--- | Ranges of the characters of a line, in order along it, as where they are
--- once its tabs are laid out: their places in what 'expandTabs' makes of the
--- line, which are the cells the preview draws them in, a character to a cell.
--- The line is walked once for all of them, so a minified line with a match in
--- every word costs no more than one match does.
-laidOut :: Text -> [(Int, Int)] -> [(Int, Int)]
-laidOut line = snd . mapAccumL range start
+-- | What the preview makes of a line: the line with its tabs laid out as the
+-- spaces they stand for, and where each of its characters starts in that
+-- text, one past the last of them for the end of the line. A tab takes as
+-- many places as it has spaces, and any other character one, so a range of
+-- characters of the line is a pair of places in the text laid out.
+laidOut :: Text -> (Text, U.Vector Int)
+laidOut line = (expanded, starts)
   where
-    start = (0, 0, 0, T.unpack line)
-    range at (a, b) =
-      let (at', a') = seek at a
-          (at'', b') = seek at' b
-       in (at'', (a', b'))
-    -- Walk on to a character, keeping how far the walk has come along the
-    -- line, along the grid its tab stops are on, and along the laid-out text.
-    -- One out of order is walked to again from the start of the line.
-    seek at@(!k, !cell, !i, cs) o
-      | o <= 0 = (at, 0)
-      | o == k = (at, i)
-      | o < k = seek start o
-      | c : rest <- cs =
-          let n = cellsAt cell c
-           in seek (k + 1, cell + n, i + (if c == '\t' then n else 1), rest) o
-      | otherwise = (at, i)
-
--- | A line with its tabs laid out as the spaces they stand for.
-expandTabs :: Text -> Text
-expandTabs t
-  | not (T.any (== '\t') t) = t
-  | otherwise = T.pack (go 0 (T.unpack t))
-  where
-    go _ [] = []
-    go !cell (c : cs) =
-      let n = cellsAt cell c
-       in (if c == '\t' then replicate n ' ' else [c]) ++ go (cell + n) cs
+    places = snd (mapAccumL step 0 (T.unpack line))
+    -- How many cells a character draws from where the walk has come to, and
+    -- how many places it takes in the text laid out: a tab runs to the next
+    -- tab stop and takes the spaces it ran over.
+    step !cell c
+      | c == '\t' = (cell + n, n)
+      | otherwise = (cell + n, 1)
+      where
+        n = cellsAt cell c
+    expanded
+      | T.any (== '\t') line = T.pack (concat (zipWith render (T.unpack line) places))
+      | otherwise = line
+    render c n = if c == '\t' then replicate n ' ' else [c]
+    -- The places characters start at, from how many each of them takes.
+    starts = U.fromListN (T.length line + 1) (scanl' (+) 0 places)
 
 --------------------------------------------------------------------------------
 -- One frame
@@ -1004,15 +1006,16 @@ clipFront cells txt
 -- starts at. The colour of a character is asked for by its index, so a run
 -- ends wherever the answer changes.
 runsOf :: Text -> (Int -> Color) -> [(Int, Text, Color)]
-runsOf txt colorAt = go 0 (T.unpack txt)
+runsOf txt colorAt =
+  [ (i, T.pack (map snd run), colorAt i)
+  | run@((i, _) : _) <- runs
+  ]
   where
-    go _ [] = []
-    go !i (c : cs) =
-      let col = colorAt i
-          (run, rest) = span (\(k, _) -> sameColor (colorAt k) col) (zip [i + 1 ..] cs)
-          seg = T.pack (c : map snd run)
-       in (i, seg, col) : go (i + length run + 1) (map snd rest)
-    sameColor a b = colorToWord32 a == colorToWord32 b
+    -- Chars stay together for as long as their colours answer the same.
+    runs =
+      groupBy
+        (\(a, _) (b, _) -> colorToWord32 (colorAt a) == colorToWord32 (colorAt b))
+        (zip [0 :: Int ..] (T.unpack txt))
 
 -- | The ops of a run of text a character to a cell, each placed on its own.
 --
@@ -1038,11 +1041,7 @@ cellRun :: Float -> Float -> Float -> TextFont -> Color -> Text -> [DrawOp]
 cellRun x0 y cellW font col txt
   | T.null txt || T.all (== ' ') txt = []
   | T.all simple txt = [DrawTextStyled x0 y font txt col]
-  | otherwise =
-      [ DrawTextStyled (x0 + fromIntegral i * cellW) y font (T.singleton c) col
-      | (i, c) <- zip [0 :: Int ..] (T.unpack txt)
-      , c /= ' '
-      ]
+  | otherwise = cellGlyphs x0 y cellW font col txt
   where
     simple c = c >= ' ' && c < '\x7F'
 

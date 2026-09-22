@@ -1,10 +1,10 @@
--- | The editor's three widgets, and the draw ops they build.
+-- | The editor's four widgets, and the draw ops they build.
 --
--- The line numbers, the text and the scrollbar are three custom nano-ui
+-- The line numbers, the text and the two scrollbars are four custom nano-ui
 -- widgets rather than one: the toolkit runs a frame for a pointer that only
 -- moved when it came over another widget, and takes the cursor's shape from
 -- the widget under it, so this is what changes the cursor the moment it
--- crosses onto the scrollbar. The text's widget is the one with the keyboard.
+-- crosses onto a scrollbar. The text's widget is the one with the keyboard.
 --
 -- Nothing here reads input or keeps state. What a frame of the editor works
 -- out is "Ned.Editor"'s, and what it hands back, together with the editor
@@ -34,28 +34,33 @@ import Ned.Widget (thumbSpan)
 -- The editor
 --------------------------------------------------------------------------------
 
--- | The editor, filling the space its parent gives it: three custom widgets
--- side by side (the line numbers, the text, the scrollbar). Pass the editor
--- and keep the result; the response is for hanging a context menu on. It takes
--- the keyboard when @wantFocus@ is set, which an application clears while a
+-- | The editor, filling the space its parent gives it: four custom widgets,
+-- the line numbers, the text and the upright scrollbar in a row, and the
+-- sideways scrollbar in a lane under them. Pass the editor and keep the
+-- result; the response is for hanging a context menu on. It takes the
+-- keyboard when @wantFocus@ is set, which an application clears while a
 -- field of its own is being typed into.
 --
 -- nano-ui runs a frame for a pointer that only moved when it came over another
--- widget, and takes the cursor's shape from the widget under it, so three
--- widgets rather than one is what changes the cursor the moment it crosses onto
--- the scrollbar. The text's widget is the one with the keyboard.
+-- widget, and takes the cursor's shape from the widget under it, so four
+-- widgets rather than one is what changes the cursor the moment it crosses
+-- onto a scrollbar. The text's widget is the one with the keyboard.
 editorView :: Ui :> es => Bool -> Editor -> Eff es (Response, Editor)
 editorView wantFocus ed0 = do
   widGutter <- nextId
   wid <- nextId
   widBar <- nextId
+  widHBar <- nextId
   fm <- resolveFontUi (edFontSize ed0) WeightNormal FontStyleNormal FontMono
   cellW <- cellWidth (lineWidthUi fm)
-  -- The whole editor, from where its three parts were last frame.
+  -- The whole editor, from where its parts were last frame: the row's left
+  -- and right, and the lane's bottom under it.
   prevGutter <- lastRect widGutter
   prevBar <- lastRect widBar
-  let rect = case (prevGutter, prevBar) of
-        (Just (Rect gx gy _ gh), Just (Rect bx _ bw _)) -> Rect gx gy (bx + bw - gx) gh
+  prevHBar <- lastRect widHBar
+  let rect = case (prevGutter, prevBar, prevHBar) of
+        (Just (Rect gx gy _ _), Just (Rect bx _ bw _), Just (Rect _ hy _ hh)) ->
+          Rect gx gy (bx + bw - gx) (hy + hh - gy)
         _ -> Rect 0 0 800 600
 
   -- Tab would walk the focus off to the menu bar, and a click on a menu takes
@@ -78,6 +83,8 @@ editorView wantFocus ed0 = do
           , esFind = if edFindExact ed1 then edFind ed1 else foldCase (edFind ed1)
           , esFindExact = edFindExact ed1
           , esThumbHot = efThumbHot fr
+          , esThumbXHot = efThumbXHot fr
+          , esWidest = efWidest fr
           , esWhitespace = edShowWhitespace ed1
           }
       part which pointer layout =
@@ -88,11 +95,14 @@ editorView wantFocus ed0 = do
           , widgetCursor = Just (const pointer)
           , widgetDamageSlop = 0
           }
-  resp <- rowWith (grow . gap 0 . padAll 0) $ do
-    (respGutter, ()) <- customWidgetWithId widGutter (part PartGutter UiCursorDefault (fillH . fixedW (gGutterW g)))
-    (respText, ()) <- customWidgetWithId wid (part PartText UiCursorText grow) {widgetFocusable = True}
-    _ <- customWidgetWithId widBar (part PartBar UiCursorDefault (fillH . fixedW scrollBarW))
-    pure (respGutter <> respText)
+  resp <- columnWith (grow . gap 0 . padAll 0) $ do
+    respRow <- rowWith (grow . gap 0 . padAll 0) $ do
+      (respGutter, ()) <- customWidgetWithId widGutter (part PartGutter UiCursorDefault (fillH . fixedW (gGutterW g)))
+      (respText, ()) <- customWidgetWithId wid (part PartText UiCursorText grow) {widgetFocusable = True}
+      _ <- customWidgetWithId widBar (part PartBar UiCursorDefault (fillH . fixedW scrollBarW))
+      pure (respGutter <> respText)
+    (respHBar, ()) <- customWidgetWithId widHBar (part PartHBar UiCursorDefault (fillW . fixedH scrollBarH))
+    pure (respRow <> respHBar)
   pure (resp, ed1)
 
 -- | Everything the editor's drawing reads.
@@ -108,22 +118,26 @@ data EditorScene = EditorScene
   , esFind :: !Text
   , esFindExact :: !Bool
   , esThumbHot :: !Bool
+  , esThumbXHot :: !Bool
+  , esWidest :: !Int
+  -- ^ The widest the view scrolls sideways to, in cells, as the frame left it.
   , esWhitespace :: !Bool
   }
 
 -- | The widgets the editor is made of.
-data Part = PartGutter | PartText | PartBar
+data Part = PartGutter | PartText | PartBar | PartHBar
 
 -- | A number that changes when what a part draws does. The version stands
 -- for the text, and the language's name for its rules. The line numbers and
--- the scrollbar read little of the scene, and are left alone by a caret that
--- blinks or moves along its line.
+-- the two scrollbars read little of the scene, and are left alone by a caret
+-- that blinks or moves along its line.
 editorSceneKey :: Part -> EditorScene -> Int
 editorSceneKey which sc =
   let buf = esBuffer sc
    in contentKeyOf $ case which of
         PartGutter -> [keyPart (1 :: Int), keyPart (B.lineCount buf), keyPart (esScrollY sc), keyPart (esFontSize sc), keyPart (fst (B.cursorPosition buf))]
         PartBar -> [keyPart (2 :: Int), keyPart (B.lineCount buf), keyPart (esScrollY sc), keyPart (esFontSize sc), keyPart (esThumbHot sc)]
+        PartHBar -> [keyPart (4 :: Int), keyPart (esScrollX sc), keyPart (esFontSize sc), keyPart (esWidest sc), keyPart (esThumbXHot sc)]
         PartText ->
           [ keyPart (3 :: Int)
           , keyPart (B.bufVersion buf)
@@ -142,8 +156,9 @@ editorSceneKey which sc =
 
 -- | The draw ops of one part, given the rectangle that part was laid out in.
 -- They are worked out in terms of the whole editor, which starts a gutter to
--- the left of the text and ends a scrollbar to its right, and each part is
--- clipped to its own rectangle.
+-- the left of the text, ends an upright scrollbar to its right, and runs a
+-- sideways scrollbar along its foot; each part is clipped to its own
+-- rectangle.
 drawEditor :: Part -> EditorScene -> Rect -> SmallArray DrawOp
 drawEditor which sc own@(Rect ox oy ow oh) =
   smallArrayFromList $
@@ -163,6 +178,12 @@ drawEditor which sc own@(Rect ox oy ow oh) =
           : [ FillRoundedRect (Rect (ox + 3) (y + thumbTop + 2) (scrollBarW - 6) (thumbH - 4)) 3 (if esThumbHot sc then colThumbHot else colThumb)
             | maxScrollY g rect buf > 0
             ]
+      PartHBar ->
+        FillRect own colBackground
+          : FillRect own colTrack
+          : [ FillRoundedRect (Rect (x + thumbLeft + 2) (oy + 3) (thumbW - 4) (scrollBarH - 6)) 3 (if esThumbXHot sc then colThumbHot else colThumb)
+            | maxScrollXOf g rect (esWidest sc) > 0
+            ]
   where
     -- The whole editor. Nothing a part draws reads a side of it that the
     -- part's own rectangle does not give.
@@ -170,6 +191,9 @@ drawEditor which sc own@(Rect ox oy ow oh) =
       PartGutter -> Rect ox oy (ow + scrollBarW) oh
       PartText -> Rect (ox - gGutterW g) oy (ow + gGutterW g + scrollBarW) oh
       PartBar -> Rect (ox + ow - scrollBarW) oy scrollBarW oh
+      -- The sideways bar is a whole of its own: its lane is the editor's
+      -- width, which its own rectangle already spans.
+      PartHBar -> own
     buf = esBuffer sc
     g = esGeometry sc
     cellW = gCellW g
@@ -188,6 +212,11 @@ drawEditor which sc own@(Rect ox oy ow oh) =
     (thumbTop, thumbH) = thumbSpan (scroller g rect buf) (esScrollY sc)
     (selFrom, selTo) = B.selectionRange buf
     (caretLine, caretCol) = B.cursorPosition buf
+
+    -- The sideways bar: the lane is the editor's whole width, and the thumb
+    -- stands for the share of the line the view holds.
+    hbar = hscroller g rect (esWidest sc)
+    (thumbLeft, thumbW) = thumbSpan hbar (realToFrac (esScrollX sc))
 
     -- Each line on screen with its text: the whole of an ordinary line, and
     -- of a long one the columns on screen.

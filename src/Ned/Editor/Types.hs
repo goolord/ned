@@ -28,6 +28,8 @@ data Drag
     DragLines !Int
   | -- | Holding the scrollbar's thumb, this far below its top.
     DragThumb !Float
+  | -- | Holding the sideways bar's thumb, this far right of its left.
+    DragThumbX !Float
   deriving (Eq)
 
 data Editor = Editor
@@ -51,6 +53,14 @@ data Editor = Editor
   -- ^ Asks the next frame to scroll the caret into view.
   , edViewLines :: !Int
   -- ^ Whole lines that fit the view, as of the last frame.
+  , edWidestVer :: !Int
+  -- ^ The version of the text the width scan belongs to.
+  , edWidest :: !Int
+  -- ^ The widest line the width scan has measured, in cells: the whole of
+  -- the buffer once it has been round, and an edit starts it over.
+  , edWidestScan :: !Int
+  -- ^ The line the width scan is to walk from; past the last line when it
+  -- has the whole of the buffer.
   , edPressed :: !Bool
   -- ^ Whether the pointer went down on the editor this frame.
   , edShowWhitespace :: !Bool
@@ -75,6 +85,9 @@ newEditor lang buf =
     , edFindExact = False
     , edReveal = True
     , edViewLines = 1
+    , edWidestVer = -1
+    , edWidest = 0
+    , edWidestScan = 0
     , edPressed = False
     , edShowWhitespace = True
     }

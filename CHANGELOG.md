@@ -4,6 +4,12 @@
 
 * First version: a source code editor on nano-rope and nano-ui, with syntax
   highlighting, undo and redo, find, go to line, and LF and CRLF files.
+* The editor scrolls two ways: a line wider than the view puts a scrollbar
+  along its foot, under the upright one, and its thumb is taken and dragged
+  the same way. The view is held to the widest line in the file and a few
+  cells past it, so the bar stays while the wide line is out of sight; the
+  wheel walks along the line with Shift, and the caret is followed when it
+  moves.
 * A fuzzy file finder on Ctrl+P: a prompt over the files under the tree's
   root, ranked by fzf's own matching algorithm (vendored as C in
   `ned-fzf`), each row a file's name with its folder in a column beside it

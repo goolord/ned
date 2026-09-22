@@ -6,7 +6,7 @@
 -- no others, so a frame costs the same in a document of ten lines as in one of
 -- ten million.
 --
--- Nothing here draws. The three widgets the editor is made of, and the ops
+-- Nothing here draws. The four widgets the editor is made of, and the ops
 -- they build, are in "Ned.View"; what one of their frames runs on is here, the
 -- state it runs on is in "Ned.Editor.Types", the measurements in
 -- "Ned.Editor.Geometry", and what the keys do in "Ned.Editor.Keys". Read
@@ -59,6 +59,11 @@ data EditorFrame = EditorFrame
   -- ^ Whether the caret shows this frame.
   , efThumbHot :: !Bool
   -- ^ Whether the pointer is over the scrollbar, or holding its thumb.
+  , efThumbXHot :: !Bool
+  -- ^ Whether the pointer is over the sideways bar, or holding its thumb.
+  , efWidest :: !Int
+  -- ^ The widest the view scrolls sideways to, in cells: the widest line in
+  -- the buffer as far as the width scan knows it, with a few of slack past.
   }
 
 -- | Run one frame of the editor over the rectangle it is laid out in.
@@ -74,10 +79,16 @@ editorFrame focused rect cellW fm ed0 = do
   buf1 <- if focused then applyKeys inp (edViewLines ed0) buf0 else pure buf0
 
   let g = geometry cellW fm buf1
+      -- The editor less its sideways bar, which is the rectangle the text has
+      -- to itself and the one the view is worked out over. The whole of the
+      -- editor is the pointer's.
+      rowRect = Rect (rectX rect) (rectY rect) (rectW rect) (max 1 (rectH rect - scrollBarH))
       mouse = inputMousePos inp
       inside = rectContains rect mouse
       overBar = inside && v2X mouse >= rectX rect + rectW rect - scrollBarW
       overGutter = inside && v2X mouse < rectX rect + gGutterW g
+      overHBar = inside && not overBar && v2Y mouse >= rectY rect + rectH rect - scrollBarH
+      localX = v2X mouse - rectX rect
       localY = v2Y mouse - rectY rect
       pointedLine scrollY b =
         clamp 0 (B.lineCount b - 1) (floor (scrollY + realToFrac (localY / gLineH g)))
@@ -85,14 +96,24 @@ editorFrame focused rect cellW fm ed0 = do
       pointed scrollY scrollX b =
         let x = v2X mouse - (rectX rect + gGutterW g + textPad) + scrollX
          in B.offsetAt b (pointedLine scrollY b) (round (x / gCellW g))
-      bar = scroller g rect buf1
+      bar = scroller g rowRect buf1
 
-  -- The pointer: a press starts a selection or takes the thumb, and a held
+  -- The pointer, the wheel and the scroll are one working, for the sideways
+  -- thumb and the upright scroll read each other: the lane the thumb travels
+  -- is the widest line on screen, and the widest line is where the upright
+  -- scroll has put the view.
+  --
+  -- The pointer: a press starts a selection or takes a thumb, and a held
   -- button carries on with whichever it started.
   let (drag1, buf2, scrollY1)
         | inputMousePressed inp && overBar =
             let grab = thumbGrab bar (edScrollY ed0) localY
              in (DragThumb grab, buf1, thumbScroll bar grab localY)
+        | inputMousePressed inp && overHBar =
+            -- A press on the lane brings the thumb to the pointer, as the
+            -- upright bar's does.
+            let grab = thumbGrab hbar (realToFrac (edScrollX ed0)) localX
+             in (DragThumbX grab, buf1, edScrollY ed0)
         | inputMousePressed inp && overGutter =
             -- A press on a line's number selects the line; with Shift, the
             -- lines from the selection's anchor to it.
@@ -123,6 +144,7 @@ editorFrame focused rect cellW fm ed0 = do
         | not (inputMouseDown inp) = (DragNone, buf1, edScrollY ed0)
         | otherwise = case edDrag ed0 of
             DragThumb grab -> (DragThumb grab, buf1, thumbScroll bar grab localY)
+            DragThumbX grab -> (DragThumbX grab, buf1, edScrollY ed0)
             DragSelect ->
               let sy = edgeScrolled
                in (DragSelect, B.setCursor True (pointed sy (edScrollX ed0) buf1) buf1, sy)
@@ -142,27 +164,30 @@ editorFrame focused rect cellW fm ed0 = do
          in edScrollY ed0 + clamp (-3) 3 (over * 0.5)
       selecting = drag1 == DragSelect || isWords drag1 || isLines drag1
       autoScrolling = selecting && (localY < 0 || localY > rectH rect)
-  when autoScrolling (wakeAfter 0.03)
 
-  -- The wheel, three lines a notch; with Shift it scrolls sideways.
-  let V2 wheelX wheelY = if inside then inputScroll inp else V2 0 0
+      -- The wheel, three lines a notch; with Shift it scrolls sideways. A
+      -- sideways thumb held has the say over both, and goes where the
+      -- pointer takes it.
+      V2 wheelX wheelY = if inside then inputScroll inp else V2 0 0
       shift = modShift (inputModifiers inp)
       scrollY2 = scrollY1 + realToFrac (if shift then 0 else wheelY) * 3
-      scrollX2 = edScrollX ed0 + (wheelX + (if shift then wheelY else 0)) * 3 * gCellW g
+      scrollX2 = case drag1 of
+        DragThumbX grab -> realToFrac (thumbScroll hbar grab localX)
+        _ -> edScrollX ed0 + (wheelX + (if shift then wheelY else 0)) * 3 * gCellW g
 
-  -- Follow the caret when it moved, and then keep the scroll within bounds.
-  let caretMoved =
+      -- Follow the caret when it moved, and then keep the scroll within bounds.
+      caretMoved =
         B.bufCursor buf2 /= B.bufCursor buf0
           || B.bufVersion buf2 /= B.bufVersion buf0
           || edReveal ed0
       (cLine, cCol) = B.cursorPosition buf2
       cCell = B.colToVisual buf2 cLine cCol
-      viewL = viewLinesOf g rect
+      viewL = viewLinesOf g rowRect
       followY y
         | not caretMoved || autoScrolling || isLines drag1 = y
         | otherwise = followRow cLine viewL y
       caretPx = fromIntegral cCell * gCellW g
-      tw = textWidth g rect
+      tw = textWidth g rowRect
       -- A drag over the line numbers leaves the caret on the line after the
       -- ones it took, which is no reason to scroll there.
       followX x
@@ -170,13 +195,34 @@ editorFrame focused rect cellW fm ed0 = do
         | caretPx < x = max 0 (caretPx - 4 * gCellW g)
         | caretPx > x + tw - 2 * gCellW g = caretPx - tw + 6 * gCellW g
         | otherwise = x
-      scrollY3 = clamp 0 (maxScrollY g rect buf2) (followY scrollY2)
+      scrollY3 = clamp 0 (maxScrollY g rowRect buf2) (followY scrollY2)
       firstLine = floor scrollY3 :: Int
       lastLine = min (B.lineCount buf2 - 1) (firstLine + ceiling viewL)
-      -- Sideways the view goes as far as the widest line on screen.
-      widest = maximum (cCell : [B.colToVisual buf2 ln (B.lineLength buf2 ln) | ln <- [firstLine .. lastLine]])
-      maxScrollX = max 0 (fromIntegral (widest + 4) * gCellW g - tw)
+      -- Sideways the view goes as far as the widest line in the buffer, and
+      -- a few cells past, so the bar stays under it however far it is
+      -- scrolled -- the widest one off screen is still to be walked to. The
+      -- lines on screen are measured at once; the rest of the buffer a scan
+      -- gets through a piece a frame, which an edit starts over, and what
+      -- the scan has measured so far is what the view is held to. A line
+      -- deleted can leave it a few frames too wide for the text, and the
+      -- scan's next round puts that right.
+      seen = maximum (cCell : [B.colToVisual buf2 ln (B.lineLength buf2 ln) | ln <- [firstLine .. lastLine]])
+      restart = B.bufVersion buf2 /= edWidestVer ed0
+      scanFrom
+        | restart = 0
+        | otherwise = min (edWidestScan ed0) (B.lineCount buf2)
+      walk !ln !left !acc
+        | ln >= B.lineCount buf2 || left <= 0 = (ln, acc)
+        | otherwise =
+            let len = B.lineLength buf2 ln
+             in walk (ln + 1) (left - len) $! max acc (B.colToVisual buf2 ln len)
+      (scanTo, scanFound) = walk scanFrom scanBudget (if restart then seen else edWidest ed0)
+      widest = max seen scanFound
+      hbar = hscroller g rowRect (widest + 4)
+      maxScrollX = maxScrollXOf g rowRect (widest + 4)
       scrollX3 = clamp 0 maxScrollX (followX scrollX2)
+
+  when autoScrolling (wakeAfter 0.03)
 
   -- The lexer state the first line on screen starts in.
   let lexCache = lexCacheFor ed0 buf0 buf2 firstLine
@@ -201,16 +247,26 @@ editorFrame focused rect cellW fm ed0 = do
             , edLexCache = lexCache
             , edReveal = False
             , edViewLines = max 1 (floor viewL - 1)
+            , edWidestVer = B.bufVersion buf2
+            , edWidest = scanFound
+            , edWidestScan = scanTo
             , edPressed = (inputMousePressed inp || inputMouseRightPressed inp) && inside
             }
       , efGeometry = g
       , efLexStart = lexStart
       , efCaretOn = caretOn
       , efThumbHot = overBar || isThumb drag1
+      , efThumbXHot = overHBar || isThumbX drag1
+      , efWidest = widest
       }
   where
     blinkPeriod = 0.53 :: Double
+    -- The piece of the buffer, in characters, a frame's width scan walks:
+    -- enough to have a big file measured in a few frames, little enough to
+    -- stay off the frame's back.
+    scanBudget = 262144 :: Int
     isThumb = \case DragThumb _ -> True; _ -> False
+    isThumbX = \case DragThumbX _ -> True; _ -> False
     isLines = \case DragLines _ -> True; _ -> False
     isWords = \case DragWords _ _ -> True; _ -> False
 

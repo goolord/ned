@@ -13,11 +13,14 @@ module Ned.Editor.Geometry
 
     -- * The view
   , scrollBarW
+  , scrollBarH
   , textPad
   , textWidth
   , viewLinesOf
   , maxScrollY
+  , maxScrollXOf
   , scroller
+  , hscroller
   ) where
 
 import Data.Text (Text)
@@ -27,8 +30,10 @@ import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
 import Ned.Widget (Scroller (..))
 
-scrollBarW, textPad :: Float
+scrollBarW, scrollBarH, textPad :: Float
 scrollBarW = 12
+-- | The sideways bar is as tall along the bottom as the upright one is wide.
+scrollBarH = scrollBarW
 textPad = 8
 
 -- | What a frame needs to place text: the cell, the line, and where the text
@@ -82,3 +87,20 @@ scroller :: Geometry -> Rect -> Buffer -> Scroller
 scroller g r buf =
   let viewL = viewLinesOf g r
    in Scroller (rectH r) (viewL / (fromIntegral (B.lineCount buf) + viewL)) (maxScrollY g r buf)
+
+-- | The view and its scrollbar, along the line: the lane is the rect's whole
+-- width, and what there is to scroll through is the text's width beyond the
+-- view's, over a line so many cells wide -- the widest on screen and the
+-- caret's, as the view's own bound has it. A cell of the thumb travels a cell
+-- of the view, until the thumb's least size has its say.
+hscroller :: Geometry -> Rect -> Int -> Scroller
+hscroller g r widestCells =
+  let tw = textWidth g r
+      travel = maxScrollXOf g r widestCells
+   in Scroller (rectW r) (realToFrac ((rectW r - travel) / rectW r)) (realToFrac travel)
+
+-- | How far the view travels sideways, in pixels, over a line so many cells
+-- wide: the line's width past what the text has to itself.
+maxScrollXOf :: Geometry -> Rect -> Int -> Float
+maxScrollXOf g r widestCells =
+  max 0 (fromIntegral widestCells * gCellW g - textWidth g r)

@@ -113,7 +113,7 @@ selftestIn dir mfile say = do
         -- A press on the number of the last line in view takes that line, and
         -- leaves the view where it is: the caret it puts on the line after
         -- is nothing to scroll to.
-        click 20 725
+        click 20 712
         scrolled <- edScrollY . appEditor <$> readIORef ref
         when (scrolled /= 0) $ fail ("selftest: a press on the last line number in view scrolled to " <> show scrolled)
         -- Scroll a loaded file about and time the frames.
@@ -232,15 +232,68 @@ selftestIn dir mfile say = do
         when (line /= "    putStrLn " <> T.pack (show ("hello" :: String)) <> " -- greet" <> T.singleton (toEnum 10)) $
           fail ("selftest: triple click selected " <> show line)
 
+        -- A line wider than the view is what the sideways bar along the foot
+        -- is for. Its thumb, held and dragged, walks the view along the line,
+        -- and the button coming up leaves it where it was let go. Home takes
+        -- the caret to the line's head, and the view along with it.
+        key plain KeyEnd
+        key plain KeyEnter
+        typed (T.replicate 400 "x")
+        key plain KeyHome
+        idle
+        still <- edScrollX . appEditor <$> readIORef ref
+        when (still /= 0) $ fail ("selftest: a long line left the view sideways at " <> show still)
+        frame (at 600 721) {inputMouseDown = True, inputMousePressed = True}
+        frame (at 1000 721) {inputMouseDown = True}
+        frame (at 1000 721) {inputMouseReleased = True}
+        idle
+        draggedX <- edScrollX . appEditor <$> readIORef ref
+        when (draggedX <= 0) $
+          fail ("selftest: dragging the sideways thumb left the view at " <> show draggedX)
+        frame (at 300 400)
+        idle
+        letGo <- edScrollX . appEditor <$> readIORef ref
+        when (letGo /= draggedX) $
+          fail "selftest: the sideways thumb kept following the pointer after the button came up"
+        snap "06b-sideways.bmp"
+        key plain KeyHome
+        idle
+        backX <- edScrollX . appEditor <$> readIORef ref
+        when (backX /= 0) $ fail ("selftest: Home left the view sideways at " <> show backX)
+
+        -- The bound is the file's, not the view's: with lines put under the
+        -- long one so it is walked out of sight, the bar stays and the view
+        -- still goes to it.
+        forM_ [1 :: Int .. 40] (const (key plain KeyEnter))
+        key (Modifiers True False False) KeyHome
+        idle
+        idle
+        idle
+        wide <- edWidest . appEditor <$> readIORef ref
+        when (wide < 300) $
+          fail ("selftest: with the long line out of view the view went only " <> show wide <> " cells")
+        frame (at 600 721) {inputMouseDown = True, inputMousePressed = True}
+        frame (at 1000 721) {inputMouseDown = True}
+        frame (at 1000 721) {inputMouseReleased = True}
+        idle
+        reached <- edScrollX . appEditor <$> readIORef ref
+        when (reached <= 0) $
+          fail ("selftest: with the long line out of view the sideways bar dragged to " <> show reached)
+        key (Modifiers True False False) KeyHome
+        idle
+        backTop <- edScrollX . appEditor <$> readIORef ref
+        when (backTop /= 0) $ fail ("selftest: Ctrl+Home left the view sideways at " <> show backTop)
+
         -- What is under the pointer says what the cursor is: the text has the
-        -- beam, the scrollbar and the line numbers the arrow.
-        let crossing name x want = do
-              frame (at x 400) >> frame (at x 400)
-              kind <- uiCursorKind ctx (at x 400)
+        -- beam, the scrollbars and the line numbers the arrow.
+        let crossing name x y want = do
+              frame (at x y) >> frame (at x y)
+              kind <- uiCursorKind ctx (at x y)
               when (kind /= want) $ fail ("selftest: cursor " <> show kind <> " " <> name)
-        crossing "on the scrollbar" 1094 UiCursorDefault
-        crossing "on the text" 600 UiCursorText
-        crossing "on the line numbers" 20 UiCursorDefault
+        crossing "on the scrollbar" 1094 400 UiCursorDefault
+        crossing "on the sideways bar" 600 721 UiCursorDefault
+        crossing "on the text" 600 400 UiCursorText
+        crossing "on the line numbers" 20 400 UiCursorDefault
 
         -- A right click outside the selection moves the caret and opens the menu.
         frame (at 300 40) {inputMouseRightDown = True, inputMouseRightPressed = True}

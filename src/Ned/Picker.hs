@@ -240,7 +240,13 @@ harvest now pk = pure . taken =<< readIORef (pkCell pk)
       -- Another gather is running; what this one left is not ours.
       | gatGen g /= pkGen pk = pk
       | keepStale = pk
-      | gatCount g == pkTaken pk = settled
+      -- Rows kept for a query still being gathered are committed whatever
+      -- the gatherer has: one that finishes with nothing clears them, rather
+      -- than leaving the last query's rows standing in for none.
+      -- Rows kept for a query still being gathered are committed whatever
+      -- the gatherer has: one that finishes with nothing clears them, rather
+      -- than leaving the last query's rows standing in for none.
+      | gatCount g == pkTaken pk, isNothing (pkStale pk) = settled
       | otherwise =
           settled {pkItems = items, pkCands = Fuzzy.candidates (V.map itemText items), pkTaken = gatCount g}
       where

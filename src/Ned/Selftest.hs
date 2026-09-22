@@ -551,6 +551,22 @@ selftestIn dir mfile say = do
         unless (fmap P.itemLine (P.pickerCurrent grepped) == Just (Just 4)) $
           fail ("selftest: the grep landed on line " <> show (P.itemLine <$> P.pickerCurrent grepped))
         shot "15-grep.bmp"
+        -- A query nothing answers clears the rows the last query found, once
+        -- ripgrep has finished with it and found nothing.
+        let emptied :: Int -> IO P.Picker
+            emptied 0 = fail "selftest: the unanswered grep never finished"
+            emptied k =
+              idle >> pickerNow >>= \case
+                Just pk | P.pickerDone pk && P.pickerCount pk == 0 -> pure pk
+                Just _ -> threadDelay 20000 >> emptied (k - 1)
+                Nothing -> fail "selftest: the grep put itself away"
+        typed "X"
+        emptyResult <- emptied 200
+        when (P.pickerCount emptyResult /= 0) $
+          fail ("selftest: an unanswered query left " <> show (P.pickerCount emptyResult) <> " rows up")
+        shot "16-grep-empty.bmp"
+        key plain KeyBackspace
+        _ <- answered 200
         -- Enter opens the file with the caret on the line that was found.
         modifyIORef' ref $ \a ->
           a {appEditor = (appEditor a) {edBuffer = B.markSaved (edBuffer (appEditor a))}}

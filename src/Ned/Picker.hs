@@ -782,6 +782,11 @@ rowsPane fm cellW rowsW pk0 = do
   shown <- uiIO (visibleRows pk1 first last')
   let widest = foldl' (\m (PickRow item _) -> max m (T.length (rowLead item))) 0 shown
       pk2 = pk1 {pkNameCells = max (pkNameCells pk1) (min nameCap widest)}
+      -- How wide the rows may draw, which is the viewport: the scroller keeps
+      -- its scrollbar's lane out of that, so a row held to it cannot run
+      -- under the bar. Nothing has published a viewport before the scroller's
+      -- first frame, so until then nothing is held back.
+      roomW = maybe (1 / 0) (rectW . scrollViewport) metrics0
       scene =
         RowScene
           { rsRows = shown
@@ -792,6 +797,7 @@ rowsPane fm cellW rowsW pk0 = do
           , rsCursor = cursor
           , rsHovered = hovered
           , rsNameCells = pkNameCells pk2
+          , rsMaxW = roomW
           , rsKey =
               contentKeyOf
                 [ keyPart (pkQuery pk1)
@@ -802,6 +808,7 @@ rowsPane fm cellW rowsW pk0 = do
                 , keyPart (pkNameCells pk2)
                 , keyPart first
                 , keyPart last'
+                , keyPart roomW
                 ]
           }
       above = fromIntegral first * lineH
@@ -896,6 +903,11 @@ data RowScene = RowScene
   , rsCursor :: !Int
   , rsHovered :: !Int
   , rsNameCells :: !Int
+  , rsMaxW :: !Float
+  -- ^ How wide the rows may draw: no more than the widget they sit in, and no
+  -- more than the scroller's viewport, which leaves the scrollbar's lane out
+  -- -- so a row's button can never be wider than the column it is in, nor
+  -- reach the bar beside it.
   , rsKey :: !Int
   }
 
@@ -911,6 +923,12 @@ drawRows cdc sc rect@(Rect x y w _) =
     cellW = rsCellW sc
     rows = rsRows sc
     shown = sizeofSmallArray rows
+    -- A row's button and its text answer to the viewport rather than to the
+    -- widget: the scrollbar's lane is out of the viewport, so neither can be
+    -- wider than the column the rows sit in, whatever the rows were laid out
+    -- as. The panel behind them still fills the widget, or its edge would be
+    -- a seam down the lane.
+    roomW = min w (rsMaxW sc)
     rowY j = y + fromIntegral j * lineH
     textY ry = ry + (lineH - rsTextH sc) / 2
 
@@ -919,7 +937,7 @@ drawRows cdc sc rect@(Rect x y w _) =
           i = rsFirst sc + j
           ry = rowY j
           picked = i == rsCursor sc
-          pick = Rect (x + pickerMark + 2) (ry + 1) (max 0 (w - pickerMark - 4)) (lineH - 2)
+          pick = Rect (x + pickerMark + 2) (ry + 1) (max 0 (roomW - pickerMark - 4)) (lineH - 2)
           backdrop
             | picked = [FillRoundedRect pick radius (tcPicked tc)]
             | i == rsHovered sc = [FillRoundedRect pick radius (tcHover tc)]
@@ -930,7 +948,7 @@ drawRows cdc sc rect@(Rect x y w _) =
           mark = [FillRect (Rect x (ry + 1) pickerMark (lineH - 2)) (tcCurrent tc) | picked]
           ix = x + pickerMark + pickerPad
           tx = ix + pickerIcon
-          cells = max 0 (floor ((w - (tx - x) - pickerPad) / cellW))
+          cells = max 0 (floor ((roomW - (tx - x) - pickerPad) / cellW))
           -- The name first, since it is what is being looked for, and the
           -- folder it is in beside it, in a column of its own, since that is
           -- how it is told from another file of the same name. A folder too

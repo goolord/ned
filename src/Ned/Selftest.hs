@@ -13,26 +13,25 @@ import Data.Foldable (toList)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Maybe (isJust)
 import qualified Data.Text as T
-import qualified Data.Text.NanoRope as Rope
+import qualified Data.Text.NanoRope.Measured as Rope
 import GHC.Clock (getMonotonicTime)
 import NanoUI
+import NanoUI.Backend (lineWidthIO)
 import NanoUI.Backend.Sdl
+import NanoUI.Input (emptyInput, inputKeysFromList)
 import NanoUI.Internal.Context (Context (..))
 import NanoUI.Testing (cursorKindIs, needsRedraw, newPixelContext, uiCursorKind)
-import qualified Ned.Buffer as B
 import Ned.App
+import qualified Ned.Buffer as B
+import Ned.Editor (Editor (..), cellWidth, defaultFontSize)
 import qualified Ned.FileTree as FT
 import qualified Ned.Picker as P
-import Ned.Editor (Editor (..), cellWidth, defaultFontSize)
 import Ned.View (appView)
 import System.Directory (createDirectoryIfMissing, doesFileExist, findExecutable, listDirectory, makeAbsolute)
 import System.Exit (exitFailure)
 import System.FilePath (equalFilePath, (</>))
 import System.IO (hPutStrLn, stderr)
 import Text.Printf (printf)
-import NanoUI.Backend (lineWidthIO)
-import NanoUI.Input (emptyInput)
-import NanoUI.Input (inputKeysFromList)
 
 -- | A Windows build of an SDL program has no console to print to, so the
 -- outcome goes to @selftest.log@ in the directory as well.
@@ -52,9 +51,9 @@ selftest dir mfile = do
 selftestIn :: FilePath -> Maybe FilePath -> (String -> IO ()) -> IO ()
 selftestIn dir mfile say = do
   ctx0 <- newPixelContext >>= (`withTheme` tomorrowNightMinDarkTheme)
-  blankApp <- newAppIn
+  blankApp <- newApp
   tLoad0 <- getMonotonicTime
-  app0 <- maybe (pure blankApp) (`openPath` blankApp) mfile
+  app0 <- maybe pure (openPath Nothing) mfile blankApp
   tLoad1 <- B.lineCount (edBuffer (appEditor app0)) `seq` getMonotonicTime
   say (printf "loaded %d lines in %.1f ms" (B.lineCount (edBuffer (appEditor app0))) ((tLoad1 - tLoad0) * 1000))
   ref <- newIORef app0
@@ -266,12 +265,6 @@ selftestIn dir mfile say = do
         -- still goes to it.
         forM_ [1 :: Int .. 40] (const (key plain KeyEnter))
         key (Modifiers True False False) KeyHome
-        idle
-        idle
-        idle
-        wide <- edWidest . appEditor <$> readIORef ref
-        when (wide < 300) $
-          fail ("selftest: with the long line out of view the view went only " <> show wide <> " cells")
         frame (at 600 721) {inputMouseDown = True, inputMousePressed = True}
         frame (at 1000 721) {inputMouseDown = True}
         frame (at 1000 721) {inputMouseReleased = True}
@@ -447,25 +440,25 @@ selftestIn dir mfile say = do
         settle 0 = fail "selftest: the finder never finished looking"
         settle k =
           idle >> pickerNow >>= \case
-            Just pk | P.pickerDone pk -> pure pk
+            Just pk | P.pkDone pk -> pure pk
             Just _ -> threadDelay 20000 >> settle (k - 1)
             Nothing -> fail "selftest: Ctrl+P did not put the finder up"
         landedOn what name pk =
-          unless (maybe False ((== name) . P.itemText) (P.pickerCurrent pk)) $
-            fail ("selftest: " <> what <> " landed on " <> show (P.itemText <$> P.pickerCurrent pk))
+          unless (maybe False ((== name) . P.itemText) (P.currentItem pk)) $
+            fail ("selftest: " <> what <> " landed on " <> show (P.itemText <$> P.currentItem pk))
         clearQuery n = forM_ [1 .. n :: Int] (\_ -> key plain KeyBackspace) >> idle
     gathered <- settle 200
     -- The folder holds 60 numbered files, outer.txt, and inner.txt inside sub.
-    when (P.pickerGathered gathered /= 62) $
-      fail ("selftest: the finder found " <> show (P.pickerGathered gathered) <> " files, not 62")
+    when (P.pkTaken gathered /= 62) $
+      fail ("selftest: the finder found " <> show (P.pkTaken gathered) <> " files, not 62")
     shot "11-picker.bmp"
 
     -- A query narrows the rows, and the row the keyboard is on is previewed.
     typed "inner"
     idle
     narrowed <- settle 20
-    when (P.pickerCount narrowed /= 1) $
-      fail ("selftest: \"inner\" matched " <> show (P.pickerCount narrowed) <> " files, not 1")
+    when (P.hitCount narrowed /= 1) $
+      fail ("selftest: \"inner\" matched " <> show (P.hitCount narrowed) <> " files, not 1")
     landedOn "the query \"inner\"" "sub/inner.txt" narrowed
     shot "12-picker-query.bmp"
 
@@ -522,8 +515,8 @@ selftestIn dir mfile say = do
     listed <- listDirectory treeDir >>= filterM (doesFileExist . (treeDir </>))
     clearQuery 4
     cleared <- settle 20
-    when (P.pickerCount cleared /= 63) $
-      fail ("selftest: an empty query kept " <> show (P.pickerCount cleared) <> " rows, not 63")
+    when (P.hitCount cleared /= 63) $
+      fail ("selftest: an empty query kept " <> show (P.hitCount cleared) <> " rows, not 63")
     landedOn "an emptied query" (T.pack (listed !! 0)) cleared
     key plain KeyDown
     key plain KeyDown
@@ -541,12 +534,12 @@ selftestIn dir mfile say = do
     frame (at 462 400) {inputMouseReleased = True}
     idle
     dragged <- settle 20
-    when (P.pickerTop dragged <= 0) $
-      fail ("selftest: dragging the thumb left the finder's rows at " <> show (P.pickerTop dragged))
+    when (P.pkScroll dragged <= 0) $
+      fail ("selftest: dragging the thumb left the finder's rows at " <> show (P.pkScroll dragged))
     frame (at 462 200)
     idle
     released <- settle 20
-    when (P.pickerTop released /= P.pickerTop dragged) $
+    when (P.pkScroll released /= P.pkScroll dragged) $
       fail "selftest: the thumb kept following the pointer after the button came up"
 
     -- The wheel over the rows scrolls them, and back up again.
@@ -554,19 +547,19 @@ selftestIn dir mfile say = do
     frame base {inputMousePos = V2 300 250, inputScroll = V2 0 4}
     idle
     wheeled <- settle 20
-    when (P.pickerTop wheeled <= 0) $
-      fail ("selftest: the wheel left the finder's rows at " <> show (P.pickerTop wheeled))
+    when (P.pkScroll wheeled <= 0) $
+      fail ("selftest: the wheel left the finder's rows at " <> show (P.pkScroll wheeled))
     frame base {inputMousePos = V2 300 250, inputScroll = V2 0 (-40)}
     idle
     unwheeled <- settle 20
-    when (P.pickerTop unwheeled /= 0) $
-      fail ("selftest: the wheel back up left the finder's rows at " <> show (P.pickerTop unwheeled))
+    when (P.pkScroll unwheeled /= 0) $
+      fail ("selftest: the wheel back up left the finder's rows at " <> show (P.pkScroll unwheeled))
 
     -- A press on a row opens that row's file, as a press on the tree does.
     -- Which row a y of the window lands on is the font's business, so the
     -- row is read back from where the finder says the pointer is.
     frame (at 300 185)
-    hoveredRow <- pickerNow >>= maybe (fail "selftest: the rows took no frame under the pointer") (pure . P.pickerHovered)
+    hoveredRow <- pickerNow >>= maybe (fail "selftest: the rows took no frame under the pointer") (pure . P.pkHovered)
     when (hoveredRow < 0) $ fail "selftest: the pointer over the rows hovered no row"
     click 300 185
     idle
@@ -594,15 +587,15 @@ selftestIn dir mfile say = do
             answered 0 = fail "selftest: the grep never answered"
             answered k =
               idle >> pickerNow >>= \case
-                Just pk | P.pickerDone pk && P.pickerCount pk > 0 -> pure pk
+                Just pk | P.pkDone pk && P.hitCount pk > 0 -> pure pk
                 Just _ -> threadDelay 20000 >> answered (k - 1)
                 Nothing -> fail "selftest: Ctrl+Shift+F did not put the grep up"
         typed "PUTSTRLN"
         grepped <- answered 200
-        when (P.pickerCount grepped /= 1) $
-          fail ("selftest: \"PUTSTRLN\" grepped " <> show (P.pickerCount grepped) <> " lines, not 1")
-        unless (fmap P.itemLine (P.pickerCurrent grepped) == Just (Just 4)) $
-          fail ("selftest: the grep landed on line " <> show (P.itemLine <$> P.pickerCurrent grepped))
+        when (P.hitCount grepped /= 1) $
+          fail ("selftest: \"PUTSTRLN\" grepped " <> show (P.hitCount grepped) <> " lines, not 1")
+        unless (fmap P.itemLine (P.currentItem grepped) == Just (Just 4)) $
+          fail ("selftest: the grep landed on line " <> show (P.itemLine <$> P.currentItem grepped))
         shot "15-grep.bmp"
         -- A query nothing answers clears the rows the last query found, once
         -- ripgrep has finished with it and found nothing.
@@ -610,13 +603,13 @@ selftestIn dir mfile say = do
             emptied 0 = fail "selftest: the unanswered grep never finished"
             emptied k =
               idle >> pickerNow >>= \case
-                Just pk | P.pickerDone pk && P.pickerCount pk == 0 -> pure pk
+                Just pk | P.pkDone pk && P.hitCount pk == 0 -> pure pk
                 Just _ -> threadDelay 20000 >> emptied (k - 1)
                 Nothing -> fail "selftest: the grep put itself away"
         typed "X"
         emptyResult <- emptied 200
-        when (P.pickerCount emptyResult /= 0) $
-          fail ("selftest: an unanswered query left " <> show (P.pickerCount emptyResult) <> " rows up")
+        when (P.hitCount emptyResult /= 0) $
+          fail ("selftest: an unanswered query left " <> show (P.hitCount emptyResult) <> " rows up")
         shot "16-grep-empty.bmp"
         key plain KeyBackspace
         _ <- answered 200

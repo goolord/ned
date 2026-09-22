@@ -13,8 +13,6 @@ module Ned.Editor.Types
   , defaultFontSize
   ) where
 
-import Data.Text (Text)
-import qualified Data.Text as T
 import Ned.Buffer (Buffer)
 import Ned.Highlight (Lang, LexState (..))
 
@@ -46,21 +44,12 @@ data Editor = Editor
   -- ^ When the caret last moved: it shows steadily from then, and blinks after.
   , edLexCache :: !(Int, Int, LexState)
   -- ^ A version of the text, a line, and the lexer state that line starts in.
-  , edFind :: !Text
-  -- ^ What the view marks the matches of.
   , edFindExact :: !Bool
+  -- ^ Whether a match is matched in its case.
   , edReveal :: !Bool
   -- ^ Asks the next frame to scroll the caret into view.
   , edViewLines :: !Int
   -- ^ Whole lines that fit the view, as of the last frame.
-  , edWidestVer :: !Int
-  -- ^ The version of the text the width scan belongs to.
-  , edWidest :: !Int
-  -- ^ The widest line the width scan has measured, in cells: the whole of
-  -- the buffer once it has been round, and an edit starts it over.
-  , edWidestScan :: !Int
-  -- ^ The line the width scan is to walk from; past the last line when it
-  -- has the whole of the buffer.
   , edPressed :: !Bool
   -- ^ Whether the pointer went down on the editor this frame.
   , edShowWhitespace :: !Bool
@@ -81,13 +70,9 @@ newEditor lang buf =
     , edDrag = DragNone
     , edBlinkEpoch = 0
     , edLexCache = (-1, 0, LexNormal)
-    , edFind = T.empty
     , edFindExact = False
     , edReveal = True
     , edViewLines = 1
-    , edWidestVer = -1
-    , edWidest = 0
-    , edWidestScan = 0
     , edPressed = False
     , edShowWhitespace = True
     }

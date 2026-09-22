@@ -49,3 +49,12 @@
 * Typing that comes to nothing (a Ctrl+Alt chord, an empty paste) no longer
   deletes the selection; the go-to-line field takes the keyboard back when it
   is pressed; and a press on the file tree takes it from the find bar's field.
+* The rope keeps the widest line of the text at every node, so an edit costs
+  the sideways scroll nothing: a keystroke in a file of 200,000 lines takes a
+  seventh of the frame it did, when every edit set a scan of the file going
+  again. The view's bound is exact after any edit, where a line deleted used
+  to leave it too wide until the scan came round, and the sideways thumb
+  stays under the pointer to the end of its lane.
+* The finder's preview draws its lines with the editor's own code, so a tab,
+  a wide character or a semibold name stands on the cells it would in the
+  editor, and a line is coloured as the editor colours it.

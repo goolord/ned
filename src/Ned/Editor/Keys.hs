@@ -11,6 +11,7 @@ module Ned.Editor.Keys
   , clipboardPaste
   ) where
 
+import Control.Monad (foldM)
 import qualified Data.Text as T
 import Effectful (Eff, type (:>))
 import NanoUI
@@ -20,49 +21,41 @@ import qualified Ned.Buffer as B
 -- | Run the frame's keys and typed characters on the buffer. Chords the
 -- application owns (save, open, find and so on) are left alone.
 applyKeys :: Ui :> es => Input -> Int -> Buffer -> Eff es Buffer
-applyKeys inp page buf0 = do
-  let mods = inputModifiers inp
-      shift = modShift mods
-      ctrl = modCtrl mods
-      alt = modAlt mods
-      key b = \case
-        KeyLeft -> (if ctrl then B.moveWordLeft else B.moveLeft) shift b
-        KeyRight -> (if ctrl then B.moveWordRight else B.moveRight) shift b
-        KeyUp
-          | alt -> B.moveLines (negate page) shift b
-          | otherwise -> B.moveUp shift b
-        KeyDown
-          | alt -> B.moveLines page shift b
-          | otherwise -> B.moveDown shift b
-        KeyHome -> (if ctrl then B.moveDocStart else B.moveHome) shift b
-        KeyEnd -> (if ctrl then B.moveDocEnd else B.moveEnd) shift b
-        KeyBackspace -> (if ctrl then B.deleteWordBack else B.backspace) b
-        KeyDelete -> (if ctrl then B.deleteWordForward else B.deleteForward) b
-        KeyEnter -> B.newline b
-        KeyTab
-          | ctrl || alt -> b
-          | shift -> B.unindentKey b
-          | otherwise -> B.indentKey b
-        KeyEscape -> B.setCursor False (B.bufCursor b) b
-      buf1 = foldInputKeys key buf0 (inputKeys inp)
-      typed = inputChars inp
-  if T.null typed
-    then pure buf1
-    else
-      if ctrl && not alt
-        then chords (T.unpack typed) buf1
-        else
-          -- AltGr arrives as Ctrl+Alt, with the key's own letter ahead of the
-          -- character it types.
-          pure (B.insertText (if ctrl then T.filter (\c -> c > '\x7E' || not (isPlainKey c)) typed else T.filter (>= ' ') typed) buf1)
+applyKeys inp page buf0
+  | T.null typed = pure buf1
+  | ctrl && not alt = foldM (flip chord) buf1 (T.unpack typed)
+  -- AltGr arrives as Ctrl+Alt, with the key's own letter ahead of the
+  -- character it types.
+  | ctrl = pure (B.insertText (T.filter (\c -> c > '\x7E' || not (isPlainKey c)) typed) buf1)
+  | otherwise = pure (B.insertText (T.filter (>= ' ') typed) buf1)
   where
-    isPlainKey c = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
-    chords [] b = pure b
-    chords (c : cs) b = chord c b >>= chords cs
+    mods = inputModifiers inp
+    shift = modShift mods
+    ctrl = modCtrl mods
+    alt = modAlt mods
+    typed = inputChars inp
+    buf1 = foldInputKeys key buf0 (inputKeys inp)
+
+    key b = \case
+      KeyLeft -> (if ctrl then B.moveWordLeft else B.moveLeft) shift b
+      KeyRight -> (if ctrl then B.moveWordRight else B.moveRight) shift b
+      KeyUp -> (if alt then B.moveLines (negate page) else B.moveUp) shift b
+      KeyDown -> (if alt then B.moveLines page else B.moveDown) shift b
+      KeyHome -> (if ctrl then B.moveDocStart else B.moveHome) shift b
+      KeyEnd -> (if ctrl then B.moveDocEnd else B.moveEnd) shift b
+      KeyBackspace -> (if ctrl then B.deleteWordBack else B.backspace) b
+      KeyDelete -> (if ctrl then B.deleteWordForward else B.deleteForward) b
+      KeyEnter -> B.newline b
+      KeyTab
+        | ctrl || alt -> b
+        | shift -> B.unindentKey b
+        | otherwise -> B.indentKey b
+      KeyEscape -> B.setCursor False (B.bufCursor b) b
+
     chord c b = case c of
       'a' -> pure (B.selectAll b)
       'A' -> pure (B.selectAll b)
-      'z' | modShift (inputModifiers inp) -> pure (B.redo b)
+      'z' | shift -> pure (B.redo b)
       'Z' -> pure (B.redo b)
       'z' -> pure (B.undo b)
       'y' -> pure (B.redo b)
@@ -70,6 +63,8 @@ applyKeys inp page buf0 = do
       'x' -> clipboardCut b
       'v' -> clipboardPaste b
       _ -> pure b
+
+    isPlainKey c = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
 
 -- | Copy, cut and paste through the host's clipboard. With nothing selected,
 -- copy and cut take the whole line.

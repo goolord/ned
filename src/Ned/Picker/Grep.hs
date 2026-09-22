@@ -9,13 +9,12 @@
 -- search has found anything, and the search is killed.
 module Ned.Picker.Grep
   ( grepSource
-  , grepArgs
   , grepHit
   ) where
 
 import Control.Concurrent (forkIO, killThread, threadDelay)
-import Control.Exception (bracket, throwIO, try)
-import Control.Monad (when)
+import Control.Exception (SomeException, bracket, throwIO, try)
+import Control.Monad (void, when)
 import Data.Aeson.Micro (FromJSON (..), Object, Parser, decodeStrict, withObject, (.:), (.:?))
 import Data.Bits ((.&.))
 import qualified Data.ByteString as BS
@@ -105,7 +104,7 @@ grep root query sink
         let watch = do
               threadDelay 100000
               wanted <- sink []
-              if wanted then watch else attempt () (terminateProcess (unsafeProcessHandle p))
+              if wanted then watch else void (try @SomeException (terminateProcess (unsafeProcessHandle p)))
         -- Whether the output was read to its end, rather than left because
         -- the finder moved on or enough was found.
         let go :: Int -> [Item] -> IO Bool

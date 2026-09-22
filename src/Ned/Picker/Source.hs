@@ -10,10 +10,9 @@ module Ned.Picker.Source
   , Source (..)
   , GatherFailed (..)
   , relative
-  , attempt
   ) where
 
-import Control.Exception (Exception (..), SomeException, try)
+import Control.Exception (Exception (..))
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector.Unboxed as U
@@ -78,7 +77,3 @@ instance Exception GatherFailed where
 -- path is typed at the prompt.
 relative :: FilePath -> FilePath -> Text
 relative root path = T.replace "\\" "/" (T.pack (makeRelative root path))
-
--- | An answer from the file system, or a stand-in when it will not give one.
-attempt :: a -> IO a -> IO a
-attempt fallback act = either (\(_ :: SomeException) -> fallback) id <$> try act

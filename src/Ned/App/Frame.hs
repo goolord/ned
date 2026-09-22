@@ -18,6 +18,7 @@ module Ned.App.Frame
 
 import Control.Monad (forM_, when)
 import Data.Foldable (for_)
+import Data.IORef (IORef)
 import Data.Maybe (isJust, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -38,60 +39,56 @@ import Ned.Picker (fileSource, grepSource, pickerSig)
 -- | Ask the dialogs that are up for their answer, and put away the ones that
 -- have one; then open whatever was dropped on the window, which opens as a
 -- file picked in a dialog does.
-pollDialogs :: Commands -> App -> NanoUI ()
-pollDialogs cmds app = do
+pollDialogs :: IORef App -> App -> NanoUI ()
+pollDialogs ref app = do
   inp <- askInput
-  let modify = cmdModify cmds
-      pollDialog dialog forget onPick =
+  let pollDialog dialog forget onPick =
         for_ (dialog app) $ \did ->
           pollFileDialogUi did >>= \case
             FileDialogPending -> pure ()
-            FileDialogSelected paths -> modify forget >> for_ (listToMaybe paths) onPick
-            _ -> modify forget
-  pollDialog appOpenDlg (\a -> a {appOpenDlg = Nothing}) (cmdRun cmds . PendingOpenPath)
-  pollDialog appSaveDlg (\a -> a {appSaveDlg = Nothing}) (cmdSaveTo cmds)
+            FileDialogSelected paths -> modifyApp ref forget >> for_ (listToMaybe paths) onPick
+            _ -> modifyApp ref forget
+  pollDialog appOpenDlg (\a -> a {appOpenDlg = Nothing}) (runPending ref . PendingOpenPath Nothing)
+  pollDialog appSaveDlg (\a -> a {appSaveDlg = Nothing}) (saveTo ref)
 
   for_ [T.unpack (dropEventData d) | d <- foldr (:) [] (inputDrops inp), dropEventType d == DropFile] $
-    cmdGuarded cmds . PendingOpenPath
+    guarded ref . PendingOpenPath Nothing
 
 -- | The chords the application owns, as against the ones the text owns, which
 -- are the editor's in "Ned.Editor.Keys". None of them are read while the
 -- question about unsaved changes is up.
-appChords :: Commands -> App -> NanoUI ()
-appChords cmds app = do
+appChords :: IORef App -> App -> NanoUI ()
+appChords ref app = do
   inp <- askInput
   let mods = inputModifiers inp
-      -- The question about unsaved changes and the finder are both modals:
-      -- while one is up it is the only thing that reads a key.
-      blocked = isJust (appPending app) || isJust (appPicker app)
-  when (modCtrl mods && not (modAlt mods) && not blocked) $
+  when (modCtrl mods && not (modAlt mods) && not (modalUp app)) $
     forM_ (T.unpack (inputChars inp)) $ \case
-      's' | modShift mods -> cmdSave cmds True
-      's' -> cmdSave cmds False
-      'S' -> cmdSave cmds True
-      'o' -> cmdGuarded cmds PendingOpen
-      'n' -> cmdGuarded cmds PendingNew
-      'q' -> cmdGuarded cmds PendingQuit
-      'f' | modShift mods -> cmdOpenPicker cmds grepSource
-      'F' -> cmdOpenPicker cmds grepSource
-      'f' -> cmdOpenBar cmds BarFind
-      'g' -> cmdOpenBar cmds BarGoto
-      'b' -> cmdToggleTree cmds
-      'p' -> cmdOpenPicker cmds fileSource
-      '=' -> cmdZoom cmds (* 1.1)
-      '+' -> cmdZoom cmds (* 1.1)
-      '-' -> cmdZoom cmds (/ 1.1)
-      '0' -> cmdZoom cmds (const defaultFontSize)
+      's' | modShift mods -> save ref True
+      's' -> save ref False
+      'S' -> save ref True
+      'o' -> guarded ref PendingOpen
+      'n' -> guarded ref PendingNew
+      'q' -> guarded ref PendingQuit
+      'f' | modShift mods -> openPicker ref grepSource
+      'F' -> openPicker ref grepSource
+      'f' -> openBar ref BarFind
+      'g' -> openBar ref BarGoto
+      'b' -> toggleTree ref
+      'p' -> openPicker ref fileSource
+      '=' -> zoom ref (* 1.1)
+      '+' -> zoom ref (* 1.1)
+      '-' -> zoom ref (/ 1.1)
+      '0' -> zoom ref (const defaultFontSize)
       _ -> pure ()
-  when (inputKeysElem KeyEscape (inputKeys inp) && appBar app /= BarNone && not blocked) (cmdCloseBar cmds)
+  when (inputKeysElem KeyEscape (inputKeys inp) && appBar app /= BarNone && not (modalUp app)) (closeBar ref)
 
 -- | Put the file's name on the window when it is not there already. The title
 -- as last set is kept in the state, so this is one comparison a frame and a
 -- call to the host only when the answer changed.
-syncTitle :: Commands -> App -> NanoUI ()
-syncTitle cmds app =
+syncTitle :: IORef App -> App -> NanoUI ()
+syncTitle ref app =
   when (titleFor app /= appTitle app) $ do
-    cmdModify cmds (\a -> a {appTitle = titleFor app})
+    modifyApp ref (\a -> a {appTitle = titleFor app})
     setWindowTitleUi (titleFor app)
 
 --------------------------------------------------------------------------------
@@ -125,7 +122,7 @@ editorSig a =
   ( B.bufVersion buf
   , B.bufCursor buf
   , B.bufAnchor buf
-  , edFind ed
+  , findMarks a
   , (edFindExact ed, edReveal ed, edShowWhitespace ed)
   , edFontSize ed
   , langName (edLang ed)

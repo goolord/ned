@@ -4,22 +4,21 @@
 module Main (main) where
 
 import Control.Monad (unless)
+import qualified Data.ByteString as BS
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.NanoRope as Rope
-import Ned.File (Eol (..), FileFormat (..), Loaded (..), loadFile, saveFile)
+import qualified Data.Text.NanoRope.Measured as Rope
+import qualified Data.Vector.Unboxed as U
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
+import Ned.File (Eol (..), FileFormat (..), Loaded (..), loadFile, saveFile)
 import Ned.Highlight
-import Ned.Picker (Item (..), Source (..), fileSource, grepSource)
+import Ned.Picker (Item (..), Source (..), fileSource, grepSource, relative)
 import Ned.Picker.Grep (grepHit)
-import Ned.Picker.Source (relative)
-import qualified Data.Vector.Unboxed as U
 import System.Directory (createDirectoryIfMissing, findExecutable, getTemporaryDirectory, removeFile, removePathForcibly)
 import System.Exit (exitFailure)
 import System.FilePath ((</>))
-import qualified Data.ByteString as BS
 
 main :: IO ()
 main = do
@@ -70,6 +69,7 @@ main = do
   let block = B.selectAll (B.fromText "one\ntwo\nthree")
   check "indent lines" "    one\n    two\n    three" (text (B.indentKey block))
   check "unindent lines" "one\ntwo\nthree" (text (B.unindentKey (B.indentKey block)))
+  check "unindent lines of every indent" "one\ntwo\nthree\n\tfour" (text (B.unindentKey (B.selectAll (B.fromText "\tone\n   two\nthree\n    \tfour"))))
   check "indenting lines is one step" "one\ntwo\nthree" (text (B.undo (B.indentKey block)))
   let undoSteps b = length (takeWhile B.canUndo (iterate B.undo b))
   check "indenting lines keeps to the undo limit" True (undoSteps (iterate B.indentKey block !! 4100) <= 4000)
@@ -102,6 +102,23 @@ main = do
   check "long line window" "xxxx" (B.lineWindow long 0 50000 50004)
   check "long line cells are columns" 70000 (B.colToVisual long 0 70000)
   check "short line after it" "short" (B.lineText long 1)
+
+  -- The widest line ----------------------------------------------------------
+  -- What the rope keeps at its nodes, against every line measured by hand:
+  -- tabs at every offset from a stop, wide characters, and more chunks than
+  -- one, so that lines and tabs are cut across their seams.
+  let ragged =
+        B.fromText $
+          T.concat
+            [ T.replicate (i `mod` 3) "\t" <> T.replicate (i * 13 `mod` 97) "x" <> "\t" <> (if even i then "\x4E2D" else "y") <> "\ty\n"
+            | i <- [1 .. 3000 :: Int]
+            ]
+  check "the widest line, across chunks" (widthByLines ragged) (B.widestLine ragged)
+  let peak = B.insertText (T.replicate 500 "w" <> "\n") ragged
+  check "a line wider than the rest" 500 (B.widestLine peak)
+  check "and the widest once it is gone" (widthByLines ragged) (B.widestLine (B.deleteSelection (B.selectLines 0 0 peak)))
+  check "a long line is a cell a character" 100000 (B.widestLine long)
+  check "an empty buffer has no width" 0 (B.widestLine B.empty)
 
   -- The buffer against a model -----------------------------------------------
   modelRun failures 20000
@@ -264,6 +281,10 @@ main = do
 text :: Buffer -> Text
 text = Rope.toText . B.bufRope
 
+-- | The widest line of a buffer, measured a line at a time.
+widthByLines :: Buffer -> Int
+widthByLines b = maximum [B.colToVisual b ln (B.lineLength b ln) | ln <- [0 .. B.lineCount b - 1]]
+
 expect :: (Eq a, Show a) => IORef Int -> String -> a -> a -> IO ()
 expect failures name want got =
   unless (want == got) $ do
@@ -289,7 +310,7 @@ modelRun failures steps = go steps (12345 :: Int) B.empty (Model T.empty 0 0)
           arg = (r `div` 16) `mod` 97
           (b', m', name) = step (r `mod` 9) arg b m
           Model t c a = m'
-          ok = text b' == t && B.bufCursor b' == c && B.bufAnchor b' == a
+          ok = text b' == t && B.bufCursor b' == c && B.bufAnchor b' == a && B.widestLine b' == widthByLines b'
       if ok
         then go (n - 1 :: Int) seed' b' m'
         else do

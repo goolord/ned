@@ -19,7 +19,7 @@ import qualified Data.ByteString as BS
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import qualified Data.Text.NanoRope as Rope
+import qualified Data.Text.NanoRope.Measured as Rope
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
 import System.IO (IOMode (WriteMode), withBinaryFile)

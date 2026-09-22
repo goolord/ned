@@ -9,16 +9,17 @@
 -- resizes the window by is handed over from there.
 --
 -- What each of those is made of is one module down -- the editor's widgets in
--- "Ned.View.Editor", the tree's in "Ned.View.Tree", the bars, the menus and
--- the window's own chrome in "Ned.View.Chrome" -- so what is left here is the
--- order they go in and the room each of them gets.
+-- "Ned.View.Editor", the tree's in "Ned.View.Tree", the finder's in
+-- "Ned.View.Picker", the bars, the menus and the window's own chrome in
+-- "Ned.View.Chrome" -- so what is left here is the order they go in and the
+-- room each of them gets.
 --
--- Nothing in this module or the three under it decides anything. What a key
--- does to the text is in "Ned.Editor.Keys", what a frame of the editor works
--- out from its input in "Ned.Editor", the tree's in "Ned.FileTree", what the
--- application can be asked to do in "Ned.App.Commands" and what it is between
--- frames in "Ned.App.State"; every button and menu row here asks for one of
--- those, so what a thing says and what it does sit on the same line.
+-- What a key does to the text is in "Ned.Editor.Keys", what a frame of the
+-- editor works out from its input in "Ned.Editor", the tree's in
+-- "Ned.FileTree", what the application can be asked to do in
+-- "Ned.App.Commands" and what it is between frames in "Ned.App.State"; every
+-- button and menu row here asks for one of those, so what a thing says and
+-- what it does sit on the same line.
 module Ned.View
   ( appView
   , blankView
@@ -26,7 +27,7 @@ module Ned.View
   ) where
 
 import Control.Monad (unless, when)
-import Data.Foldable (for_)
+import Data.Foldable (for_, traverse_)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Maybe (isJust)
 import qualified Data.Text as T
@@ -38,12 +39,12 @@ import Ned.App.Commands
 import Ned.App.Frame
 import Ned.App.State
 import Ned.Editor (Editor (..))
-import Ned.FileTree (FileTree (..), defaultTreeWidth, minTreeWidth, rootName)
-import qualified Ned.FileTree.Geometry as TG
-import Ned.Picker (Item (..), pickerOverlay)
+import Ned.FileTree (FileTree (..), defaultTreeWidth, minTreeWidth, rootName, treeHeaderHeight)
+import Ned.Picker (Item (..))
 import Ned.Theme (paneChrome)
 import Ned.View.Chrome
 import Ned.View.Editor (editorView)
+import Ned.View.Picker (pickerOverlay)
 import Ned.View.Tree (fileTreePanel)
 import Text.Printf (printf)
 
@@ -60,34 +61,28 @@ import Text.Printf (printf)
 -- frame at the end when what it drew is no longer what the state says.
 appView :: IORef App -> NanoUI ()
 appView ref = do
-  app0 <- uiIO (readIORef ref)
-  drawn <- uiIO (newIORef (editorSig app0))
-  let cmds = commands ref
-      modify = cmdModify cmds
-      guarded = cmdGuarded cmds
-      run = cmdRun cmds
+  app0 <- readApp ref
 
   -- A dialog that is up is asked for its answer, a file dropped on the window
   -- opens, and the chords the application owns are read, all before anything
   -- is placed: what they leave behind is what the frame goes on to draw.
-  pollDialogs cmds app0
-  appChords cmds app0
+  pollDialogs ref app0
+  appChords ref app0
 
   ----------------------------------------------------------------- layout ---
-  windowBorder $ columnWith (grow . gap 0 . padAll 0) $ do
-    titleBar cmds app0
+  drawn <- windowBorder $ columnWith (grow . gap 0 . padAll 0) $ do
+    titleBar ref app0
     separator
 
     -- The tree and the editor run on the state as the chords and menus above
     -- left it. They are the two panes of a pane grid, so the bar between them
     -- is the toolkit's to draw and drag, and where the split was left is
     -- remembered by the grid rather than by the application.
-    app1 <- uiIO (readIORef ref)
+    app1 <- readApp ref
     -- Whether the question about unsaved changes was up as the frame found
     -- things, which is what the chords above were read under too: one that
     -- puts the question up leaves this frame's keys where they were going.
-    let blocked = isJust (appPending app0) || isJust (appPicker app0)
-        unblocked = not blocked && T.null (appOpenMenu app1)
+    let unblocked = not (modalUp app0) && T.null (appOpenMenu app1)
         -- The tree pane: the panel, and what a frame's clicks on it left
         -- behind. The find bar's field takes the keyboard from the tree as it
         -- does from the editor, so the arrows do not walk both at once.
@@ -98,7 +93,7 @@ appView ref = do
               (appPath app1)
               (appTree app1)
           uiIO (writeIORef respRef (Just resp))
-          modify $ \a ->
+          modifyApp ref $ \a ->
             a
               { appTree = ft
               , appTreeFocus = appTreeFocus a || ftPressed ft
@@ -108,16 +103,15 @@ appView ref = do
           -- text asked about if it has changes to lose, and the keyboard
           -- going to it so that it can be typed into at once.
           for_ opened $ \path -> do
-            modify (\a -> a {appTreeFocus = False})
-            guarded (PendingOpenPath path)
+            modifyApp ref (\a -> a {appTreeFocus = False})
+            guarded ref (PendingOpenPath Nothing path)
           -- The pane grid moves the pane by the pick it is told about; the
           -- tree's is its header, the strip of the pane the root's name
           -- stands on, so a hold there drags the pane as the grid's own bars
           -- are dragged and nothing else does.
           fm <- uiFontMetrics
           let (Rect px py pw _) = pgcRect pctx
-              hh = TG.treeHeaderHeight fm
-          pure (PaneView (rootName ft) False (Just (Rect px py pw hh)))
+          pure (PaneView (rootName ft) False (Just (Rect px py pw (treeHeaderHeight fm))))
         -- The editor pane. Putting the tree away makes this pane the whole
         -- row: the grid calls that maximizing it, and keeps the split where
         -- it was, so showing the tree again brings it back at its width.
@@ -130,68 +124,58 @@ appView ref = do
           -- ran, though: the keys of this frame are the tree's, and an Enter
           -- that opened a file there is not one to put a newline in the file
           -- it opened.
-          appNow <- uiIO (readIORef ref)
+          appNow <- readApp ref
           let wantFocus = not (appBarFocus app1) && not (appTreeFocus app1) && unblocked
-          (resp, ed) <- editorView wantFocus (appEditor appNow)
+          (resp, ed) <- editorView wantFocus (findMarks appNow) (appEditor appNow)
           uiIO (writeIORef respRef (Just resp))
-          modify $ \a ->
+          modifyApp ref $ \a ->
             a
               { appEditor = ed
               , appBarFocus = appBarFocus a && not (edPressed ed)
               , appTreeFocus = appTreeFocus a && not (edPressed ed)
               }
           pure (PaneView "" False Nothing)
-    (mTreeResp, edResp) <- do
-      treeRespRef <- uiIO (newIORef Nothing)
-      edRespRef <- uiIO (newIORef Nothing)
-      _ <-
-        treeEditorGrid
-          (treePane treeRespRef)
-          (editorPane edRespRef)
-      (,) <$> uiIO (readIORef treeRespRef) <*> uiIO (readIORef edRespRef)
-    app2 <- uiIO (readIORef ref)
-    uiIO (writeIORef drawn (editorSig app2))
+    -- What each pane hangs its menu on, which the grid's own response does
+    -- not carry out of it.
+    treeResp <- uiIO (newIORef Nothing)
+    edResp <- uiIO (newIORef Nothing)
+    _ <- treeEditorGrid (treePane treeResp) (editorPane edResp)
+    app2 <- readApp ref
 
     -- Scoped so that the editor's own menu below keeps its ids whether or not
     -- the tree hangs its own menu this frame.
-    scope $ for_ mTreeResp $ \treeResp -> contextMenu treeResp (treeMenu cmds app2)
+    scope $ uiIO (readIORef treeResp) >>= traverse_ (`contextMenu` treeMenu ref app2)
+    uiIO (readIORef edResp) >>= traverse_ (`contextMenu` editorMenu ref (edBuffer (appEditor app2)))
 
-    for_ edResp $ \edMenuResp ->
-      contextMenu edMenuResp (editorMenu cmds (edBuffer (appEditor app2)))
-
-    editorBar cmds app2
-
+    editorBar ref app2
     separator
-    app3 <- uiIO (readIORef ref)
-    statusBar app3
+    statusBar =<< readApp ref
+    pure (editorSig app2)
 
   --------------------------------------------------------------- overlays ---
   -- The finder is declared whether or not it is up, so that nothing after it
   -- moves when it comes and goes, and under the question about unsaved
   -- changes, which a file it picks may put up over it.
-  appP <- uiIO (readIORef ref)
-  (picker, picked) <- pickerOverlay (appPicker appP)
-  modify (\a -> a {appPicker = picker})
+  (picker, picked) <- pickerOverlay . appPicker =<< readApp ref
+  modifyApp ref (\a -> a {appPicker = picker})
   -- A grep hit opens its file on the line it was found on.
   for_ picked $ \item ->
-    guarded (maybe (PendingOpenPath (itemPath item)) (PendingOpenAt (itemPath item)) (itemLine item))
+    guarded ref (PendingOpenPath (itemLine item) (itemPath item))
 
-  app4 <- uiIO (readIORef ref)
-  syncTitle cmds app4
-  (_, _) <-
-    modal (isJust (appPending app4)) "Unsaved changes" $ do
-      label "This file has changes that are not saved."
-      labelWith fontMuted "Discard them and carry on?"
-      rowWith (fillW . gap 8) $ do
-        flex
-        whenM (button "Cancel") (modify (\a -> a {appPending = Nothing}))
-        whenM (button "Discard") $ do
-          modify (\a -> a {appPending = Nothing})
-          for_ (appPending app4) run
+  app3 <- readApp ref
+  syncTitle ref app3
+  _ <- modal (isJust (appPending app3)) "Unsaved changes" $ do
+    label "This file has changes that are not saved."
+    labelWith fontMuted "Discard them and carry on?"
+    rowWith (fillW . gap 8) $ do
+      flex
+      whenM (button "Cancel") (modifyApp ref (\a -> a {appPending = Nothing}))
+      whenM (button "Discard") $ do
+        modifyApp ref (\a -> a {appPending = Nothing})
+        traverse_ (runPending ref) (appPending app3)
 
-  appEnd <- uiIO (readIORef ref)
-  drawnSig <- uiIO (readIORef drawn)
-  when (chromeSig appEnd /= chromeSig app0 || editorSig appEnd /= drawnSig) requestFrame
+  appEnd <- readApp ref
+  when (chromeSig appEnd /= chromeSig app0 || editorSig appEnd /= drawn) requestFrame
 
 -- | One label and nothing else, which NED_BLANK swaps the application for: it
 -- tells what a frame costs nano-ui from what it costs the editor.

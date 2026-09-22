@@ -10,11 +10,13 @@ module Ned.App.State
   , Bar (..)
   , Pending (..)
   , newApp
-  , newAppIn
   , openPath
+  , modalUp
+  , findMarks
   , titleFor
   ) where
 
+import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
 import NanoUI.Backend.Sdl (FileDialogId)
@@ -40,9 +42,9 @@ data Bar = BarNone | BarFind | BarGoto
 data Pending
   = PendingNew
   | PendingOpen
-  | PendingOpenPath FilePath
-  | PendingOpenAt FilePath Int
-  -- ^ A file, with the caret on a line of it, counted from zero.
+  | -- | A file, with the caret on a line of it counted from zero, if one is
+    -- given.
+    PendingOpenPath (Maybe Int) FilePath
   | PendingQuit
 
 data App = App
@@ -72,49 +74,48 @@ data App = App
   -- while it is there nothing else reads a key.
   }
 
-newApp :: App
-newApp =
-  App
-    { appEditor = newEditor plainText B.empty
-    , appPath = Nothing
-    , appFormat = FileFormat LF False
-    , appStatus = "Ready"
-    , appOpenMenu = ""
-    , appMenuSwallow = ""
-    , appOpenDlg = Nothing
-    , appSaveDlg = Nothing
-    , appBar = BarNone
-    , appBarFocus = False
-    , appFindText = ""
-    , appGotoText = ""
-    , appPending = Nothing
-    , appTitle = ""
-    , appTree = FT.newFileTree "."
-    , appTreeShown = True
-    , appTreeFocus = False
-    , appPicker = Nothing
-    }
-
--- | A fresh application with its tree on the directory the program was
--- started in, which is where 'newApp' cannot look.
-newAppIn :: IO App
-newAppIn = do
+-- | A fresh application, with its tree on the directory the program was
+-- started in.
+newApp :: IO App
+newApp = do
   cwd <- getCurrentDirectory
-  pure newApp {appTree = FT.newFileTree cwd}
+  pure
+    App
+      { appEditor = newEditor plainText B.empty
+      , appPath = Nothing
+      , appFormat = FileFormat LF False
+      , appStatus = "Ready"
+      , appOpenMenu = ""
+      , appMenuSwallow = ""
+      , appOpenDlg = Nothing
+      , appSaveDlg = Nothing
+      , appBar = BarNone
+      , appBarFocus = False
+      , appFindText = ""
+      , appGotoText = ""
+      , appPending = Nothing
+      , appTitle = ""
+      , appTree = FT.newFileTree cwd
+      , appTreeShown = True
+      , appTreeFocus = False
+      , appPicker = Nothing
+      }
 
 --------------------------------------------------------------------------------
 -- Opening a file
 --------------------------------------------------------------------------------
 
--- | Open a file in the application, or start a new one under a name that
--- does not exist yet.
-openPath :: FilePath -> App -> IO App
-openPath path0 app = do
+-- | Open a file in the application, with the caret on a line of it if one is
+-- given, or start a new one under a name that does not exist yet. A file that
+-- cannot be read leaves the text that was there, and the caret in it.
+openPath :: Maybe Int -> FilePath -> App -> IO App
+openPath line path0 app = do
   path <- makeAbsolute path0
   exists <- doesFileExist path
   let fresh buf format msg =
         app
-          { appEditor = (newEditor (languageFor path) buf) {edFontSize = edFontSize (appEditor app)}
+          { appEditor =
+              (newEditor (languageFor path) (maybe id (B.gotoLine . (+ 1)) line buf)) {edFontSize = edFontSize (appEditor app)}
           , appPath = Just path
           , appFormat = format
           , appStatus = msg
@@ -134,8 +135,18 @@ openPath path0 app = do
               else "Opened " <> T.pack (takeFileName path)
 
 --------------------------------------------------------------------------------
--- The window's title
+-- What follows from the state
 --------------------------------------------------------------------------------
+
+-- | Whether a modal is up: the question about unsaved changes, or the finder.
+-- While one is, it is the only thing that reads a key.
+modalUp :: App -> Bool
+modalUp app = isJust (appPending app) || isJust (appPicker app)
+
+-- | What the editor marks the matches of: what the find bar holds, while it
+-- is up.
+findMarks :: App -> Text
+findMarks app = if appBar app == BarFind then appFindText app else ""
 
 -- | The file's name, starred while it has changes to save.
 titleFor :: App -> Text

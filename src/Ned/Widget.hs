@@ -1,6 +1,8 @@
--- | What the editor and the file tree have in common. Both are custom nano-ui
--- widgets that scroll themselves a row at a time under a scrollbar of their
--- own, and both draw their icons out of the toolkit's shapes.
+-- | What the editor, the file tree and the finder have in common. They are
+-- custom nano-ui widgets that lay themselves out a line or a row at a time;
+-- the editor and the tree scroll themselves under a scrollbar of their own,
+-- the tree and the finder draw rows of the same shape, and both of those
+-- draw their icons out of the toolkit's shapes.
 module Ned.Widget
   ( -- * Scrolling
     Scroller (..)
@@ -9,12 +11,22 @@ module Ned.Widget
   , thumbScroll
   , followRow
 
+    -- * Lines and rows
+  , lineHeight
+  , rowHeight
+  , rowPad
+  , rowMark
+  , rowIcon
+  , rounding
+  , rowBand
+  , markOp
+
     -- * Icons
   , folderIcon
   , fileIcon
   ) where
 
-import NanoUI (Color, DrawOp (..), Rect (..))
+import NanoUI (Color, DrawOp (..), FontMetrics (..), Rect (..))
 import Ned.Text (clamp)
 
 --------------------------------------------------------------------------------
@@ -64,6 +76,47 @@ followRow row view y
     r = fromIntegral row
 
 --------------------------------------------------------------------------------
+-- Lines and rows
+--------------------------------------------------------------------------------
+
+-- | A line of code: the font's line, to the whole pixel, so that lines stack
+-- on the pixel grid.
+lineHeight :: FontMetrics -> Float
+lineHeight fm = max 1 (fromIntegral (ceiling (fmLineHeight fm) :: Int))
+
+-- | A row of a list. A row is scanned rather than read, so it sits tighter
+-- than a line of text would in a paragraph, and looser than a line of code.
+rowHeight :: FontMetrics -> Float
+rowHeight fm = lineHeight fm + 2
+
+-- | The margin a row keeps from the side of its panel; the column its icon
+-- sits in, before its name; and the width of the mark down its left.
+--
+-- The mark is its own and not the band's, because the band moves as the
+-- keyboard walks the rows, and what the mark marks -- the file the editor has
+-- open, the row Enter would open -- has to stay findable.
+rowPad, rowIcon, rowMark :: Float
+rowPad = 8
+rowIcon = 18
+rowMark = 3
+
+-- | The only corner in the window. It goes on the things a pointer grabs or
+-- picks -- a scrollbar's thumb, a row's band -- and on nothing else; the
+-- caret, the selection and the rules are all square.
+rounding :: Float
+rounding = 3
+
+-- | The band behind a row the keyboard is on or the pointer is over. It is
+-- inset rather than run from edge to edge, so the panel keeps a margin down
+-- both sides and the mark has somewhere of its own to sit.
+rowBand :: Rect -> Color -> DrawOp
+rowBand (Rect x y w h) = FillRoundedRect (Rect (x + rowMark + 2) (y + 1) (max 0 (w - rowMark - 4)) (h - 2)) rounding
+
+-- | The mark down the left of a row.
+markOp :: Rect -> Color -> DrawOp
+markOp (Rect x y _ h) = FillRect (Rect x (y + 1) rowMark (h - 2))
+
+--------------------------------------------------------------------------------
 -- Icons
 --------------------------------------------------------------------------------
 
@@ -81,7 +134,7 @@ followRow row view y
 -- Both are square-cornered. The one radius in the window belongs to the
 -- things a pointer grabs or picks; an icon is neither.
 --
--- Both are centred on @cy@, in a column @treeIcon@ wide starting at @ix@.
+-- Both are centred on @cy@, in a column 'rowIcon' wide starting at @ix@.
 folderIcon :: Float -> Float -> Color -> [DrawOp]
 folderIcon ix cy col =
   [ FillRect (Rect fx (cy - 5) 5 2) col

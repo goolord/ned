@@ -27,7 +27,6 @@ module Ned.Theme
   , colThumb
   , colThumbHot
   , colWhitespace
-  , caretColor
 
     -- * Code
   , tokenColor
@@ -84,12 +83,6 @@ colTrack = rgba 0x1D1F21 0xC0 -- scrollbar.track.background
 colThumb = rgb 0x63666E
 colThumbHot = rgb 0x7A7D85
 colWhitespace = rgb 0x4D5057 -- ignored (editor.invisible is unset)
-
--- | The caret's colour, which is what the editor says "you are here" in. The
--- file tree marks the file the editor has open in the same colour, so that
--- one hue carries one meaning across the window.
-caretColor :: Color
-caretColor = colCaret
 
 --------------------------------------------------------------------------------
 -- Code
@@ -189,7 +182,9 @@ treeColors theme =
     { tcPanel = themeWindow theme
     , tcName = styleFg surface
     , tcMuted = themeMuted theme
-    , tcCurrent = caretColor
+    , -- The caret's colour, which is what the editor says "you are here" in:
+      -- one hue carries one meaning across the window.
+      tcCurrent = colCaret
     , -- Most of the way back toward the window behind it. A rule this quiet
       -- is enough to follow down a column, and a deep tree draws one of them
       -- for every level, so it has to stay under the names.

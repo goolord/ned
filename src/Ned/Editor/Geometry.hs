@@ -18,7 +18,7 @@ module Ned.Editor.Geometry
   , textWidth
   , viewLinesOf
   , maxScrollY
-  , maxScrollXOf
+  , maxScrollX
   , scroller
   , hscroller
   ) where
@@ -28,7 +28,7 @@ import qualified Data.Text as T
 import NanoUI
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
-import Ned.Widget (Scroller (..))
+import Ned.Widget (Scroller (..), lineHeight)
 
 scrollBarW, scrollBarH, textPad :: Float
 scrollBarW = 12
@@ -49,7 +49,7 @@ geometry cellW fm buf =
   let digits = max 3 (length (show (B.lineCount buf)))
    in Geometry
         { gCellW = cellW
-        , gLineH = max 1 (fromIntegral (ceiling (fmLineHeight fm) :: Int))
+        , gLineH = lineHeight fm
         , gGutterW = fromIntegral (digits + 2) * cellW
         }
 
@@ -90,17 +90,16 @@ scroller g r buf =
 
 -- | The view and its scrollbar, along the line: the lane is the rect's whole
 -- width, and what there is to scroll through is the text's width beyond the
--- view's, over a line so many cells wide -- the widest on screen and the
--- caret's, as the view's own bound has it. A cell of the thumb travels a cell
--- of the view, until the thumb's least size has its say.
-hscroller :: Geometry -> Rect -> Int -> Scroller
-hscroller g r widestCells =
-  let tw = textWidth g r
-      travel = maxScrollXOf g r widestCells
+-- view's. A cell of the thumb travels a cell of the view, until the thumb's
+-- least size has its say.
+hscroller :: Geometry -> Rect -> Buffer -> Scroller
+hscroller g r buf =
+  let travel = maxScrollX g r buf
    in Scroller (rectW r) (realToFrac ((rectW r - travel) / rectW r)) (realToFrac travel)
 
--- | How far the view travels sideways, in pixels, over a line so many cells
--- wide: the line's width past what the text has to itself.
-maxScrollXOf :: Geometry -> Rect -> Int -> Float
-maxScrollXOf g r widestCells =
-  max 0 (fromIntegral widestCells * gCellW g - textWidth g r)
+-- | How far the view travels sideways, in pixels: to the widest line in the
+-- buffer and a few cells past it, wherever that line is, so the bar stays
+-- under it however far the view is scrolled from it.
+maxScrollX :: Geometry -> Rect -> Buffer -> Float
+maxScrollX g r buf =
+  max 0 (fromIntegral (B.widestLine buf + 4) * gCellW g - textWidth g r)

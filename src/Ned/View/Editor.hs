@@ -28,7 +28,8 @@ import Ned.Editor.Geometry
 import Ned.Highlight
 import Ned.Text (cellOfCol, cellsAt, foldCase, indentOf)
 import Ned.Theme
-import Ned.Widget (thumbSpan)
+import Ned.View.Code
+import Ned.Widget (rounding, thumbSpan)
 
 --------------------------------------------------------------------------------
 -- The editor
@@ -39,14 +40,9 @@ import Ned.Widget (thumbSpan)
 -- sideways scrollbar in a lane under them. Pass the editor and keep the
 -- result; the response is for hanging a context menu on. It takes the
 -- keyboard when @wantFocus@ is set, which an application clears while a
--- field of its own is being typed into.
---
--- nano-ui runs a frame for a pointer that only moved when it came over another
--- widget, and takes the cursor's shape from the widget under it, so four
--- widgets rather than one is what changes the cursor the moment it crosses
--- onto a scrollbar. The text's widget is the one with the keyboard.
-editorView :: Ui :> es => Bool -> Editor -> Eff es (Response, Editor)
-editorView wantFocus ed0 = do
+-- field of its own is being typed into, and marks the matches of @marks@.
+editorView :: Ui :> es => Bool -> Text -> Editor -> Eff es (Response, Editor)
+editorView wantFocus marks ed0 = do
   widGutter <- nextId
   wid <- nextId
   widBar <- nextId
@@ -80,11 +76,10 @@ editorView wantFocus ed0 = do
           , esFontSize = edFontSize ed1
           , esGeometry = g
           , esCaretOn = efCaretOn fr
-          , esFind = if edFindExact ed1 then edFind ed1 else foldCase (edFind ed1)
+          , esFind = if edFindExact ed1 then marks else foldCase marks
           , esFindExact = edFindExact ed1
           , esThumbHot = efThumbHot fr
           , esThumbXHot = efThumbXHot fr
-          , esWidest = efWidest fr
           , esWhitespace = edShowWhitespace ed1
           }
       part which pointer layout =
@@ -119,8 +114,6 @@ data EditorScene = EditorScene
   , esFindExact :: !Bool
   , esThumbHot :: !Bool
   , esThumbXHot :: !Bool
-  , esWidest :: !Int
-  -- ^ The widest the view scrolls sideways to, in cells, as the frame left it.
   , esWhitespace :: !Bool
   }
 
@@ -137,7 +130,7 @@ editorSceneKey which sc =
    in contentKeyOf $ case which of
         PartGutter -> [keyPart (1 :: Int), keyPart (B.lineCount buf), keyPart (esScrollY sc), keyPart (esFontSize sc), keyPart (fst (B.cursorPosition buf))]
         PartBar -> [keyPart (2 :: Int), keyPart (B.lineCount buf), keyPart (esScrollY sc), keyPart (esFontSize sc), keyPart (esThumbHot sc)]
-        PartHBar -> [keyPart (4 :: Int), keyPart (esScrollX sc), keyPart (esFontSize sc), keyPart (esWidest sc), keyPart (esThumbXHot sc)]
+        PartHBar -> [keyPart (4 :: Int), keyPart (esScrollX sc), keyPart (esFontSize sc), keyPart (B.widestLine buf), keyPart (esThumbXHot sc)]
         PartText ->
           [ keyPart (3 :: Int)
           , keyPart (B.bufVersion buf)
@@ -175,14 +168,14 @@ drawEditor which sc own@(Rect ox oy ow oh) =
       PartBar ->
         FillRect own colBackground
           : FillRect own colTrack
-          : [ FillRoundedRect (Rect (ox + 3) (y + thumbTop + 2) (scrollBarW - 6) (thumbH - 4)) 3 (if esThumbHot sc then colThumbHot else colThumb)
+          : [ FillRoundedRect (Rect (ox + 3) (y + thumbTop + 2) (scrollBarW - 6) (thumbH - 4)) rounding (if esThumbHot sc then colThumbHot else colThumb)
             | maxScrollY g rect buf > 0
             ]
       PartHBar ->
         FillRect own colBackground
           : FillRect own colTrack
-          : [ FillRoundedRect (Rect (x + thumbLeft + 2) (oy + 3) (thumbW - 4) (scrollBarH - 6)) 3 (if esThumbXHot sc then colThumbHot else colThumb)
-            | maxScrollXOf g rect (esWidest sc) > 0
+          : [ FillRoundedRect (Rect (x + thumbLeft + 2) (oy + 3) (thumbW - 4) (scrollBarH - 6)) rounding (if esThumbXHot sc then colThumbHot else colThumb)
+            | maxScrollX g rect buf > 0
             ]
   where
     -- The whole editor. Nothing a part draws reads a side of it that the
@@ -198,8 +191,7 @@ drawEditor which sc own@(Rect ox oy ow oh) =
     g = esGeometry sc
     cellW = gCellW g
     lineH = gLineH g
-    font = fontOf TokPlain
-    fontOf kind = TextFont (esFontSize sc) FontMono (tokenWeight kind) FontStyleNormal DecorationNone
+    font = codeFont (esFontSize sc) TokPlain
     textX = x + gGutterW g + textPad - esScrollX sc
     firstLine = floor (esScrollY sc) :: Int
     yOff = realToFrac (fromIntegral firstLine - esScrollY sc) * lineH
@@ -209,13 +201,14 @@ drawEditor which sc own@(Rect ox oy ow oh) =
     firstCell = max 0 (floor (esScrollX sc / cellW) - 1) :: Int
     lastCell = firstCell + ceiling (w / cellW) + 2
     cellX c = textX + fromIntegral c * cellW
+    textGrid = Grid textX cellW (esFontSize sc) firstCell lastCell
     (thumbTop, thumbH) = thumbSpan (scroller g rect buf) (esScrollY sc)
     (selFrom, selTo) = B.selectionRange buf
     (caretLine, caretCol) = B.cursorPosition buf
 
     -- The sideways bar: the lane is the editor's whole width, and the thumb
     -- stands for the share of the line the view holds.
-    hbar = hscroller g rect (esWidest sc)
+    hbar = hscroller g rect buf
     (thumbLeft, thumbW) = thumbSpan hbar (realToFrac (esScrollX sc))
 
     -- Each line on screen with its text: the whole of an ordinary line, and
@@ -236,10 +229,7 @@ drawEditor which sc own@(Rect ox oy ow oh) =
       | rowLong vr = col
       | otherwise = cellOfCol (rowText vr) col
 
-    clampCells c0 c1 = (max firstCell c0, min lastCell c1)
-    band color ln c0 c1 =
-      let (a, b) = clampCells c0 c1
-       in [FillRect (Rect (cellX a) (lineY ln) (fromIntegral (b - a) * cellW) lineH) color | b > a]
+    band color ln = cellBand textGrid (lineY ln) lineH color
 
     backdrops = concatMap backdrop rows
     backdrop vr =
@@ -290,43 +280,9 @@ drawEditor which sc own@(Rect ox oy ow oh) =
     lineOps vr
       | rowLong vr =
           [DrawTextStyled (cellX firstCell) (lineY (rowLine vr)) font (T.map visible (rowText vr)) (tokenColor TokPlain) | not (T.null (rowText vr))]
-      | otherwise = runs (lineY (rowLine vr)) 0 (rowText vr) (rowSpans vr)
+      | otherwise = codeOps textGrid (lineY (rowLine vr)) (rowText vr) (rowSpans vr)
 
     visible c = if c < ' ' then ' ' else c
-
-    -- The draw ops of a line's spans, from a cell on. A run of plain ASCII is
-    -- one op; anything else is placed a character at a time, so that the
-    -- grid holds whatever a fallback font makes of it, or a heavier weight,
-    -- whose glyphs advance further than a cell.
-    runs _ _ _ [] = []
-    runs ly cell t (Span n kind : rest)
-      | cell > lastCell = []
-      | otherwise =
-          let seg = T.take n t
-              t' = T.drop n t
-           in if T.all simple seg && tokenWeight kind == WeightNormal
-                then
-                  let skip = max 0 (firstCell - cell)
-                      keep = min n (lastCell - cell + 1) - skip
-                      op = DrawTextStyled (cellX (cell + skip)) ly (fontOf kind) (T.take keep (T.drop skip seg)) (tokenColor kind)
-                   in [op | keep > 0, not (T.all (== ' ') seg)] ++ runs ly (cell + n) t' rest
-                else
-                  let (ops, cell') = chars ly kind cell seg
-                   in ops ++ runs ly cell' t' rest
-
-    simple c = c >= ' ' && c < '\x7F'
-
-    chars ly kind = go []
-      where
-        go acc !cell t = case T.uncons t of
-          Nothing -> (reverse acc, cell)
-          Just (c, r)
-            -- A tab, a space and what is off screen take their cells and
-            -- draw nothing.
-            | c <= ' ' || cell < firstCell || cell > lastCell -> go acc next r
-            | otherwise -> go (DrawTextStyled (cellX cell) ly (fontOf kind) (T.singleton c) (tokenColor kind) : acc) next r
-            where
-              next = cell + cellsAt cell c
 
     -- The band on the caret's line carries on through the gutter, so that the
     -- number and the text it belongs to read as one row rather than as a
@@ -338,12 +294,7 @@ drawEditor which sc own@(Rect ox oy ow oh) =
       , caretLine <= lastLine
       ]
 
-    numbers =
-      [ DrawTextStyled (x + gGutterW g - cellW - fromIntegral (T.length num) * cellW) (lineY ln) font num color
-      | ln <- [firstLine .. lastLine]
-      , let num = T.pack (show (ln + 1))
-            color = if ln == caretLine then colGutterActive else colGutterText
-      ]
+    numbers = [lineNumber textGrid (x + gGutterW g) (lineY ln) (ln == caretLine) ln | ln <- [firstLine .. lastLine]]
 
     caret =
       [ FillRect (Rect (cellX cell) (lineY caretLine) 2 lineH) colCaret

@@ -2,14 +2,13 @@
 -- the find and go-to-line bar under the text, and the status along the
 -- bottom.
 --
--- None of this edits anything itself. Every row and button asks for a
--- 'Commands', so what a menu says and what it does sit on the same line, and
--- the frame in "Ned.View" is left to say where the bars go.
+-- None of this edits anything itself. Every row and button asks for one of
+-- "Ned.App.Commands", so what a menu says and what it does sit on the same
+-- line, and the frame in "Ned.View" is left to say where the bars go.
 module Ned.View.Chrome
   ( -- * The window's own chrome
     titleBar
   , windowBorder
-  , appMenus
   , editorMenu
   , treeMenu
 
@@ -20,6 +19,7 @@ module Ned.View.Chrome
 
 import Control.Monad (when)
 import Data.Foldable (for_)
+import Data.IORef (IORef)
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -92,12 +92,12 @@ windowBorder body = do
 -- 'windowCaptionWith''s to do: it wants the rectangles of everything in the
 -- row that takes a click of its own, and the menu buttons hand theirs back
 -- as they are drawn.
-titleBar :: Commands -> App -> NanoUI ()
-titleBar cmds app = do
+titleBar :: IORef App -> App -> NanoUI ()
+titleBar ref app = do
   closing <-
     styled menuChrome $
       rowWith (titleBarPad . tight . fillW . fixedH titleBarHeight . gap 2) $ do
-        taken <- menus cmds app
+        taken <- menus ref app
         flex
         -- The same words the desktop has for the window, since this bar is
         -- now the only place they are written.
@@ -124,7 +124,7 @@ titleBar cmds app = do
             taken
   -- Closing throws away the same unsaved text File > Exit does, so it asks
   -- the same question first.
-  when closing (cmdGuarded cmds PendingQuit)
+  when closing (guarded ref PendingQuit)
 
 -- | The bar's padding. The menu titles start in from the edge rather than
 -- hard against it; the window's own buttons at the other end do finish hard
@@ -141,18 +141,18 @@ titleBarPad l = l {layoutPadding = Padding 6 0 0 0}
 -- press closes the menu, and the release would open it again. So a press
 -- that closes a menu over its own button is remembered in the state, and the
 -- click that follows it does nothing.
-menus :: Commands -> App -> NanoUI [Rect]
-menus cmds app = do
+menus :: IORef App -> App -> NanoUI [Rect]
+menus ref app = do
   -- The pointer as it is, where a button under an open menu sees none.
   pointer <- askFrameInput
-  rects <- traverse (entry pointer) (appMenus cmds app)
+  rects <- traverse (entry pointer) (appMenus ref app)
   when (inputMouseReleased pointer && not (T.null swallow)) (setSwallow "")
   pure rects
   where
     open = appOpenMenu app
     swallow = appMenuSwallow app
-    setOpen m = cmdModify cmds (\a -> a {appOpenMenu = m})
-    setSwallow m = cmdModify cmds (\a -> a {appMenuSwallow = m})
+    setOpen m = modifyApp ref (\a -> a {appOpenMenu = m})
+    setSwallow m = modifyApp ref (\a -> a {appMenuSwallow = m})
     entry pointer (title, body) = do
       let isOpen = open == title
       btn <- menuButtonWith' fillH title isOpen
@@ -166,93 +166,90 @@ menus cmds app = do
         when (inputMousePressed pointer && onButton) (setSwallow title)
       pure (respRect btn)
 
--- | A row of a menu, greyed when it does not apply. Picking one closes the
--- menu bar's menu, which a context menu has none of and loses nothing by.
-menuEntry :: Commands -> Bool -> Text -> Text -> NanoUI () -> NanoUI ()
-menuEntry cmds ok lbl shortcut action
+-- | A row of a menu, greyed when it does not apply; 'menuRow' always does.
+-- Picking one closes the menu bar's menu, which a context menu has none of
+-- and loses nothing by.
+menuEntry :: IORef App -> Bool -> Text -> Text -> NanoUI () -> NanoUI ()
+menuEntry ref ok lbl shortcut action
   | not ok = menuItemDisabled lbl
-  | otherwise = whenM (if T.null shortcut then menuItem lbl else menuItemShortcut lbl shortcut) (cmdCloseMenu cmds >> action)
+  | otherwise = whenM (if T.null shortcut then menuItem lbl else menuItemShortcut lbl shortcut) (modifyApp ref (\a -> a {appOpenMenu = ""}) >> action)
+
+menuRow :: IORef App -> Text -> Text -> NanoUI () -> NanoUI ()
+menuRow ref = menuEntry ref True
 
 -- | The menus along the top, and what each of their rows does. A row that
 -- turns something on and off says what it would do rather than what is so:
 -- the menu is read to change something, not to find out how it stands.
-appMenus :: Commands -> App -> [(Text, NanoUI ())]
-appMenus cmds app = [("File", fileMenu), ("Edit", editMenu), ("View", viewMenu)]
+appMenus :: IORef App -> App -> [(Text, NanoUI ())]
+appMenus ref app = [("File", fileMenu), ("Edit", editMenu), ("View", viewMenu)]
   where
-    entry = menuEntry cmds
-    item = entry True
+    item = menuRow ref
     buf0 = edBuffer (appEditor app)
     fileMenu = do
-      item "New" "Ctrl+N" (cmdGuarded cmds PendingNew)
-      item "Open..." "Ctrl+O" (cmdGuarded cmds PendingOpen)
-      item "Find File..." "Ctrl+P" (cmdOpenPicker cmds P.fileSource)
-      item "Save" "Ctrl+S" (cmdSave cmds False)
-      item "Save As..." "Ctrl+Shift+S" (cmdSave cmds True)
+      item "New" "Ctrl+N" (guarded ref PendingNew)
+      item "Open..." "Ctrl+O" (guarded ref PendingOpen)
+      item "Find File..." "Ctrl+P" (openPicker ref P.fileSource)
+      item "Save" "Ctrl+S" (save ref False)
+      item "Save As..." "Ctrl+Shift+S" (save ref True)
       menuSeparator
-      item "Exit" "Ctrl+Q" (cmdGuarded cmds PendingQuit)
+      item "Exit" "Ctrl+Q" (guarded ref PendingQuit)
     editMenu = do
-      editEntries cmds buf0
+      editEntries ref buf0
       menuSeparator
-      item "Find..." "Ctrl+F" (cmdOpenBar cmds BarFind)
-      item "Search in Files..." "Ctrl+Shift+F" (cmdOpenPicker cmds P.grepSource)
-      item "Go to Line..." "Ctrl+G" (cmdOpenBar cmds BarGoto)
+      item "Find..." "Ctrl+F" (openBar ref BarFind)
+      item "Search in Files..." "Ctrl+Shift+F" (openPicker ref P.grepSource)
+      item "Go to Line..." "Ctrl+G" (openBar ref BarGoto)
     viewMenu = do
       item
         (if appTreeShown app then "Hide File Tree" else "Show File Tree")
         "Ctrl+B"
-        (cmdToggleTree cmds)
+        (toggleTree ref)
       menuSeparator
-      item "Zoom In" "Ctrl+=" (cmdZoom cmds (* 1.1))
-      item "Zoom Out" "Ctrl+-" (cmdZoom cmds (/ 1.1))
-      item "Reset Zoom" "Ctrl+0" (cmdZoom cmds (const defaultFontSize))
+      item "Zoom In" "Ctrl+=" (zoom ref (* 1.1))
+      item "Zoom Out" "Ctrl+-" (zoom ref (/ 1.1))
+      item "Reset Zoom" "Ctrl+0" (zoom ref (const defaultFontSize))
       menuSeparator
       item
         (if edShowWhitespace (appEditor app) then "Hide Indentation Marks" else "Show Indentation Marks")
         ""
-        (cmdOnEditor cmds (\e -> e {edShowWhitespace = not (edShowWhitespace e)}))
+        (onEditor ref (\e -> e {edShowWhitespace = not (edShowWhitespace e)}))
       item
         (if B.usesTabs buf0 then "Indent with Spaces" else "Indent with Tabs")
         ""
-        (cmdOnBuffer cmds (B.setUsesTabs (not (B.usesTabs buf0))))
+        (onBuffer ref (B.setUsesTabs (not (B.usesTabs buf0))))
       item
         (if formatEol (appFormat app) == LF then "Line Endings: CRLF" else "Line Endings: LF")
         ""
-        (cmdModify cmds (\a -> a {appFormat = (appFormat a) {formatEol = if formatEol (appFormat a) == LF then CRLF else LF}}))
+        (modifyApp ref (\a -> a {appFormat = (appFormat a) {formatEol = if formatEol (appFormat a) == LF then CRLF else LF}}))
 
 -- | What the Edit menu and the editor's own menu both start with.
-editEntries :: Commands -> Buffer -> NanoUI ()
-editEntries cmds buf = do
-  entry (B.canUndo buf) "Undo" "Ctrl+Z" (cmdOnBuffer cmds B.undo)
-  entry (B.canRedo buf) "Redo" "Ctrl+Y" (cmdOnBuffer cmds B.redo)
+editEntries :: IORef App -> Buffer -> NanoUI ()
+editEntries ref buf = do
+  menuEntry ref (B.canUndo buf) "Undo" "Ctrl+Z" (onBuffer ref B.undo)
+  menuEntry ref (B.canRedo buf) "Redo" "Ctrl+Y" (onBuffer ref B.redo)
   menuSeparator
-  item "Cut" "Ctrl+X" (cmdOnBufferIO cmds clipboardCut)
-  item "Copy" "Ctrl+C" (cmdOnBufferIO cmds clipboardCopy)
-  item "Paste" "Ctrl+V" (cmdOnBufferIO cmds clipboardPaste)
+  menuRow ref "Cut" "Ctrl+X" (onBufferIO ref clipboardCut)
+  menuRow ref "Copy" "Ctrl+C" (onBufferIO ref clipboardCopy)
+  menuRow ref "Paste" "Ctrl+V" (onBufferIO ref clipboardPaste)
   menuSeparator
-  item "Select All" "Ctrl+A" (cmdOnBuffer cmds B.selectAll)
-  where
-    entry = menuEntry cmds
-    item = entry True
+  menuRow ref "Select All" "Ctrl+A" (onBuffer ref B.selectAll)
 
 -- | The editor's own menu, on the right button.
-editorMenu :: Commands -> Buffer -> NanoUI ()
-editorMenu cmds buf = do
-  editEntries cmds buf
-  menuEntry cmds True "Find..." "Ctrl+F" (cmdOpenBar cmds BarFind)
+editorMenu :: IORef App -> Buffer -> NanoUI ()
+editorMenu ref buf = do
+  editEntries ref buf
+  menuRow ref "Find..." "Ctrl+F" (openBar ref BarFind)
 
 -- | The file tree's own menu, on the right button.
-treeMenu :: Commands -> App -> NanoUI ()
-treeMenu cmds app = do
-  entry (isJust (appPath app)) "Reveal Current File" "" (for_ (appPath app) (cmdOnTree cmds . FT.reveal))
-  entry (hasParentRoot (appTree app)) "Open Parent Folder" "" (cmdOnTree cmds FT.parentRoot)
+treeMenu :: IORef App -> App -> NanoUI ()
+treeMenu ref app = do
+  menuEntry ref (isJust (appPath app)) "Reveal Current File" "" (for_ (appPath app) (onTree ref . FT.reveal))
+  menuEntry ref (hasParentRoot (appTree app)) "Open Parent Folder" "" (onTree ref FT.parentRoot)
   menuSeparator
-  item "Collapse All" "" (cmdOnTree cmds FT.collapseAll)
-  item "Refresh" "" (cmdOnTree cmds FT.refresh)
+  menuRow ref "Collapse All" "" (onTree ref FT.collapseAll)
+  menuRow ref "Refresh" "" (onTree ref FT.refresh)
   menuSeparator
-  item "Hide File Tree" "" (cmdToggleTree cmds)
-  where
-    entry = menuEntry cmds
-    item = entry True
+  menuRow ref "Hide File Tree" "" (toggleTree ref)
 
 --------------------------------------------------------------------------------
 -- The bar under the editor
@@ -261,41 +258,41 @@ treeMenu cmds app = do
 -- | Find, or go to line, or nothing at all: the bar between the text and the
 -- status. A press on its field takes the keyboard back from the editor or the
 -- tree, and it keeps it for as long as the bar is up.
-editorBar :: Commands -> App -> NanoUI ()
-editorBar cmds app = case appBar app of
+editorBar :: IORef App -> App -> NanoUI ()
+editorBar ref app = case appBar app of
   BarNone -> pure ()
   BarFind ->
     barRow "Find" (appFindText app) $ \query -> do
       when (query /= appFindText app) $ do
-        cmdModify cmds (\a -> a {appFindText = query, appEditor = (appEditor a) {edFind = query}})
+        modifyApp ref (\a -> a {appFindText = query})
         -- Search as the query is typed, from where the selection starts.
-        cmdOnBuffer cmds (\b -> B.setCursor False (fst (B.selectionRange b)) b)
-        cmdFind cmds True
+        onBuffer ref (\b -> B.setCursor False (fst (B.selectionRange b)) b)
+        findMatch ref True
       -- Centred on the bar's middle line, whose height is the taller find
       -- field's.
       exact <- checkboxWith alignMid "Match case" (edFindExact (appEditor app))
-      when (exact /= edFindExact (appEditor app)) (cmdOnEditor cmds (\e -> e {edFindExact = exact}))
+      when (exact /= edFindExact (appEditor app)) (onEditor ref (\e -> e {edFindExact = exact}))
       separator
       -- The buttons are subtle: a toolbar row does not want three filled
       -- grey chips, only the press and the hover to be seen.
       styled subtle $ do
-        whenM (buttonWith (tight . alignMid) "Previous") (cmdFind cmds False)
-        whenM (buttonWith (tight . alignMid) "Next") (cmdFind cmds True)
-        whenM (buttonWith (tight . alignMid) "Close") (cmdCloseBar cmds)
+        whenM (buttonWith (tight . alignMid) "Previous") (findMatch ref False)
+        whenM (buttonWith (tight . alignMid) "Next") (findMatch ref True)
+        whenM (buttonWith (tight . alignMid) "Close") (closeBar ref)
       enter <- pressedEnter
       shift <- heldShift
-      when enter (cmdFind cmds (not shift))
+      when enter (findMatch ref (not shift))
   BarGoto ->
     barRow "Go to line" (appGotoText app) $ \txt -> do
-      when (txt /= appGotoText app) (cmdModify cmds (\a -> a {appGotoText = txt}))
+      when (txt /= appGotoText app) (modifyApp ref (\a -> a {appGotoText = txt}))
       separator
       go <- styled subtle (buttonWith (tight . alignMid) "Go")
-      whenM (styled subtle (buttonWith (tight . alignMid) "Close")) (cmdCloseBar cmds)
+      whenM (styled subtle (buttonWith (tight . alignMid) "Close")) (closeBar ref)
       enter <- pressedEnter
       when (enter || go) $
         case readMaybe (T.unpack (T.strip txt)) of
-          Just n -> cmdOnBuffer cmds (B.gotoLine n) >> cmdCloseBar cmds
-          Nothing -> cmdStatus cmds "Not a line number"
+          Just n -> onBuffer ref (B.gotoLine n) >> closeBar ref
+          Nothing -> setStatus ref "Not a line number"
   where
     pressedEnter = do
       inp <- askInput
@@ -313,7 +310,7 @@ editorBar cmds app = case appBar app of
         labelWith (tight . fontSemiBold . alignMid) name
         (resp, txt) <- textInput' value
         keepFocus resp
-        when (respPressed resp) (cmdModify cmds (\a -> a {appBarFocus = True}))
+        when (respPressed resp) (modifyApp ref (\a -> a {appBarFocus = True}))
         rest txt
 
 --------------------------------------------------------------------------------
@@ -344,12 +341,12 @@ statusBar app =
     labelWith (tight . fontMuted) (if B.usesTabs buf then "Tabs" else "Spaces")
     labelWith (tight . fontMuted) (T.pack (show (formatEol (appFormat app))))
     when (formatBom (appFormat app)) $ labelWith (tight . fontMuted) "BOM"
-    when (zoom /= 100) $ labelWith (tight . fontMuted) (showT zoom <> "%")
+    when (zoomed /= 100) $ labelWith (tight . fontMuted) (showT zoomed <> "%")
   where
     ed = appEditor app
     buf = edBuffer ed
     name = maybe "Untitled" (T.pack . takeFileName) (appPath app)
-    zoom = round (edFontSize ed / defaultFontSize * 100) :: Int
+    zoomed = round (edFontSize ed / defaultFontSize * 100) :: Int
     (ln, col) = B.cursorPosition buf
     showT :: Show a => a -> Text
     showT = T.pack . show

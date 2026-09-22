@@ -27,13 +27,20 @@ module Ned.FileTree
   , rootName
   , defaultTreeWidth
   , minTreeWidth
+
+    -- * Where it puts things
+  , treeIndent
+  , treeChevron
+  , treeBarW
+  , treeHeaderPad
+  , treeHeaderHeight
+  , treeScroller
   ) where
 
 import Data.Primitive.SmallArray (indexSmallArray, sizeofSmallArray)
 import Effectful (Eff, type (:>))
 -- 'Row' here is a row of the tree, not nano-ui's layout direction.
 import NanoUI hiding (Row)
-import Ned.FileTree.Geometry
 import Ned.FileTree.Model
 import Ned.Text (clamp)
 import Ned.Widget
@@ -71,7 +78,7 @@ treeFrame wantFocus rect lineH ft0 = do
       rowsNow = ftRows ft0
       rowCount = sizeofSmallArray rowsNow
       overBar = inside && v2X mouse >= rectX rect + rectW rect - treeBarW && fromIntegral rowCount > viewRows
-      bar = scroller rect rowCount viewRows
+      bar = treeScroller rect rowCount viewRows
       pointedRow = floor (ftScroll ft0 + realToFrac (localY / lineH)) :: Int
 
       pressedNow = (inputMousePressed inp || inputMouseRightPressed inp) && inside
@@ -176,3 +183,40 @@ treeFrame wantFocus rect lineH ft0 = do
           | j < 0 = -1
           | rowDepth (indexSmallArray rows j) < depth = j
           | otherwise = go (j - 1)
+
+--------------------------------------------------------------------------------
+-- Where it puts things
+--------------------------------------------------------------------------------
+
+-- The panel here hit-tests against these and the drawing in "Ned.View.Tree"
+-- places everything by them. What a row shares with the finder's rows -- its
+-- height, its margin, its icon's column and its mark -- is "Ned.Widget"'s, and
+-- what colour any of it is "Ned.Theme"'s.
+
+-- | How far a row indents for each folder it is in, the column a folder's
+-- chevron takes, and the lane of the scrollbar. A file has no chevron but
+-- still leaves room for one, so that the icons of a folder and of the files
+-- inside it line up in a column.
+treeIndent, treeChevron, treeBarW :: Float
+treeIndent = 14
+treeChevron = 14
+treeBarW = 10
+
+-- | Where the panel's header sets the root's name: the column a row's icon
+-- starts in, so that the name of the folder lines up with what is under it
+-- rather than sitting against the panel's edge.
+treeHeaderPad :: Float
+treeHeaderPad = rowPad + treeChevron + 2
+
+-- | The panel's header: the root's name, with the header's own padding above
+-- and below it. The pane grid's drag picks the pane by this strip.
+treeHeaderHeight :: FontMetrics -> Float
+treeHeaderHeight fm = lineHeight fm + 12
+
+maxScroll :: Int -> Double -> Double
+maxScroll rowCount viewRows = max 0 (fromIntegral rowCount - viewRows)
+
+-- | The view and its scrollbar, over so many rows.
+treeScroller :: Rect -> Int -> Double -> Scroller
+treeScroller rect rowCount viewRows =
+  Scroller (rectH rect) (viewRows / max 1 (fromIntegral rowCount)) (maxScroll rowCount viewRows)

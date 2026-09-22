@@ -25,7 +25,6 @@ module Ned.Buffer
   , setUsesTabs
 
     -- * Geometry
-  , longLineLimit
   , lineCount
   , lineOf
   , lineStart
@@ -33,6 +32,7 @@ module Ned.Buffer
   , lineText
   , lineWindow
   , isLongLine
+  , widestLine
   , cursorPosition
   , colToVisual
   , visualToCol
@@ -74,7 +74,6 @@ module Ned.Buffer
   , deleteSelection
   , indentKey
   , unindentKey
-  , replaceRange
 
     -- * History
   , undo
@@ -87,19 +86,20 @@ module Ned.Buffer
   , findPrev
   ) where
 
+import Control.Applicative ((<|>))
 import Data.Char (isSpace)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.NanoRope (Position (..), Rope, Unit (..))
-import qualified Data.Text.NanoRope as Rope
-import Ned.Text (cellOfCol, cellsAt, clamp, classOf, foldCase, indentOf, tabWidth)
+import Data.Text.NanoRope.Measured (Position (..), Rope, Unit (..))
+import qualified Data.Text.NanoRope.Measured as Rope
+import Ned.Text (Width, cellOfCol, cellsAt, clamp, classOf, foldCase, indentOf, longLineLimit, tabWidth, widest)
 
 --------------------------------------------------------------------------------
 -- Buffers
 --------------------------------------------------------------------------------
 
 data Buffer = Buffer
-  { bufRope :: !Rope
+  { bufRope :: !(Rope Width)
   , bufCursor :: !Int
   -- ^ Offset of the caret, in code points.
   , bufAnchor :: !Int
@@ -123,7 +123,7 @@ data Buffer = Buffer
   }
 
 data Snapshot = Snapshot
-  { snapRope :: !Rope
+  { snapRope :: !(Rope Width)
   , snapCursor :: !Int
   , snapAnchor :: !Int
   , snapVersion :: !Int
@@ -180,11 +180,6 @@ setUsesTabs t b = b {bufTabs = t}
 -- Geometry
 --------------------------------------------------------------------------------
 
--- | Lines longer than this are never read whole: they are drawn and measured
--- a window at a time, with every character one cell wide.
-longLineLimit :: Int
-longLineLimit = 4096
-
 size :: Buffer -> Int
 size = Rope.length Chars . bufRope
 
@@ -213,6 +208,11 @@ lineLength b ln
 
 isLongLine :: Buffer -> Int -> Bool
 isLongLine b ln = lineLength b ln > longLineLimit
+
+-- | The widest line in the buffer, in cells, which the rope keeps up to date
+-- as it is edited.
+widestLine :: Buffer -> Int
+widestLine = widest . Rope.measure . bufRope
 
 -- | A whole line, without its newline.
 lineText :: Buffer -> Int -> Text
@@ -426,12 +426,8 @@ undoLimit = 2000
 edit :: EditKind -> Int -> Int -> Text -> Buffer -> Buffer
 edit kind i j t b
   | i >= j && T.null t = b
-  | otherwise = commit continues kind rope' end end b
+  | otherwise = commit continues kind (Rope.replace Chars i j t (bufRope b)) end end b
   where
-    rope'
-      | i >= j = Rope.insert Chars i t (bufRope b)
-      | T.null t = Rope.delete Chars i j (bufRope b)
-      | otherwise = Rope.replace Chars i j t (bufRope b)
     end = i + T.length t
     continues =
       continuesRun (bufLastEdit b) kind
@@ -441,7 +437,7 @@ edit kind i j t b
 -- | Put a new text in place, with its anchor and caret, as a step of the
 -- history: the text before it goes on the undo stack, unless this edit
 -- continues the run before it and undoes with that.
-commit :: Bool -> EditKind -> Rope -> Int -> Int -> Buffer -> Buffer
+commit :: Bool -> EditKind -> Rope Width -> Int -> Int -> Buffer -> Buffer
 commit continues kind rope anchor cursor b =
   b
     { bufRope = rope
@@ -461,10 +457,6 @@ commit continues kind rope anchor cursor b =
       | continues = (bufUndo b, bufUndoDepth b)
       | bufUndoDepth b >= 2 * undoLimit = (current b : take undoLimit (bufUndo b), undoLimit + 1)
       | otherwise = (current b : bufUndo b, bufUndoDepth b + 1)
-
--- | Replace a range, as one step of the history.
-replaceRange :: Int -> Int -> Text -> Buffer -> Buffer
-replaceRange = edit EditOther
 
 -- | Type or paste a text over the selection. Line endings become @\\n@. No
 -- text is nothing done: the selection stays, and is not deleted.
@@ -559,30 +551,25 @@ unindentKey = reindent $ \lead ->
 
 -- | Edit the start of each selected line: given the head of a line, the
 -- columns to replace and the text to put there. A selection grows to whole
--- lines, and the change is one step of the history.
+-- lines, and the change is one replace of the lines, one step of the history.
 reindent :: (Text -> Maybe (Int, Int, Text)) -> Buffer -> Buffer
-reindent f b =
-  let (l0, l1) = selectedLines b
-      step rope ln =
-        let s = Rope.convert Lines Chars ln rope
-            lead = Rope.sliceText Chars s (s + tabWidth) rope
-         in case f (T.takeWhile (/= '\n') lead) of
-              Nothing -> rope
-              Just (c0, c1, t) -> Rope.replace Chars (s + c0) (s + c1) t rope
-      -- From the last line up, so that the offsets of earlier lines hold.
-      rope' = foldl' step (bufRope b) [l1, l1 - 1 .. l0]
-      changed = Rope.length Chars rope' /= size b
-      start = Rope.convert Lines Chars l0 rope'
-      end
-        | l1 + 1 < Rope.lineCount rope' = Rope.convert Lines Chars (l1 + 1) rope'
-        | otherwise = Rope.length Chars rope'
-      -- A bare caret stays a caret, moved with its line's text; a selection
-      -- grows to the lines it touched.
-      caret = max start (bufCursor b + Rope.length Chars rope' - size b)
-      (anchor', cursor')
-        | hasSelection b = (start, end)
-        | otherwise = (caret, caret)
-   in if changed then commit False EditOther rope' anchor' cursor' b else b
+reindent f b
+  | grown == 0 = b
+  | otherwise = commit False EditOther (Rope.replace Chars start stop new (bufRope b)) anchor' cursor' b
+  where
+    (l0, l1) = selectedLines b
+    start = lineStart b l0
+    stop = lineStart b l1 + lineLength b l1
+    old = Rope.sliceText Chars start stop (bufRope b)
+    new = T.intercalate "\n" (map rehead (T.splitOn "\n" old))
+    rehead l = maybe l (\(c0, c1, t) -> T.take c0 l <> t <> T.drop c1 l) (f (T.take tabWidth l))
+    grown = T.length new - T.length old
+    -- A bare caret stays a caret, moved with its line's text; a selection
+    -- grows to the lines it touched.
+    caret = max start (bufCursor b + grown)
+    (anchor', cursor')
+      | hasSelection b = (start, lineStart b (l1 + 1) + grown)
+      | otherwise = (caret, caret)
 
 --------------------------------------------------------------------------------
 -- History
@@ -628,30 +615,26 @@ redo b = case bufRedo b of
 searchWindowFor :: Int -> Int
 searchWindowFor n = max 65536 (2 * n)
 
+-- | What a search compares: the text as it is when the flag is set, and
+-- otherwise with its ASCII letters folded, which keeps every offset in place.
+matchCase :: Bool -> Text -> Text
+matchCase exact = if exact then id else foldCase
+
 -- | The first match at or after an offset, going around the end of the text.
--- The needle is matched as it is when the flag is set, and without regard to
--- ASCII case otherwise.
 findFrom :: Bool -> Text -> Int -> Buffer -> Maybe Int
 findFrom exact needle0 from b
-  | T.null needle0 = Nothing
-  | otherwise = case scan from total of
-      Just i -> Just i
-      Nothing -> scan 0 (min total (from + n - 1))
+  | T.null needle = Nothing
+  | otherwise = scan from (size b) <|> scan 0 (min (size b) (from + n - 1))
   where
-    needle = if exact then needle0 else foldCase needle0
+    needle = matchCase exact needle0
     n = T.length needle
-    window = searchWindowFor n
-    total = size b
-    rope = bufRope b
     -- Windows overlap by the needle less one, so a match across a seam is
     -- found in the next window.
     scan !at !end
       | at + n > end = Nothing
       | otherwise =
-          let to = min end (at + window)
-              w0 = Rope.sliceText Chars at to rope
-              w = if exact then w0 else foldCase w0
-              (pre, match) = T.breakOn needle w
+          let to = min end (at + searchWindowFor n)
+              (pre, match) = T.breakOn needle (matchCase exact (Rope.sliceText Chars at to (bufRope b)))
            in if not (T.null match)
                 then Just (at + T.length pre)
                 else if to >= end then Nothing else scan (to - n + 1) end
@@ -659,39 +642,33 @@ findFrom exact needle0 from b
 -- | The last match ending at or before an offset, going around the start.
 findBack :: Bool -> Text -> Int -> Buffer -> Maybe Int
 findBack exact needle0 before b
-  | T.null needle0 = Nothing
-  | otherwise = case scan before 0 of
-      Just i -> Just i
-      Nothing -> scan total (max 0 (before - n + 1))
+  | T.null needle = Nothing
+  | otherwise = scan before 0 <|> scan (size b) (max 0 (before - n + 1))
   where
-    needle = if exact then needle0 else foldCase needle0
+    needle = matchCase exact needle0
     n = T.length needle
-    window = searchWindowFor n
-    total = size b
-    rope = bufRope b
     scan !end !start
       | end - n < start = Nothing
       | otherwise =
-          let from = max start (end - window)
-              w0 = Rope.sliceText Chars from end rope
-              w = if exact then w0 else foldCase w0
+          let from = max start (end - searchWindowFor n)
               -- Everything up to the end of the last match, or nothing.
-              (pre, _) = T.breakOnEnd needle w
+              (pre, _) = T.breakOnEnd needle (matchCase exact (Rope.sliceText Chars from end (bufRope b)))
            in if not (T.null pre)
                 then Just (from + T.length pre - n)
                 else if from <= start then Nothing else scan (from + n - 1) start
 
--- | Select the next match after the selection.
+-- | Select the next match after the selection. The needle is matched as it is
+-- when the flag is set, and without regard to ASCII case otherwise.
 findNext :: Bool -> Text -> Buffer -> Maybe Buffer
 findNext exact needle b =
   let from = if hasSelection b then fst (selectionRange b) + 1 else bufCursor b
-   in select needle <$> findFrom exact needle (min (size b) from) b <*> pure b
+   in select needle b <$> findFrom exact needle (min (size b) from) b
 
 -- | Select the previous match before the selection.
 findPrev :: Bool -> Text -> Buffer -> Maybe Buffer
 findPrev exact needle b =
   let before = if hasSelection b then snd (selectionRange b) - 1 else bufCursor b
-   in select needle <$> findBack exact needle (max 0 before) b <*> pure b
+   in select needle b <$> findBack exact needle (max 0 before) b
 
-select :: Text -> Int -> Buffer -> Buffer
-select needle i b = moved b {bufAnchor = i, bufCursor = i + T.length needle}
+select :: Text -> Buffer -> Int -> Buffer
+select needle b i = moved b {bufAnchor = i, bufCursor = i + T.length needle}

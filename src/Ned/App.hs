@@ -13,7 +13,6 @@ module Ned.App
     -- * The state it runs on
   , App (..)
   , newApp
-  , newAppIn
   , openPath
   ) where
 
@@ -27,8 +26,7 @@ import System.Environment (lookupEnv)
 -- | Run the editor, on a file if one is given.
 runNed :: Maybe FilePath -> IO ()
 runNed mpath = do
-  blankApp <- newAppIn
-  app0 <- maybe (pure blankApp) (`openPath` blankApp) mpath
+  app0 <- maybe pure (openPath Nothing) mpath =<< newApp
   ref <- newIORef app0
   -- NED_TRACE names a file to log a line a frame to: the time, the window's
   -- size, and what the frame cost.

@@ -64,7 +64,6 @@ library
         -- The file tree beside it.
         Ned.FileTree
         Ned.FileTree.Model
-        Ned.FileTree.Geometry
 
         -- The fuzzy finder over it, and what it looks through.
         Ned.Picker
@@ -81,8 +80,10 @@ library
 
         -- The drawing, over the lot.
         Ned.View
+        Ned.View.Code
         Ned.View.Editor
         Ned.View.Tree
+        Ned.View.Picker
         Ned.View.Chrome
         Ned.Selftest
     build-depends:

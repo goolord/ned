@@ -9,7 +9,7 @@
 -- is "Ned.FileTree"'s, and what it hands back, together with the tree itself,
 -- is gathered into a 'TreeScene'; 'treeSceneKey' is a number over the same
 -- values, so a frame whose rows have not changed builds no ops. How far apart
--- any of it sits is "Ned.FileTree.Geometry"'s to say, and what colour it is
+-- any of it sits is "Ned.FileTree"'s to say, and what colour it is
 -- "Ned.Theme"'s.
 module Ned.View.Tree
   ( fileTreePanel
@@ -24,9 +24,8 @@ import Effectful (Eff, type (:>))
 -- 'Row' here is a row of the tree, not nano-ui's layout direction.
 import NanoUI hiding (Row)
 import Ned.FileTree
-import qualified Ned.FileTree.Geometry as TG
 import Ned.Theme (TreeColors (..), languageTint, treeColors)
-import Ned.Widget (fileIcon, folderIcon, thumbSpan)
+import Ned.Widget
 import System.FilePath (equalFilePath)
 
 --------------------------------------------------------------------------------
@@ -48,7 +47,7 @@ fileTreePanel wantFocus current ft0 =
     -- set at full strength and semibold: it names the thing the panel is
     -- about, and muted grey had it reading as a row that could not be
     -- clicked.
-    rowWith (padXY TG.treeHeaderPad 6 . tight . fillW . gap 4 . alignMid) $
+    rowWith (padXY treeHeaderPad 6 . tight . fillW . gap 4 . alignMid) $
       labelWith (tight . fontSemiBold) (rootName ft0)
     separator
     treeRows wantFocus current ft0
@@ -57,7 +56,7 @@ fileTreePanel wantFocus current ft0 =
 treeRows :: Ui :> es => Bool -> Maybe FilePath -> FileTree -> Eff es (Response, FileTree, Maybe FilePath)
 treeRows wantFocus current ft0 = do
   wid <- nextId
-  lineH <- TG.rowHeight <$> uiFontMetrics
+  lineH <- rowHeight <$> uiFontMetrics
   rect <- fromMaybe (Rect 0 0 defaultTreeWidth 600) <$> lastRect wid
 
   -- The tree keeps the keyboard for as long as it is the thing being used, as
@@ -147,24 +146,21 @@ drawTree cdc sc rect@(Rect x y w h) =
     font weight = TextFont 0 FontRegular weight FontStyleNormal DecorationNone
     -- The lane the scrollbar has, which is nothing until there is more to
     -- show than the view holds.
-    lane = if fromIntegral count > tsViewRows sc then TG.treeBarW else 0
+    lane = if fromIntegral count > tsViewRows sc then treeBarW else 0
     -- A row's own colours are in 'TreeColors'; the tint on a file's page is
     -- the family of language it would open as.
     rowOps i =
       let r = indexSmallArray rows i
           ry = rowY i
-          indent = TG.treePad + fromIntegral (rowDepth r) * TG.treeIndent
+          indent = rowPad + fromIntegral (rowDepth r) * treeIndent
           selected = maybe False (equalFilePath (rowPath r)) (tsSelected sc)
           -- The file the editor has, which is a path the application made and
           -- not one of ours, so it is matched the way the platform would.
           isCurrent = maybe False (equalFilePath (rowPath r)) (tsCurrent sc)
-          -- What a pick lands on is inset rather than run from edge to edge,
-          -- so the panel keeps a margin down both sides and the mark has
-          -- somewhere of its own to sit.
-          pick = Rect (x + TG.treeMark + 2) (ry + 1) (max 0 (w - TG.treeMark - 4 - lane)) (lineH - 2)
+          rowRect = Rect x ry (w - lane) lineH
           backdrop
-            | selected = [FillRoundedRect pick TG.treeRadius (if tsFocused sc then tcPicked tc else tcPickedAway tc)]
-            | tsHovered sc == i = [FillRoundedRect pick TG.treeRadius (tcHover tc)]
+            | selected = [rowBand rowRect (if tsFocused sc then tcPicked tc else tcPickedAway tc)]
+            | tsHovered sc == i = [rowBand rowRect (tcHover tc)]
             | otherwise = []
           -- One rule for each folder this row sits inside, down the middle of
           -- that folder's own chevron. This is what makes the rows a tree
@@ -174,23 +170,23 @@ drawTree cdc sc rect@(Rect x y w h) =
             [ FillRect (Rect (rule k) ry 1 lineH) (tcSpine tc)
             | k <- [0 .. rowDepth r - 1]
             ]
-          rule k = fromIntegral (round (x + TG.treePad + fromIntegral k * TG.treeIndent + TG.treeChevron / 2) :: Int)
-          mark = [FillRect (Rect x (ry + 1) TG.treeMark (lineH - 2)) (tcCurrent tc) | isCurrent]
+          rule k = fromIntegral (round (x + rowPad + fromIntegral k * treeIndent + treeChevron / 2) :: Int)
+          mark = [markOp rowRect (tcCurrent tc) | isCurrent]
           -- A folder has a chevron pointing along or down; a file has none.
           cy = ry + lineH / 2
           chevron
             | not (rowDir r) = []
             | otherwise =
-                let cx = x + indent + TG.treeChevron / 2
+                let cx = x + indent + treeChevron / 2
                  in [ if rowOpen r
                         then FillTriangle (cx - 5) (cy - 2.5) (cx + 5) (cy - 2.5) cx (cy + 3.5) (tcMuted tc)
                         else FillTriangle (cx - 2.5) (cy - 5) (cx - 2.5) (cy + 5) (cx + 3.5) cy (tcMuted tc)
                     ]
           icon
-            | rowDir r = folderIcon (x + indent + TG.treeChevron) cy (if rowOpen r then tcName tc else tcMuted tc)
-            | otherwise = fileIcon (x + indent + TG.treeChevron) cy (languageTint theme (rowPath r))
-          tx = x + indent + TG.treeChevron + TG.treeIcon
-          avail = w - (tx - x) - TG.treePad - lane
+            | rowDir r = folderIcon (x + indent + treeChevron) cy (if rowOpen r then tcName tc else tcMuted tc)
+            | otherwise = fileIcon (x + indent + treeChevron) cy (languageTint theme (rowPath r))
+          tx = x + indent + treeChevron + rowIcon
+          avail = w - (tx - x) - rowPad - lane
           (weight, color)
             | isCurrent = (WeightSemiBold, tcCurrent tc)
             | rowDir r = (WeightSemiBold, if rowOpen r then tcName tc else tcMuted tc)
@@ -200,10 +196,10 @@ drawTree cdc sc rect@(Rect x y w h) =
     bar
       | lane <= 0 = []
       | otherwise =
-          let (thumbTop, thumbH) = thumbSpan (TG.scroller rect count (tsViewRows sc)) (tsScroll sc)
+          let (thumbTop, thumbH) = thumbSpan (treeScroller rect count (tsViewRows sc)) (tsScroll sc)
            in [ FillRoundedRect
-                  (Rect (x + w - TG.treeBarW + 2) (y + thumbTop + 2) (TG.treeBarW - 4) (thumbH - 4))
-                  3
+                  (Rect (x + w - treeBarW + 2) (y + thumbTop + 2) (treeBarW - 4) (thumbH - 4))
+                  rounding
                   (if tsThumbHot sc then tcThumbHot tc else tcThumb tc)
               ]
 

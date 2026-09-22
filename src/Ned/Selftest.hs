@@ -17,7 +17,7 @@ import qualified Data.Text.NanoRope as Rope
 import GHC.Clock (getMonotonicTime)
 import NanoUI
 import NanoUI.Backend.Sdl
-import NanoUI.Context (Context (..))
+import NanoUI.Internal.Context (Context (..))
 import NanoUI.Testing (cursorKindIs, needsRedraw, newPixelContext, uiCursorKind)
 import qualified Ned.Buffer as B
 import Ned.App

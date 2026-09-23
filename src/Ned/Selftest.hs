@@ -300,7 +300,7 @@ selftestIn dir mfile say = do
         -- A click on a menu's button has to ask for the frame that shows the
         -- menu: nothing else will, with the pointer at rest.
         _ <- sdlDrawFrame ctx (appView ref) env (at 17 13) {inputMouseDown = True, inputMousePressed = True} False
-        (dirty1, _) <- sdlDrawFrame ctx (appView ref) env (at 17 13) {inputMouseReleased = True} False
+        dirty1 <- sdlDrawFrame ctx (appView ref) env (at 17 13) {inputMouseReleased = True} False
         opened <- appOpenMenu <$> readIORef ref
         when (opened /= "File") $ fail "selftest: the File menu did not open"
         unless dirty1 $ fail "selftest: opening a menu asked for no frame"

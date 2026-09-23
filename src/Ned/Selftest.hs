@@ -567,9 +567,24 @@ selftestIn dir mfile say = do
     unless (maybe False (equalFilePath (treeDir </> (listed !! hoveredRow))) clicked) $
       fail ("selftest: a press on the row the pointer was on, row " <> show hoveredRow <> ", opened " <> show clicked)
 
-    -- Escape puts the finder away with nothing picked.
+    -- The button at the end of the prompt empties it, and every row answers
+    -- again. The prompt keeps the keyboard, so typing carries on in it.
     chord 'p'
-    idle
+    _ <- settle 200
+    typed "outer"
+    narrowedAgain <- settle 20
+    when (P.hitCount narrowedAgain /= 1) $
+      fail ("selftest: \"outer\" matched " <> show (P.hitCount narrowedAgain) <> " files, not 1")
+    click 451 69
+    emptiedPrompt <- settle 20
+    unless (T.null (P.pkTyped emptiedPrompt) && P.hitCount emptiedPrompt == 63) $
+      fail ("selftest: the clear button left " <> show (P.pkTyped emptiedPrompt) <> " and " <> show (P.hitCount emptiedPrompt) <> " rows")
+    typed "in"
+    typedOn <- settle 20
+    unless (P.pkTyped typedOn == "in") $
+      fail ("selftest: typing after the clear button left the prompt at " <> show (P.pkTyped typedOn))
+
+    -- Escape puts the finder away with nothing picked.
     key plain KeyEscape
     idle
     escaped <- pickerNow

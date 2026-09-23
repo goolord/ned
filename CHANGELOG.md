@@ -13,10 +13,11 @@
 * A fuzzy file finder on Ctrl+P: a prompt over the files under the tree's
   root, ranked by fzf's own matching algorithm (vendored as C in
   `ned-fzf`), each row a file's name with its folder in a column beside it
-  and the characters that answered the query coloured. The file the keyboard
-  is on is previewed beside the rows in the colours the editor would open it
-  in, with its length and language; the keys that work in the finder are
-  listed along its foot. The files are walked on a thread of its own and shown
+  and the characters that answered the query coloured. The count of what
+  answered sits inside the prompt, at its end. The file the keyboard is on is
+  previewed beside the rows in the colours the editor would open it in, under
+  a heading with its length and language that lines up with the prompt; the
+  finder takes the whole window and leaves no room around its parts. The files are walked on a thread of its own and shown
   as they are found, so the window never waits on a disk, and what a build or
   a version control system leaves behind is walked past.
 * A live grep on Ctrl+Shift+F, in the same finder: ripgrep is run on the

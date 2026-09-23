@@ -14,6 +14,7 @@ module Ned.Picker
   , openPicker
   , closePicker
   , restock
+  , untilSettled
   , pickerSig
 
     -- * Its rows
@@ -73,6 +74,9 @@ data Picker = Picker
   -- ^ The prompt; for a live source, ahead of the query.
   , pkQuery :: !Text
   -- ^ What the rows answer.
+  , pkEditedAt :: !Double
+  -- ^ When the prompt last changed, which for a live source is what says
+  -- whether typing has paused.
   , pkSlab :: !Fuzzy.Slab
   , pkPattern :: !Fuzzy.Pattern
   -- ^ The query compiled, so the rows can ask which characters matched.
@@ -133,6 +137,7 @@ openPicker source root = do
       , pkRoot = root
       , pkTyped = ""
       , pkQuery = ""
+      , pkEditedAt = 0
       , pkSlab = slab
       , pkPattern = pattern_
       , pkCell = cell
@@ -199,17 +204,20 @@ batchSink cell gen batch = atomicModifyIORef' cell take'
 
 -- | Take in whatever the gatherer has found since the last frame, and answer
 -- the query against it. The matcher is asked on every keystroke; a live
--- source is asked only when typing has paused, and what the old query found
--- stays up until the new one has rows, which is when the keyboard goes back
--- to the top. Rows that merely arrived leave it where it was.
+-- source is asked only when typing has paused ('settleDelay'), the prompt has
+-- been emptied, or Enter was pressed, and what the old query found stays up
+-- until the new one has rows, which is when the keyboard goes back to the
+-- top. Rows that merely arrived leave it where it was.
 restock :: Picker -> Text -> Bool -> IO Picker
-restock pk0 typed settled
+restock pk0 typed submitted
   | srcLive (pkSource pk0) = do
       now <- getMonotonicTime
+      let editedAt = if typed /= pkTyped pk0 then now else pkEditedAt pk0
+          settled = submitted || T.null typed || now - editedAt >= settleDelay
       pk1 <-
         if settled && typed /= pkQuery pk0
-          then gather (Just (now + 1)) pk0 {pkTyped = typed, pkQuery = typed}
-          else pure pk0 {pkTyped = typed}
+          then gather (Just (now + 1)) pk0 {pkTyped = typed, pkQuery = typed, pkEditedAt = editedAt}
+          else pure pk0 {pkTyped = typed, pkEditedAt = editedAt}
       pk <- harvest now pk1
       -- Stale rows stood down for rows of the new query is a new list: the
       -- keyboard goes back to the top.
@@ -220,6 +228,20 @@ restock pk0 typed settled
           pk1 = pk0 {pkTyped = typed, pkQuery = typed}
       pk <- harvest 0 pk1
       if changed || pkTaken pk /= pkTaken pk1 then rematch changed pk else pure pk
+
+-- | How long typing into a live source's prompt has to pause before the
+-- query is asked.
+settleDelay :: Double
+settleDelay = 0.2
+
+-- | How long until a live source's prompt, typed ahead of its query, settles:
+-- the frame then is the one that asks it, and nothing else would wake for it.
+untilSettled :: Picker -> IO (Maybe Double)
+untilSettled pk
+  | srcLive (pkSource pk) && pkTyped pk /= pkQuery pk = do
+      now <- getMonotonicTime
+      pure (Just (max 0 (pkEditedAt pk + settleDelay - now) + 0.001))
+  | otherwise = pure Nothing
 
 -- | Fold the batches the gatherer has left into the rows the matcher scans.
 -- Stale rows are kept until the gatherer has handed some over, or has

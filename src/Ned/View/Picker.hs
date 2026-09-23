@@ -1,7 +1,7 @@
 -- | The fuzzy finder's panel: the prompt over the rows that answer it, with a
--- preview of the one the keyboard is on beside them, and the keys that work
--- here along the foot. It is a modal over the window, so while it is up it is
--- the only thing that reads a key.
+-- preview of the one the keyboard is on beside them, and nothing else. It is
+-- a modal over the window, so while it is up it is the only thing that reads
+-- a key.
 --
 -- What the finder holds, and what gathering, matching and reading a preview
 -- do to it, are "Ned.Picker"'s; this is what it looks like and what the keys
@@ -13,6 +13,8 @@ module Ned.View.Picker
   ) where
 
 import Control.Monad (unless, void, when)
+import Data.ByteString (ByteString)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Primitive.SmallArray (SmallArray, indexSmallArray, sizeofSmallArray, smallArrayFromList)
 import Data.Text (Text)
@@ -21,6 +23,7 @@ import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import Effectful (Eff, type (:>))
 import NanoUI
+import qualified NanoUI.Adornment as A
 import Ned.Editor (cellWidth, defaultFontSize)
 import Ned.Highlight (TokenKind (..), langName, languageFor)
 import Ned.Picker
@@ -42,80 +45,111 @@ pickerOverlay :: Ui :> es => Maybe Picker -> Eff es (Maybe Picker, Maybe Item)
 pickerOverlay mpk = do
   winW <- windowWidth
   winH <- windowHeight
-  -- Whole pixels, so that the panel's edges land on the pixel grid.
+  -- As much of the window as a modal is given, in whole pixels so that the
+  -- panel's edges land on the pixel grid. The body starts at the rule under
+  -- the title and ends at the panel's foot, with nothing between.
   let whole v = fromIntegral (floor v :: Int)
-      panelW = whole (clamp 500 1620 (winW - 40))
-      panelH = whole (clamp 320 1160 (winH - 40))
+      panelW = whole (max 500 (winW - 28))
+      panelH = whole (max 320 (winH - 28))
   (closeResp, out) <-
-    modalWith (fixedWH panelW panelH) (isJust mpk) (maybe "" (srcTitle . pkSource) mpk) $
-      maybe (pure (Nothing, Nothing)) pickerBody mpk
+    modalWith (fixedWH panelW panelH . gap 0 . padLRTB 10 10 0 10) (isJust mpk) (maybe "" (srcTitle . pkSource) mpk) $
+      maybe (pure (Nothing, Nothing)) (pickerBody (panelW - 20)) mpk
   let (kept, chosen) = fromMaybe (Nothing, Nothing) out
       left = if respClicked closeResp then Nothing else kept
   -- Whatever put it away, the gathering thread is told to stop.
   when (isNothing left) (mapM_ (uiIO . closePicker) mpk)
   pure (left, chosen)
 
--- | The panel: the prompt over the rows, with the preview beside them, and
--- the keys that work here along the foot. It is set in the editor's font, at
--- the size the editor starts at.
-pickerBody :: Ui :> es => Picker -> Eff es (Maybe Picker, Maybe Item)
-pickerBody pk0 = do
+-- | The panel, @bodyW@ wide: the prompt over the rows down the left, and the
+-- heading of the file the keyboard is on over its preview down the right,
+-- the two halves of it the same height so one rule runs under both. It is
+-- set in the editor's font, at the size the editor starts at.
+pickerBody :: Ui :> es => Float -> Picker -> Eff es (Maybe Picker, Maybe Item)
+pickerBody bodyW pk0 = do
   fm <- resolveFontUi defaultFontSize WeightNormal FontStyleNormal FontMono
   cellW <- cellWidth (lineWidthUi fm)
-  columnWith (tight . gap 0 . fillW . fillH) $ do
-    -- The prompt, which keeps the keyboard for as long as the finder is up.
-    -- It is a search input, which says whether typing has paused -- that is
-    -- when a live source is asked again -- and Enter counts as settled too:
-    -- the rows from before the pause are for something else, and Enter does
-    -- not open one of them.
-    (typed, settled) <-
-      rowWith (padXY 0 0 . tight . fillW . gap 8 . alignMid) $ do
-        (resp, txt) <-
-          searchInputConfigured'
-            defaultSearchInputConfig {sicPlaceholder = srcPrompt (pkSource pk0), sicDebounceMs = 200}
-            (pkTyped pk0)
-        holdFocus (respId resp)
-        labelWith (tight . fontMuted . alignMid) (counted pk0)
-        pure (txt, respChanged resp || respSubmitted resp)
-    pk1 <- uiIO (restock pk0 typed settled)
-    -- The rule under the prompt spans the body, so where it was laid out
-    -- last frame says how wide the body is, which the column of rows takes
-    -- its share of.
-    ruleId <- currentId
-    separator
-    bodyW <- maybe 900 rectW <$> lastRect ruleId
-    (pk3, chosen, closed) <- rowWith (grow . gap 0 . padAll 0) $ do
-      (pk2, chosen, closed) <- rowsPane fm cellW (fromIntegral (round (min (bodyW * 0.42) (60 * cellW)) :: Int)) pk1
+  let rowsW = fromIntegral (round (min (bodyW * 0.42) (60 * cellW)) :: Int)
+      headH = fromIntegral (round (lineHeight fm + 10) :: Int)
+  rowWith (tight . gap 0 . fillW . fillH) $ do
+    (pk2, chosen, closed) <- columnWith (tight . gap 0 . fixedW rowsW . fillH) $ do
+      -- The prompt, which keeps the keyboard for as long as the finder is
+      -- up. A live source is asked again once typing into it has paused, and
+      -- Enter asks at once: the rows from before the pause are for something
+      -- else, and Enter does not open one of them.
+      (resp, typed) <- prompt headH pk0
+      holdFocus (respId resp)
+      pk1 <- uiIO (restock pk0 typed (respSubmitted resp))
+      uiIO (untilSettled pk1) >>= mapM_ wakeAfter
       separator
-      -- The preview: a heading that says what the file is, over the head of
-      -- it in the colours the editor would open it in.
-      pk3 <- uiIO (ensurePreview pk2) >>= \pkp ->
-        columnWith (tight . gap 0 . grow . fillH) $ previewHeading pkp >> previewBody fm cellW pkp
-      pure (pk3, chosen, closed)
+      rowsPane fm cellW rowsW pk1
     separator
-    rowWith (padLRTB 0 0 8 0 . tight . fillW . gap 16 . alignMid) $
-      mapM_
-        ( \(k, what) -> rowWith (tight . gap 5 . alignMid) $ do
-            labelWith (tight . alignMid) k
-            labelWith (tight . fontMuted . alignMid) what
-        )
-        [ ("Enter", "open")
-        , ("\x2191 \x2193", "move")
-        , ("Ctrl+D  Ctrl+U", "scroll the file")
-        , ("Esc", "close")
-        ]
+    -- The preview: a heading that says what the file is, over the head of it
+    -- in the colours the editor would open it in.
+    pk3 <- uiIO (ensurePreview pk2) >>= \pkp ->
+      columnWith (tight . gap 0 . grow . fillH) $ do
+        previewHeading headH pkp
+        separator
+        previewBody fm cellW pkp
     pure (if closed || isJust chosen then Nothing else Just pk3, chosen)
+
+-- | The prompt, @h@ tall: a bare field on the panel's own colour, with a
+-- magnifier before what is typed, and after it the count of what answered
+-- and, while there is something to clear, a button that clears it. A press
+-- on that button is its own: the field keeps the keyboard and its caret.
+prompt :: Ui :> es => Float -> Picker -> Eff es (Response, Text)
+prompt h pk = do
+  cleared <- uiIO (newIORef False)
+  -- A small button with no fill of its own, muted like the rest of what the
+  -- field draws beside its text.
+  let quiet t = subtle (buttonStyle (foreground (themeMuted t)) t)
+      clearButton = buttonConfigured defaultButtonConfig {bcLayout = (tight . fixedWH 20 20) defaultLayout, bcAdornments = A.leading (A.iconSized 12 clearIcon)} ""
+      clear = whenM (styled quiet clearButton) (uiIO (writeIORef cleared True))
+  (resp, typed) <-
+    styled bare $
+      textInputConfigured'
+        defaultTextInputConfig
+          { ticPlaceholder = srcPrompt (pkSource pk)
+          , ticLayout = (fillW . fixedH h . fontSize defaultFontSize) defaultLayout
+          , ticAdornments =
+              A.leading (A.iconSized 14 searchIcon)
+                <> A.trailing (A.affix counted)
+                <> (if T.null (pkTyped pk) then mempty else A.trailing (A.control clear))
+          }
+        (pkTyped pk)
+  -- The field takes the empty prompt up as the caller's next frame.
+  wasCleared <- uiIO (readIORef cleared)
+  pure (resp, if wasCleared then "" else typed)
   where
+    bare t = inputStyle (borderWidth 0 . cornerRadius 0 . background (themeWindow t)) t
     -- What answered, out of what there is: @48/1203@, with the gatherer's
     -- progress while it is still running. A live source's rows all answer.
-    counted pk
+    counted
       | srcLive (pkSource pk) = showT (hitCount pk) <> pending
       | otherwise = showT (hitCount pk) <> "/" <> showT (pkTaken pk) <> pending
-      where
-        pending = if pkDone pk && pkTyped pk == pkQuery pk then "" else "\x2026"
+    pending = if pkDone pk && pkTyped pk == pkQuery pk then "" else "\x2026"
 
 showT :: Int -> Text
 showT = T.pack . show
+
+-- | The prompt's icons, drawn in whatever colour the field gives them.
+searchIcon, clearIcon :: Svg
+searchIcon =
+  icon
+    "<svg viewBox='0 0 16 16' fill='none' stroke='currentColor' stroke-width='1.6' stroke-linecap='round'>\
+    \<circle cx='6.5' cy='6.5' r='4.5'/><line x1='10' y1='10' x2='14' y2='14'/></svg>"
+clearIcon =
+  icon
+    "<svg viewBox='0 0 16 16' fill='none' stroke='currentColor' stroke-width='1.6' stroke-linecap='round'>\
+    \<line x1='4' y1='4' x2='12' y2='12'/><line x1='12' y1='4' x2='4' y2='12'/></svg>"
+
+icon :: ByteString -> Svg
+icon = either (error . ("Ned.View.Picker: an icon did not parse: " <>)) id . parseSvg
+
+-- | A scroller in a floating panel is framed in the panel's border, which
+-- the rows and the preview, drawn to the scroller's edges, would paint over.
+-- The rules between the parts of the panel already say where each ends.
+borderless :: Ui :> es => Eff es a -> Eff es a
+borderless = styled (windowStyle (borderWidth 0))
 
 -- | Whether a chord of Ctrl and this letter was typed this frame.
 chorded :: Input -> Char -> Bool
@@ -217,7 +251,7 @@ rowsPane fm cellW rowsW pk0 = do
       inView = fromIntegral (max 0 (last' - first + 1)) * lineH
       below = fromIntegral (max 0 (count - last' - 1)) * lineH
   _ <-
-    scrollArea (tight . gap 0 . fillH . fixedW rowsW) $
+    borderless . scrollArea (tight . gap 0 . fillH . fixedW rowsW) $
       if count <= 0
         then scope $ columnWith (padXY (rowMark + rowPad) 6 . tight . fillW) $
           void (richTextWith (fillW . fontMuted) [inlineText emptyNote])
@@ -359,11 +393,11 @@ clipFront cells txt
 --------------------------------------------------------------------------------
 
 -- | Where the file is and what it is, with its length and its language as the
--- status bar says them. The path is worked out from the file rather than
+-- status bar says them, @h@ tall so that it lines up with the prompt. The path is worked out from the file rather than
 -- taken from the row, which for a grep hit is a line of code.
-previewHeading :: Ui :> es => Picker -> Eff es ()
-previewHeading pk =
-  rowWith (padXY 10 6 . tight . fillW . gap 12 . alignMid) $ case currentItem pk of
+previewHeading :: Ui :> es => Float -> Picker -> Eff es ()
+previewHeading h pk =
+  rowWith (padXY rowPad 0 . tight . fillW . fixedH h . gap 12 . alignMid) $ case currentItem pk of
     Nothing -> labelWith (tight . fontMuted . alignMid) " "
     Just item -> do
       let (folder, name) = T.breakOnEnd "/" (relative (pkRoot pk) (itemPath item))
@@ -431,7 +465,7 @@ previewBody fm cellW pk0
               , csViewW = viewW
               }
       _ <-
-        scrollArea2D (tight . gap 0 . grow . fillH) $
+        borderless . scrollArea2D (tight . gap 0 . grow . fillH) $
           customWidget
             defaultCustomWidgetSpec
               { widgetLayout = fixedWH contentW contentH defaultLayout

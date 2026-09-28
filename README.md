@@ -75,11 +75,12 @@ Keep `C:\msys64\ucrt64\bin` on `PATH` when running `ned.exe`.
 ## Vim keys
 
 The mode is on the left of the status bar, with a command's keys as they are
-typed. The caret does not blink, and is a block in normal and visual mode; insert mode is the editor's
-own keys, so the shortcuts above work there too, except Ctrl+N, Ctrl+P and
-Ctrl+W, which are vim's (below). New tab, find file and close tab are still
-on the File menu, and on `SPC f f`, `:tabnew` and `:q`. Yanks and puts go through
-the system clipboard, and what ends in a line break is put as whole lines.
+typed. The caret does not blink, and is a block in normal and visual mode;
+insert mode is the editor's own keys, so the shortcuts above work there too,
+except Ctrl+N, Ctrl+P and Ctrl+W, which are vim's (below). New tab, find file
+and close tab are still on the File menu, and on `SPC f f`, `:tabnew` and
+`:q`. Yanks and puts go through the system clipboard, and `p` and `P` put
+text that ends in a line break as whole lines.
 
 | Keys | |
 | --- | --- |
@@ -138,9 +139,9 @@ mode, and Ctrl+N and Ctrl+P open the menu as Tab does.
 
 ## Configuration
 
-Settings are read from `config.dhall` in `~/.config/ned` (`%APPDATA%\ned` on
-Windows). The file is [Dhall](https://dhall-lang.org), laid over the defaults,
-so it only needs the fields it changes:
+ned reads its settings from `config.dhall` in `~/.config/ned` (`%APPDATA%\ned`
+on Windows). The file is [Dhall](https://dhall-lang.org), laid over the
+defaults, so it only needs the fields it changes:
 
 ```dhall
 { uiFontSize = 17.0
@@ -173,23 +174,24 @@ cabal run ned -- --default-config > ~/.config/ned/config.dhall
 A misspelled field or a value of the wrong type is an error: ned prints it and
 starts with the defaults. Sizes are Doubles, so write `18.0`, not `18`.
 
-The file is reloaded when it is saved while ned is open. Only the settings
-the edit changed are applied, so a toggle from the View menu stays unless the
+ned reloads the file when you save it while ned is open. It applies only the
+settings the edit changed, so a toggle from the View menu stays unless the
 file changes that setting. `uiFontSize` and `bufferFont` take effect on
 restart, and the window size only applies when the window opens. A file that
 does not read while ned is open leaves the current settings in place.
 
 ### Language servers
 
-A language server is started when a file of its language is opened, and is
-sent the file's text as it changes. Its diagnostics are underlined: red for
-errors, yellow for warnings, blue for the rest. With vim keys, `g]` and `g[`
+ned starts a language server when you open a file of its language, and sends
+it the file's text as it changes. It underlines the server's diagnostics: red
+for errors, yellow for warnings, blue for the rest. With vim keys, `g]` and `g[`
 jump to the next and previous one and show its message on the status bar.
 Ctrl+] (or `gd`) goes to a definition, and `K` shows the hover documentation,
 rendered as markdown, under the caret until it moves.
 
 The language is the name the status bar shows for the file, compared without
-case. The command runs through `languageServerShell`, in the folder the file tree is on:
+case. The command runs through `languageServerShell`, in the folder the file
+tree is on:
 
 ```dhall
 { languageServers =
@@ -199,8 +201,9 @@ case. The command runs through `languageServerShell`, in the folder the file tre
 }
 ```
 
-The server's stderr goes to the terminal ned was started from. A server that fails
-to start is not tried again while you type; Ctrl+], `gd` or `K` tries it again.
+The server's stderr goes to the terminal you started ned from. ned does not
+retry a server that fails to start while you type; Ctrl+], `gd` or `K` tries
+it again.
 
 ### Projects
 

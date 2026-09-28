@@ -49,6 +49,8 @@ data Editor = Editor
   -- ^ A version of the text, a line, and the lexer state that line starts in.
   , edFindExact :: !Bool
   -- ^ Whether a match is matched in its case.
+  , edFindWord :: !Bool
+  -- ^ Whether a match has to be a whole word.
   , edReveal :: !Bool
   -- ^ Asks the next frame to scroll the caret into view.
   , edViewLines :: !Int
@@ -82,6 +84,7 @@ newEditor lang buf =
     , edBlinkEpoch = 0
     , edLexCache = (-1, 0, LexNormal)
     , edFindExact = False
+    , edFindWord = False
     , edReveal = True
     , edViewLines = 1
     , edPressed = False

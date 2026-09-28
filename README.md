@@ -60,7 +60,7 @@ Keep `C:\msys64\ucrt64\bin` on your `PATH` when running `ned.exe`.
 | `Ctrl+B` | Toggle file tree |
 | `Ctrl+P` | Find a file; `Ctrl+U` / `Ctrl+D` scroll the preview |
 | `Ctrl+Shift+F` | Search in files |
-| `Ctrl+F` | Find; `Enter` / `Shift+Enter` for next / previous |
+| `Ctrl+F` | Find; `Enter` / `Shift+Enter` for next / previous (with Vim keys, `Enter` returns to the text) |
 | `Ctrl+G` | Go to line |
 | `Ctrl+]` | Go to definition |
 | `Tab` / `Shift+Tab` | Complete the word before the caret, or indent / unindent |
@@ -78,7 +78,7 @@ Turn Vim keys off from the View menu. Insert mode keeps the shortcuts above, exc
 | Text objects | `iw aw`, `i( a(` / `ib ab`, `i{ a{` / `iB aB`, `i[ a[`, `i< a<`, `i" a"`, `i' a'` |
 | Edits | `i a I A o O`, `x X s S D C Y`, `p P`, `J`, `r`, `~`, `u` / `Ctrl+R` |
 | Visual | `v V`, with motions, text objects, `o`, `d y c > < p J ~ u U`, and `:` over the selected lines |
-| Search | `/`, `n N`, `:noh` |
+| Search | `/` then `Enter`, `n N`, `*` `#` for the word under the caret or the selection, `:noh` |
 | Language server | `gd`, `K` for hover, `g]` / `g[` for the next / previous diagnostic |
 | Panes | `Ctrl+H` / `Ctrl+L` to the file tree and back, `Ctrl+J` / `Ctrl+K` to the find bar and back |
 | Files and tabs | `:w`, `:q`, `:q!`, `:wq`, `:x`, `:qa`, `ZZ`, `ZQ`, `:e[!] [file]`, `:enew`, `:tabnew [file]`, `:tabe file`, `gt gT`, `:tabn`, `:tabp` |

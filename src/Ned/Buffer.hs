@@ -90,6 +90,7 @@ module Ned.Buffer
   , canRedo
 
     -- * Search
+  , Matching (..)
   , findNext
   , findPrev
   ) where
@@ -100,7 +101,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.NanoRope.Measured (Position (..), Rope, Unit (..))
 import qualified Data.Text.NanoRope.Measured as Rope
-import Ned.Text (Width, cellOfCol, cellsAt, clamp, classOf, foldCase, indentOf, longLineLimit, tabWidth, widest)
+import Ned.Text (Width, cellOfCol, cellsAt, clamp, classOf, foldCase, indentOf, longLineLimit, tabWidth, wholeWord, widest)
 
 --------------------------------------------------------------------------------
 -- Buffers
@@ -647,18 +648,45 @@ redo b = case bufRedo b of
 searchWindowFor :: Int -> Int
 searchWindowFor n = max 65536 (2 * n)
 
+-- | How a search matches its needle.
+data Matching = Matching
+  { matchExact :: !Bool
+  -- ^ In its case, rather than without regard to ASCII case.
+  , matchWord :: !Bool
+  -- ^ Only where it stands as a whole word.
+  }
+  deriving (Eq, Show)
+
 -- | What a search compares: the text as it is when the flag is set, and
 -- otherwise with its ASCII letters folded, which keeps every offset in place.
 matchCase :: Bool -> Text -> Text
 matchCase exact = if exact then id else foldCase
 
+-- | Where a needle starts in a text, every place in order, overlapping ones
+-- too.
+matchesIn :: Text -> Text -> [Int]
+matchesIn needle = go 0
+  where
+    go !at t = case T.breakOn needle t of
+      (_, m) | T.null m -> []
+      (pre, m) -> let i = at + T.length pre in i : go (i + 1) (T.drop 1 m)
+
+-- | The matches of a needle in the text between two offsets that the
+-- matching takes.
+matchesBetween :: Matching -> Text -> Int -> Int -> Buffer -> [Int]
+matchesBetween m needle from to b =
+  filter fits (map (from +) (matchesIn (matchCase (matchExact m) needle) (matchCase (matchExact m) (Rope.sliceText Chars from to (bufRope b)))))
+  where
+    n = T.length needle
+    fits i = not (matchWord m) || wholeWord needle (charAt (i - 1)) (charAt (i + n))
+    charAt i = if i < 0 || i >= size b then Nothing else fst <$> T.uncons (Rope.sliceText Chars i (i + 1) (bufRope b))
+
 -- | The first match at or after an offset, going around the end of the text.
-findFrom :: Bool -> Text -> Int -> Buffer -> Maybe Int
-findFrom exact needle0 from b
+findFrom :: Matching -> Text -> Int -> Buffer -> Maybe Int
+findFrom m needle from b
   | T.null needle = Nothing
   | otherwise = scan from (size b) <|> scan 0 (min (size b) (from + n - 1))
   where
-    needle = matchCase exact needle0
     n = T.length needle
     -- Windows overlap by the needle less one, so a match across a seam is
     -- found in the next window.
@@ -666,41 +694,46 @@ findFrom exact needle0 from b
       | at + n > end = Nothing
       | otherwise =
           let to = min end (at + searchWindowFor n)
-              (pre, match) = T.breakOn needle (matchCase exact (Rope.sliceText Chars at to (bufRope b)))
-           in if not (T.null match)
-                then Just (at + T.length pre)
-                else if to >= end then Nothing else scan (to - n + 1) end
+           in case matchesBetween m needle at to b of
+                i : _ -> Just i
+                [] -> if to >= end then Nothing else scan (to - n + 1) end
 
 -- | The last match ending at or before an offset, going around the start.
-findBack :: Bool -> Text -> Int -> Buffer -> Maybe Int
-findBack exact needle0 before b
+findBack :: Matching -> Text -> Int -> Buffer -> Maybe Int
+findBack m needle before b
   | T.null needle = Nothing
   | otherwise = scan before 0 <|> scan (size b) (max 0 (before - n + 1))
   where
-    needle = matchCase exact needle0
     n = T.length needle
     scan !end !start
       | end - n < start = Nothing
       | otherwise =
           let from = max start (end - searchWindowFor n)
-              -- Everything up to the end of the last match, or nothing.
-              (pre, _) = T.breakOnEnd needle (matchCase exact (Rope.sliceText Chars from end (bufRope b)))
-           in if not (T.null pre)
-                then Just (from + T.length pre - n)
-                else if from <= start then Nothing else scan (from + n - 1) start
+           in case lastBetween from end of
+                Nothing -> if from <= start then Nothing else scan (from + n - 1) start
+                found -> found
+    -- Without whole words the window is searched from its end, rather than
+    -- through every match in it, which for a long needle is slow.
+    lastBetween from end
+      | matchWord m = case matchesBetween m needle from end b of
+          [] -> Nothing
+          is -> Just (last is)
+      | otherwise =
+          let fold = matchCase (matchExact m)
+              (pre, _) = T.breakOnEnd (fold needle) (fold (Rope.sliceText Chars from end (bufRope b)))
+           in if T.null pre then Nothing else Just (from + T.length pre - n)
 
--- | Select the next match after the selection. The needle is matched as it is
--- when the flag is set, and without regard to ASCII case otherwise.
-findNext :: Bool -> Text -> Buffer -> Maybe Buffer
-findNext exact needle b =
+-- | Select the next match after the selection.
+findNext :: Matching -> Text -> Buffer -> Maybe Buffer
+findNext m needle b =
   let from = if hasSelection b then fst (selectionRange b) + 1 else bufCursor b
-   in select needle b <$> findFrom exact needle (min (size b) from) b
+   in select needle b <$> findFrom m needle (min (size b) from) b
 
 -- | Select the previous match before the selection.
-findPrev :: Bool -> Text -> Buffer -> Maybe Buffer
-findPrev exact needle b =
+findPrev :: Matching -> Text -> Buffer -> Maybe Buffer
+findPrev m needle b =
   let before = if hasSelection b then snd (selectionRange b) - 1 else bufCursor b
-   in select needle b <$> findBack exact needle (max 0 before) b
+   in select needle b <$> findBack m needle (max 0 before) b
 
 select :: Text -> Buffer -> Int -> Buffer
 select needle b i = moved b {bufAnchor = i, bufCursor = i + T.length needle}

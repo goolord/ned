@@ -90,21 +90,30 @@ main = do
 
   -- Search -------------------------------------------------------------------
   let hay = B.fromText (T.replicate 30000 "abc " <> "Needle" <> T.replicate 30000 " xyz" <> "needle")
-  check "find ignores case" (Just 120000) (B.bufAnchor <$> B.findNext False "needle" hay)
-  check "find exact" (Just 240006) (B.bufAnchor <$> B.findNext True "needle" hay)
-  check "find wraps" (Just 120000) (B.bufAnchor <$> (B.findNext False "needle" hay >>= B.findNext False "needle" >>= B.findNext False "needle"))
-  check "find backwards wraps" (Just 240006) (B.bufAnchor <$> B.findPrev False "needle" hay)
-  check "find nothing" Nothing (B.bufAnchor <$> B.findNext False "absent" hay)
+  check "find ignores case" (Just 120000) (B.bufAnchor <$> B.findNext (B.Matching False False) "needle" hay)
+  check "find exact" (Just 240006) (B.bufAnchor <$> B.findNext (B.Matching True False) "needle" hay)
+  check "find wraps" (Just 120000) (B.bufAnchor <$> (B.findNext (B.Matching False False) "needle" hay >>= B.findNext (B.Matching False False) "needle" >>= B.findNext (B.Matching False False) "needle"))
+  check "find backwards wraps" (Just 240006) (B.bufAnchor <$> B.findPrev (B.Matching False False) "needle" hay)
+  check "find nothing" Nothing (B.bufAnchor <$> B.findNext (B.Matching False False) "absent" hay)
   -- A match lying across the seam of two search windows.
   let seam = B.fromText (T.replicate 65530 "." <> "straddle" <> "....")
-  check "find across windows" (Just 65530) (B.bufAnchor <$> B.findNext True "straddle" seam)
-  check "find back across windows" (Just 65530) (B.bufAnchor <$> B.findPrev True "straddle" (B.moveDocEnd False seam))
+  check "find across windows" (Just 65530) (B.bufAnchor <$> B.findNext (B.Matching True False) "straddle" seam)
+  check "find back across windows" (Just 65530) (B.bufAnchor <$> B.findPrev (B.Matching True False) "straddle" (B.moveDocEnd False seam))
 
   -- A needle longer than a search window.
   let big = T.replicate 70000 "z"
-  check "find a needle longer than the window" (Just 3) (B.bufAnchor <$> B.findNext True big (B.fromText ("abc" <> big <> "def")))
-  check "and miss one" Nothing (B.bufAnchor <$> B.findNext True (big <> "q") (B.fromText (T.replicate 200000 "z")))
-  check "and backwards" (Just 3) (B.bufAnchor <$> B.findPrev True big (B.moveDocEnd False (B.fromText ("abc" <> big <> "def"))))
+  check "find a needle longer than the window" (Just 3) (B.bufAnchor <$> B.findNext (B.Matching True False) big (B.fromText ("abc" <> big <> "def")))
+  check "and miss one" Nothing (B.bufAnchor <$> B.findNext (B.Matching True False) (big <> "q") (B.fromText (T.replicate 200000 "z")))
+  check "and backwards" (Just 3) (B.bufAnchor <$> B.findPrev (B.Matching True False) big (B.moveDocEnd False (B.fromText ("abc" <> big <> "def"))))
+
+  -- Whole words.
+  let words' = B.fromText "foobar foo_x foo(foo) foo"
+      whole = B.Matching False True
+  check "a whole word skips the longer ones" (Just 13) (B.bufAnchor <$> B.findNext whole "foo" words')
+  check "and goes around to the first" (Just 13) (B.bufAnchor <$> (B.findNext whole "foo" words' >>= B.findNext whole "foo" >>= B.findNext whole "foo" >>= B.findNext whole "foo"))
+  check "a whole word backwards" (Just 22) (B.bufAnchor <$> B.findPrev whole "foo" words')
+  check "a needle starting in punctuation needs no boundary there" (Just 16) (B.bufAnchor <$> B.findNext whole "(foo" words')
+  check "no whole word at all" Nothing (B.bufAnchor <$> B.findNext whole "oo" words')
 
   -- Long lines ---------------------------------------------------------------
   let long = B.fromText (T.replicate 100000 "x" <> "\nshort")
@@ -216,6 +225,14 @@ main = do
   asked src " d" >>= check "the leader shows the tree" [ToggleTree]
   asked src ":wq\r" >>= check ":wq saves and closes" [Save, Quit False]
   asked src "ngt" >>= check "n and gt" [FindAgain True, NextTab True]
+  let askedAt t at ks = do
+        (v, b) <- feedKeys (Clip (pure Nothing) (const (pure ()))) 20 ks (newVim, B.setCursor False at (B.fromText t))
+        pure (vimRequests v, B.bufCursor b, vimMode v)
+  askedAt src 5 "*" >>= check "* finds the word the caret is on" ([Search "bar" True True], 5, Normal)
+  askedAt src 3 "#" >>= check "# finds the next word along the line, backwards" ([Search "bar" True False], 3, Normal)
+  askedAt src 17 "*" >>= check "* on a bracket finds the word after it" ([Search "a" True True], 17, Normal)
+  askedAt src 22 "*" >>= check "* past the last word says so" ([Message "No word under the caret"], 22, Normal)
+  askedAt src 5 "vl*" >>= check "* in visual mode finds the selection from its start" ([Search "ar" False True], 5, Normal)
   asked src ":nope\r" >>= check "an unknown command says so" [Message "Not an editor command: nope"]
   asked src ":e other.txt\r" >>= check ":e opens a file in the tab" [Edit "other.txt" False]
   asked src ":e\r" >>= check ":e with no changes reads the file again" [Revert]

@@ -153,3 +153,9 @@
   it, and its servers run in that project's root. A root is absolute, under
   `~`, or from the settings file's folder. A window setting in a project is
   an error that says so.
+* Vim's `*` and `#` find the word under the caret, as a whole word, forward
+  and backward; in visual mode they find the selected text. The find bar
+  comes up to show the matches but leaves the keyboard with the text, so `n`
+  and `N` go on from there. With vim's keys, Enter in the find bar ends the
+  search: the caret stays on the match and the keyboard goes back to the
+  text. The find bar has a Whole word box, which `/` clears.

@@ -37,7 +37,7 @@ import NanoUI (Input (..), Key (..), Modifiers (..), NanoUI, foldInputKeys, getC
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
 import Ned.Editor.Keys (applyKeys)
-import Ned.Text (clamp, classOf, indentOf, longLineLimit)
+import Ned.Text (CharClass (..), clamp, classOf, indentOf, longLineLimit)
 import Text.Read (readMaybe)
 import Text.Regex.TDFA (CompOption (..), ExecOption (..), Regex, defaultCompOpt, defaultExecOpt, matchAllText)
 import Text.Regex.TDFA.Text (compile)
@@ -81,6 +81,9 @@ data Request
   | FindBar
   | -- | The next match of what the find bar holds, or the previous one.
     FindAgain !Bool
+  | -- | Find a text, as a whole word with the first flag, and the next match
+    -- of it with the second or the previous one without.
+    Search !Text !Bool !Bool
   | Save
   | -- | Close the tab, or quit with the last one; with the flag, whatever
     -- would be lost.
@@ -377,6 +380,8 @@ command clip page v s0 = case vimMode v of
       "r" -> More
       ['r', ch] | ch >= ' ' -> pureStep (\v' b -> (v', replaceChars ch n b))
       "~" -> pureStep (\v' b -> (v', toggleCase n b))
+      [k] | k == '*' || k == '#' -> pureStep $ \v' b ->
+        (request [maybe (Message "No word under the caret") (\w -> Search w True (k == '*')) (wordUnder b)] v', b)
       "v" -> enter Visual
       "V" -> enter VisualLine
       _ -> Bad
@@ -386,6 +391,14 @@ command clip page v s0 = case vimMode v of
             let sp = visualSpan v' b
              in operate clip o (if whole then uncurry Lines (spanLines b sp) else sp) (min (vimAnchor v') (vimCursor v')) v' b
       [k] | k == 'p' || k == 'P' -> Got (putOver clip)
+      -- The selection's text, as it is, from where it starts.
+      [k] | k == '*' || k == '#' -> pureStep $ \v' b ->
+        let (i, j) = spanRange b (visualSpan v' b)
+            t = slice b i j
+            (v'', b') = leaveVisual v' b
+         in if T.any (== '\n') t
+              then (request [Message "Select within one line to search for it"] v', b)
+              else (request [Search t False (k == '*')] v'', B.setCursor False i b')
       "o" -> pureStep (\v' b -> (v' {vimAnchor = vimCursor v', vimCursor = vimAnchor v'}, b))
       "v" -> switch Visual
       "V" -> switch VisualLine
@@ -481,6 +494,18 @@ command clip page v s0 = case vimMode v of
 -- | Ask the application for something.
 request :: [Request] -> Vim -> Vim
 request rs v = v {vimRequests = vimRequests v ++ rs}
+
+-- | The word @*@ looks for: the one the caret is on, or else the next one
+-- along its line.
+wordUnder :: Buffer -> Maybe Text
+wordUnder b =
+  let st = B.lineStart b (line b)
+      (pre, post) = T.splitAt (B.bufCursor b - st) (slice b st (lineEnd b (line b)))
+      isWord c = classOf c == ClassWord
+      found = case T.uncons post of
+        Just (c, _) | isWord c -> T.takeWhileEnd isWord pre <> T.takeWhile isWord post
+        _ -> T.takeWhile isWord (T.dropWhile (not . isWord) post)
+   in if T.null found then Nothing else Just found
 
 -- | Keep a find for ; and , to repeat.
 remember :: Motion -> Vim -> Vim

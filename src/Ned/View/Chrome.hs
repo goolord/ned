@@ -42,6 +42,7 @@ import Ned.FileTree (hasParentRoot)
 import qualified Ned.FileTree as FT
 import Ned.Highlight (langName)
 import qualified Ned.Picker as P
+import Ned.Text (foldCase)
 import Ned.Theme (closeRed, menuChrome, windowEdge)
 import Text.Read (readMaybe)
 
@@ -312,6 +313,8 @@ editorBar ref app = case appBar app of
       -- field's.
       exact <- checkboxWith alignMid "Match case" (edFindExact (appEditor app))
       when (exact /= edFindExact (appEditor app)) (onEditor ref (\e -> e {edFindExact = exact}))
+      word <- checkboxWith alignMid "Whole word" (edFindWord (appEditor app))
+      when (word /= edFindWord (appEditor app)) (onEditor ref (\e -> e {edFindWord = word}))
       separator
       -- The buttons are subtle: a toolbar row does not want three filled
       -- grey chips, only the press and the hover to be seen.
@@ -321,7 +324,8 @@ editorBar ref app = case appBar app of
         whenM (buttonWith (tight . alignMid) "Close") (closeBar ref)
       enter <- pressedEnter
       shift <- heldShift
-      when enter (findMatch ref (not shift))
+      when enter $
+        if isJust (edVim (appEditor app)) then confirm shift else findMatch ref (not shift)
   BarGoto ->
     barRow "Go to line" (appGotoText app) $ \txt -> do
       when (txt /= appGotoText app) (modifyApp ref (\a -> a {appGotoText = txt}))
@@ -338,6 +342,17 @@ editorBar ref app = case appBar app of
       inp <- askInput
       pure (inputKeysElem KeyEnter (inputKeys inp) && appBarFocus app)
     heldShift = modShift . inputModifiers <$> askInput
+    -- Enter ends vim's search: the caret stays on the match typed to, or
+    -- goes to the next one if the query has not moved it there, and the
+    -- keyboard goes back to the text for n and N. Shift goes to the one
+    -- before.
+    confirm back = do
+      a <- readApp ref
+      let b = edBuffer (appEditor a)
+          fold = if edFindExact (appEditor a) then id else foldCase
+          onMatch = B.hasSelection b && fold (B.selectedText b) == fold (appFindText a)
+      when (back || not onMatch) (findPast ref (not back))
+      modifyApp ref (\a' -> a' {appBarFocus = False})
     -- Keep the keyboard in the bar's field while the bar has it.
     keepFocus resp = when (appBarFocus app) (holdFocus (respId resp))
     -- A bar: its name, its field, and whatever comes after the field. The

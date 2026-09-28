@@ -60,6 +60,7 @@ module Ned.App.Commands
   , openBar
   , closeBar
   , findMatch
+  , findPast
   , zoom
   , resetZoom
 
@@ -338,9 +339,17 @@ findMatch ref forward = do
       needle = appFindText a
       go = if forward then B.findNext else B.findPrev
   unless (T.null needle) $
-    case go (edFindExact ed) needle (edBuffer ed) of
+    case go (B.Matching (edFindExact ed) (edFindWord ed)) needle (edBuffer ed) of
       Just b -> onBuffer ref (const b) >> setStatus ref ""
       Nothing -> setStatus ref ("No match for " <> needle)
+
+-- | The same, from vim's caret. It is on the start of the match it went to,
+-- not selecting it: the character it is on stands for the match, to look
+-- past.
+findPast :: IORef App -> Bool -> NanoUI ()
+findPast ref forward = do
+  onBuffer ref (\b -> if B.hasSelection b then b else B.setCursor True (B.bufCursor b + 1) b)
+  findMatch ref forward
 
 zoom :: IORef App -> (Float -> Float) -> NanoUI ()
 zoom ref f = modifyApp ref $ \a ->
@@ -579,12 +588,15 @@ vimRequest ref = \case
   V.FindFile -> openPicker ref P.fileSource
   V.Grep -> openPicker ref P.grepSource
   V.ToggleTree -> toggleTree ref
-  V.FindBar -> openBar ref BarFind
-  -- Vim's caret is on the start of the match it went to, not selecting
-  -- it: the character it is on stands for the match, to look past.
-  V.FindAgain forward -> do
-    onBuffer ref (\b -> if B.hasSelection b then b else B.setCursor True (B.bufCursor b + 1) b)
-    findMatch ref forward
+  -- Vim's / looks for text wherever it is, not only as a whole word.
+  V.FindBar -> onEditor ref (\ed -> ed {edFindWord = False}) >> openBar ref BarFind
+  V.FindAgain forward -> findPast ref forward
+  -- The bar is put up to show what is marked, and the keyboard stays with
+  -- the text for n and N.
+  V.Search needle whole forward -> do
+    modifyApp ref (\a -> a {appBar = BarFind, appBarFocus = False, appFindText = needle})
+    onEditor ref (\ed -> ed {edFindWord = whole})
+    findPast ref forward
   V.Save -> save ref False
   V.Quit force -> do
     a <- readApp ref

@@ -23,6 +23,7 @@ module Ned.Text
   , CharClass (..)
   , classOf
   , indentOf
+  , wholeWord
 
     -- * Comparing
   , foldCase
@@ -178,6 +179,16 @@ classOf c
   | isSpace c = ClassSpace
   | isAlphaNum c || c == '_' || c == '\'' = ClassWord
   | otherwise = ClassPunct
+
+-- | Whether a match of a needle stands as a whole word between the
+-- characters either side of it, 'Nothing' at an end of the text. An end of
+-- the needle that is not a word character needs no boundary, as vim's @*@ puts
+-- none there.
+wholeWord :: Text -> Maybe Char -> Maybe Char -> Bool
+wholeWord needle before after = edge T.head before && edge T.last after
+  where
+    edge end c = T.null needle || not (isWord (end needle)) || maybe True (not . isWord) c
+    isWord x = classOf x == ClassWord
 
 -- | The spaces and tabs a line starts with.
 indentOf :: Text -> Text

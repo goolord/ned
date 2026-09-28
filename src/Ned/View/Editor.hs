@@ -28,7 +28,7 @@ import Ned.Complete (Candidate (..), Completion (..), Source, menuLimit)
 import Ned.Editor
 import Ned.Editor.Geometry
 import Ned.Highlight
-import Ned.Text (cellOfCol, cellsAt, clamp, foldCase, indentOf)
+import Ned.Text (cellOfCol, cellsAt, clamp, foldCase, indentOf, wholeWord)
 import Ned.Theme
 import Ned.View.Code
 import Ned.Widget (markOp, rounding, thumbSpan)
@@ -91,6 +91,7 @@ editorView textKey wantFocus marks diagnostics others ed0 = do
           , esCaretOn = efCaretOn fr
           , esFind = if edFindExact ed1 then marks else foldCase marks
           , esFindExact = edFindExact ed1
+          , esFindWord = edFindWord ed1
           , esDiagnostics = diagnostics
           , esThumbHot = efThumbHot fr
           , esThumbXHot = efThumbXHot fr
@@ -132,6 +133,7 @@ data EditorScene = EditorScene
   , esCaretOn :: !Bool
   , esFind :: !Text
   , esFindExact :: !Bool
+  , esFindWord :: !Bool
   , esDiagnostics :: ![(Int, Int, Int)]
   , esThumbHot :: !Bool
   , esThumbXHot :: !Bool
@@ -178,6 +180,7 @@ editorSceneKey which sc =
           , keyPart (esWhitespace sc)
           , keyPart (fromMaybe (-1) (esBlock sc))
           , keyPart (esFindExact sc)
+          , keyPart (esFindWord sc)
           , keyPart (esFind sc)
           , keyPart (show (esDiagnostics sc))
           , keyPart (langName (esLang sc))
@@ -296,13 +299,18 @@ drawEditor which sc own@(Rect ox oy ow oh) =
           let t = if esFindExact sc then rowText vr else foldCase (rowText vr)
               base = if rowLong vr then firstCell else 0
               n = T.length (esFind sc)
-              go !col rest = case T.breakOn (esFind sc) rest of
+              -- What is before a match: the end of the text before it, or
+              -- of the match before that.
+              go !col prev rest = case T.breakOn (esFind sc) rest of
                 (_, m) | T.null m -> []
                 (pre, m) ->
                   let c = col + T.length pre
-                   in band colFindMatch (rowLine vr) (cellIn vr (base + c)) (cellIn vr (base + c + n))
-                        ++ go (c + n) (T.drop n m)
-           in go 0 t
+                      before = maybe prev (Just . snd) (T.unsnoc pre)
+                      after = fst <$> T.uncons (T.drop n m)
+                      whole = not (esFindWord sc) || wholeWord (esFind sc) before after
+                   in (if whole then band colFindMatch (rowLine vr) (cellIn vr (base + c)) (cellIn vr (base + c + n)) else [])
+                        ++ go (c + n) (Just (T.last (esFind sc))) (T.drop n m)
+           in go 0 Nothing t
 
     -- The indentation of a line: a dot in the middle of each space, and a
     -- rule along each tab.

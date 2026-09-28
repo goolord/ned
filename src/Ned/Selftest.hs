@@ -24,7 +24,7 @@ import NanoUI.Internal.Context (Context (..))
 import NanoUI.Markdown (parseMarkdown)
 import NanoUI.Testing (cursorKindIs, needsRedraw, newPixelContext, uiCursorKind)
 import Ned.App
-import Ned.App.State (Doc (..), appDocs, docName, everyEditor, hoverAt, selectDoc)
+import Ned.App.State (Bar (..), Doc (..), appDocs, docName, everyEditor, hoverAt, selectDoc)
 import qualified Ned.Buffer as B
 import Ned.Complete (Candidate (..), Completion (..))
 import Ned.Config (Config (..), FileSettings (..), defaultConfig)
@@ -838,6 +838,35 @@ selftestIn dir mfile say = do
       Just pk -> fail ("selftest: the leader's keys were typed into the finder: " <> show (P.pkTyped pk))
       Nothing -> fail "selftest: SPC f f did not put the finder up"
     key plain KeyEscape
+
+    -- * finds the word under the caret as a whole word, and puts the find
+    -- bar up without taking the keyboard from the text, so n and N go on
+    -- from it. / puts the bar up with the keyboard, and Enter gives it back.
+    let findNow = (\a -> (B.bufCursor (edBuffer (appEditor a)), appBar a == BarFind, appBarFocus a)) <$> readIORef ref
+        expectFind what want = findNow >>= \got -> when (got /= want) (fail ("selftest: " <> what <> ": expected " <> show want <> ", got " <> show got))
+    typed "Sfoo foobar foo"
+    key plain KeyEscape
+    typed "0*"
+    idle
+    expectFind "* went to the next whole word" (11, True, False)
+    typed "n"
+    idle
+    expectFind "n went around to the first" (0, True, False)
+    typed "/"
+    idle
+    expectFind "/ gave the bar the keyboard" (0, True, True)
+    key plain KeyEnter
+    expectFind "Enter found foo inside foobar, and gave the keyboard back" (4, True, False)
+    typed "n"
+    idle
+    expectFind "n after Enter" (11, True, False)
+    typed "N"
+    idle
+    expectFind "N after Enter" (4, True, False)
+    shot "20-vim-search.bmp"
+    typed ":noh"
+    key plain KeyEnter
+    expectFind ":noh put the bar away" (4, False, False)
 
     -- The command line: :tabnew opens a tab, :enew empties it, :e opens a
     -- file in it and :e! reads it again, and :%s replaces over every line.

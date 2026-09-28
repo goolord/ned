@@ -13,20 +13,16 @@ cabal run ned -- path/to/file.hs [more files...]
 ## Features
 
 - Syntax highlighting for Haskell, Rust, C/C++, JavaScript, Python and more.
-- Tabs for open files, with a dot on each one that has unsaved changes. The
-  strip is hidden while only one file is open. A click in the file tree opens
-  the file in the current tab; Shift+click opens it in a new one.
-- Resizable file tree and drag-and-drop file opening.
-- Fuzzy file finder with a live preview, matching with fzf's own algorithm.
-- Live grep across the tree's folder, through ripgrep (`rg` on the `PATH`).
-- Keyboard and mouse selection, clipboard, undo/redo and auto-indent.
-- Incremental find, go to line, zoom and indentation guides.
-- UTF-8 editing with line endings and byte order marks preserved.
-- Vim keys: normal, insert, visual and visual line modes, on by default and
-  turned off from the View menu.
-- Tab completion of the word before the caret, from the file itself (nearest
-  words first), the other open tabs, a ctags `tags` file, and the language's
-  keywords and types.
+- Tabs, a resizable file tree (Shift+click opens a file in a new tab) and
+  drag-and-drop file opening.
+- Fuzzy file finder with a live preview, using fzf's matching algorithm.
+- Live grep across the tree's folder through ripgrep (`rg` on the `PATH`).
+- Find, go to line, undo/redo, auto-indent, zoom and indentation guides.
+- UTF-8 editing that preserves line endings and byte order marks.
+- Vim keys, on by default.
+- Tab completion from open files, a ctags `tags` file and the language's
+  keywords.
+- Language server support: diagnostics, go to definition and hover.
 
 ## Building
 
@@ -58,140 +54,82 @@ Keep `C:\msys64\ucrt64\bin` on `PATH` when running `ned.exe`.
 | Key | Action |
 | --- | --- |
 | Ctrl+N / Ctrl+O / Ctrl+S / Ctrl+Shift+S | New tab / open / save / save as |
-| Ctrl+W | Close tab (middle click also closes one) |
-| Ctrl+Tab / Ctrl+Shift+Tab | Next / previous tab (also Ctrl+PageDown / Ctrl+PageUp) |
+| Ctrl+W, middle click | Close tab |
+| Ctrl+Tab / Ctrl+Shift+Tab | Next / previous tab |
 | Ctrl+Z / Ctrl+Y | Undo / redo |
 | Ctrl+B | Toggle file tree |
-| Ctrl+P | Find a file; Up / Down or Ctrl+P / Ctrl+N walk the rows, Ctrl+U / Ctrl+D scroll the preview, Enter opens |
-| Ctrl+Shift+F | Search in files; the same keys as the file finder, and Enter opens the file at the line |
-| Ctrl+F | Find; Enter / Shift+Enter for next / previous match |
+| Ctrl+P | Find a file; Ctrl+U / Ctrl+D scroll the preview |
+| Ctrl+Shift+F | Search in files |
+| Ctrl+F | Find; Enter / Shift+Enter for next / previous |
 | Ctrl+G | Go to line |
-| Ctrl+] | Go to definition, with a language server (see [Language servers](#language-servers)) |
-| Tab / Shift+Tab | Complete the word before the caret; indent / unindent where there is none |
-| Page Up / Page Down, Alt+Up / Alt+Down | Page up / down |
+| Ctrl+] | Go to definition |
+| Tab / Shift+Tab | Complete the word before the caret, or indent / unindent |
 | Ctrl+= / Ctrl+- / Ctrl+0 | Zoom in / out / reset |
 | Ctrl+Q | Quit |
 
 ## Vim keys
 
-The mode is on the left of the status bar, with a command's keys as they are
-typed. The caret does not blink, and is a block in normal and visual mode;
-insert mode is the editor's own keys, so the shortcuts above work there too,
-except Ctrl+N, Ctrl+P and Ctrl+W, which are vim's (below). New tab, find file
-and close tab are still on the File menu, and on `SPC f f`, `:tabnew` and
-`:q`. Yanks and puts go through the system clipboard, and `p` and `P` put
-text that ends in a line break as whole lines.
+Turn vim keys off from the View menu. Insert mode keeps the shortcuts above,
+except Ctrl+N, Ctrl+P and Ctrl+W, which act as in vim; new tab, find file and
+close tab stay on the File menu. Yanks and puts use the system clipboard.
 
 | Keys | |
 | --- | --- |
-| Motions | `h j k l`, `w b e`, `0 ^ $`, `gg G`, `{ }`, `f F t T` and `; ,`, `+ -`, Ctrl+N / Ctrl+P, Ctrl+D / Ctrl+U, all with counts; `j` and `k` speed up while held |
-| Operators | `d c y > <` with a motion, a text object or doubled (`dd`, `cc`, `yy`, `>>`, `<<`) |
-| Text objects | `iw aw`, `i( a(` (also `b`), `i{ a{` (also `B`), `i[ a[`, `i< a<`, `i" a"`, `i' a'` |
+| Motions | `h j k l`, `w b e`, `0 ^ $`, `gg G`, `{ }`, `f F t T` `; ,`, `+ -`, Ctrl+D / Ctrl+U, with counts |
+| Operators | `d c y > <` with a motion, a text object, or doubled |
+| Text objects | `iw aw`, `i( a(` / `ib ab`, `i{ a{` / `iB aB`, `i[ a[`, `i< a<`, `i" a"`, `i' a'` |
 | Edits | `i a I A o O`, `x X s S D C Y`, `p P`, `J`, `r`, `~`, `u` / Ctrl+R |
-| Insert mode | Tab, Ctrl+N and Ctrl+P complete the word before the caret; Ctrl+W deletes the word before it |
-| Visual | `v V`, then motions, text objects, `o`, `d y c > < p J ~ u U`, and `:` for a command over the lines selected |
-| Search | `/` opens find, `n N` go to the next and previous match |
-| Tabs | `gt gT`, `:tabn`, `:tabp` |
-| Language server | `gd` / Ctrl+] go to definition, `K` shows what is under the caret, `g]` / `g[` go to the next / previous diagnostic |
-| Panes | Ctrl+H / Ctrl+L to the file tree and back, Ctrl+J / Ctrl+K down to the find bar and back |
-| Commands | `:w`, `:q`, `:q!`, `:wq`, `:x`, `:qa`, `:<line>`, `ZZ`, `ZQ` |
-| Files | `:e file` in this tab, `:e` / `:e!` read this file again, `:enew` an untitled file in this tab, `:tabnew [file]` / `:tabe file` in a new tab |
-| Lines | `:s`, `:d`, `:y` over a range: `%`, `5`, `.`, `$`, `'<`, `'>`, `+n`, `-n`, two of them between a comma |
-| Other | `:noh` stops marking what find found |
+| Visual | `v V`, with motions, text objects, `o`, `d y c > < p J ~ u U`, and `:` over the selected lines |
+| Search | `/`, `n N`, `:noh` |
+| Language server | `gd`, `K` for hover, `g]` / `g[` for the next / previous diagnostic |
+| Panes | Ctrl+H / Ctrl+L to the file tree and back, Ctrl+J / Ctrl+K to the find bar and back |
+| Files and tabs | `:w`, `:q`, `:q!`, `:wq`, `:x`, `:qa`, `ZZ`, `ZQ`, `:e[!] [file]`, `:enew`, `:tabnew [file]`, `:tabe file`, `gt gT`, `:tabn`, `:tabp` |
+| Lines | `:<line>`; `:s`, `:d`, `:y` over a range (`%`, `5`, `.`, `$`, `'<,'>`, `+n`, `-n`) |
 | Leader (Space) | `SPC f f` find a file, `SPC f g` search in files, `SPC d` toggle the file tree |
 
-`:s/pattern/replacement/flags` (as `:%s/.../.../g` for the whole file) reads
-its pattern as a POSIX extended regular expression, through
-[regex-tdfa](https://hackage.haskell.org/package/regex-tdfa): groups are
-`( )` and alternatives `|` without a backslash, as in vim's `\v` mode, and
-`\s`, `\d`, `\w` and their capitals work as in vim. In the replacement `&`
-is the match, `\1` to `\9` its groups and `\r` a line break. The flags are
-`g`, every match on a line, and `i`, any case. Any character but a letter, a
-digit or a backslash can stand in for `/`. The whole substitution undoes in
-one step.
+`:s` patterns are POSIX extended regular expressions
+([regex-tdfa](https://hackage.haskell.org/package/regex-tdfa)), so groups and
+`|` need no backslash, as in vim's `\v` mode. `\s`, `\d` and `\w` work. In the
+replacement, `&` is the match, `\1` to `\9` its groups and `\r` a line break.
+The flags are `g` and `i`.
 
 ## Completion
 
-Tab after a word puts in the first word that starts with it and opens a menu
-of the rest. What is typed in lower case matches any case; a capital matches
-its own case. Words come from, in this order:
-
-1. The file being edited, nearest the caret first.
-2. The other open tabs, in the order the tab strip shows them.
-3. The `tags` file in the file tree's folder or the nearest folder above it,
-   as written by `ctags -R`. It is read again when it changes.
-4. The language's keywords and built-in types.
-
-When only one word answers, it goes in with no menu. Where there is no
-word before the caret, or nothing answers it, Tab indents as before.
-
-| Key | While the menu is open |
-| --- | --- |
-| Tab / Down / Ctrl+N | Next word |
-| Shift+Tab / Up / Ctrl+P | Previous word; past either end is what was typed |
-| Enter | Take the word |
-| Ctrl+E | Put back what was typed |
-| Escape | Close the menu, keeping the word (and leave insert mode, with vim keys) |
-
-Typing on narrows the menu; anything else closes it with the word in place.
-The words tried undo as one step. With vim keys, completion works in insert
-mode, and Ctrl+N and Ctrl+P open the menu as Tab does.
+Tab after a word inserts the first match and opens a menu of the rest.
+Lower case matches any case. Words come from, in order: the current file
+(nearest the caret first), the other open tabs, the `tags` file from
+`ctags -R` in the file tree's folder or above it, and the language's keywords
+and types. Tab / Ctrl+N and Shift+Tab / Ctrl+P move through the menu, Enter
+takes the word and Ctrl+E restores what you typed.
 
 ## Configuration
 
-ned reads its settings from `config.dhall` in `~/.config/ned` (`%APPDATA%\ned`
-on Windows). The file is [Dhall](https://dhall-lang.org), laid over the
-defaults, so it only needs the fields it changes:
+ned reads `config.dhall` from `~/.config/ned` (`%APPDATA%\ned` on Windows). The
+file is [Dhall](https://dhall-lang.org) and only needs the fields it changes:
 
 ```dhall
 { uiFontSize = 17.0
-, bufferFontSize = 16.0
 , bufferFont = Some "JetBrains Mono"
 , vimKeys = False
 }
 ```
 
-Print every setting, with its default and what it does:
+To write out every setting with its default and a description:
 
 ```sh
 cabal run ned -- --default-config > ~/.config/ned/config.dhall
 ```
 
-| Setting | Default | |
-| --- | --- | --- |
-| `uiFontSize` | `16.0` | Menus, bars, file tree and status bar, in points |
-| `bufferFontSize` | `15.0` | The text and the finder, in points; Ctrl+0 resets the zoom to it |
-| `scale` | `1.0` | Zoom of the whole window over the display's pixel density; `0.0` follows the display's scale |
-| `uiFont`, `bufferFont` | `None Text` | A font family (`Some "Inter"`) or a path to a `.ttf`/`.otf` file |
-| `windowWidth`, `windowHeight` | `1100`, `760` | Size of the window when it opens |
-| `vimKeys` | `True` | Start with vim keys on |
-| `showFileTree` | `True` | Start with the file tree shown |
-| `showIndentation` | `True` | Mark indentation with dots and rules |
-| `languageServerShell` | `["sh", "-c"]` (`["cmd", "/c"]` on Windows) | The program a language server's command runs in, and its arguments before the command |
-| `languageServers` | Haskell: `haskell-language-server-wrapper --lsp` | A language server command per language |
-| `projects` | `{=}` | Settings for the files under a folder (see [Projects](#projects)) |
-
-A misspelled field or a value of the wrong type is an error: ned prints it and
-starts with the defaults. Sizes are Doubles, so write `18.0`, not `18`.
-
-ned reloads the file when you save it while ned is open. It applies only the
-settings the edit changed, so a toggle from the View menu stays unless the
-file changes that setting. `uiFontSize` and `bufferFont` take effect on
-restart, and the window size only applies when the window opens. A file that
-does not read while ned is open leaves the current settings in place.
+Sizes are Doubles, so write `18.0`, not `18`. A field that is misspelled or
+has the wrong type is an error, and ned starts with the defaults. ned applies
+changes when you save the file, except `uiFontSize`, `bufferFont` and the
+window size, which need a restart.
 
 ### Language servers
 
-ned starts a language server when you open a file of its language, and sends
-it the file's text as it changes. It underlines the server's diagnostics: red
-for errors, yellow for warnings, blue for the rest. With vim keys, `g]` and `g[`
-jump to the next and previous one and show its message on the status bar.
-Ctrl+] (or `gd`) goes to a definition, and `K` shows the hover documentation,
-rendered as markdown, under the caret until it moves.
-
-The language is the name the status bar shows for the file, compared without
-case. The command runs through `languageServerShell`, in the folder the file
-tree is on:
+A server is a command per language, where the language is the name the status
+bar shows (case does not matter). It runs through `languageServerShell`
+(`sh -c`, or `cmd /c` on Windows) in the file tree's folder:
 
 ```dhall
 { languageServers =
@@ -201,15 +139,14 @@ tree is on:
 }
 ```
 
-The server's stderr goes to the terminal you started ned from. ned does not
-retry a server that fails to start while you type; Ctrl+], `gd` or `K` tries
-it again.
+The default is the Haskell entry above. Server stderr goes to the terminal
+ned was started from. If a server fails to start, Ctrl+], `gd` or `K` retries
+it.
 
 ### Projects
 
-Some settings belong to a file rather than to the window:
-`languageServerShell` and `languageServers`. A project sets them for the files
-under its `root`:
+A project overrides `languageServerShell` and `languageServers` for the files
+under its `root`, and its servers run in that root:
 
 ```dhall
 { projects =
@@ -226,19 +163,10 @@ under its `root`:
 }
 ```
 
-A project is laid over the settings the way `config.dhall` is laid over the
-defaults: the fields it sets replace the ones above it, and the fields it
-leaves out keep their values. A list is replaced whole, so a project's
-`languageServers` takes the place of the top-level list rather than adding to
-it. A project inside another is laid over the outer project's settings, so
-files under `~/src/app/web` above get both the `nix develop` shell and the
-TypeScript server. A file belongs to the deepest project whose root holds it,
-and that project's language servers run in its root. Files in no project use
-the top-level settings, and their servers run in the folder the file tree is on.
-
-A root is absolute, starts with `~`, or is relative to the folder
-`config.dhall` is in. The field names (`app`, `web`) are only labels, used in
-error messages. A window setting such as `vimKeys` in a project is an error.
+Nested projects stack, so files under `~/src/app/web` get the `nix develop`
+shell and the TypeScript server. A list replaces the outer list rather than
+adding to it. A root is absolute, starts with `~`, or is relative to
+`config.dhall`'s folder.
 
 ## Testing
 
@@ -251,7 +179,7 @@ The self-test runs in a hidden window and writes screenshots and a log to `out`.
 
 ## Limitations
 
-- No replace or soft wrap.
+- No soft wrap, and no replace outside vim's `:s`.
 - Closing the window does not prompt to save; use Ctrl+Q or the File menu.
 - The file tree requires a manual refresh for external changes.
 - Highlighting is lexical and may be inaccurate after jumping into a file.

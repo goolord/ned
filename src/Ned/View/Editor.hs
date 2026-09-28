@@ -28,7 +28,7 @@ import Ned.Complete (Candidate (..), Completion (..), Source, menuLimit)
 import Ned.Editor
 import Ned.Editor.Geometry
 import Ned.Highlight
-import Ned.Text (cellOfCol, cellsAt, clamp, foldCase, indentOf, wholeWord)
+import Ned.Text (cellOfCol, cellsAt, clamp, indentOf)
 import Ned.Theme
 import Ned.View.Code
 import Ned.Widget (markOp, rounding, thumbSpan)
@@ -50,8 +50,8 @@ import Ned.Widget (markOp, rounding, thumbSpan)
 -- @textKey@ names the text the editor holds, and changes when it is another
 -- text: two files just opened are at the same version with the caret and the
 -- view in the same place, and without it the second would not be drawn.
-editorView :: Int -> Bool -> Text -> [(Int, Int, Int)] -> Source -> Editor -> NanoUI (Response, Editor, Rect)
-editorView textKey wantFocus marks diagnostics others ed0 = do
+editorView :: Int -> Bool -> (B.Matching, Text) -> [(Int, Int, Int)] -> Source -> Editor -> NanoUI (Response, Editor, Rect)
+editorView textKey wantFocus (matching, marks) diagnostics others ed0 = do
   widGutter <- nextId
   wid <- nextId
   widBar <- nextId
@@ -89,9 +89,8 @@ editorView textKey wantFocus marks diagnostics others ed0 = do
           , esFontSize = edFontSize ed1
           , esGeometry = g
           , esCaretOn = efCaretOn fr
-          , esFind = if edFindExact ed1 then marks else foldCase marks
-          , esFindExact = edFindExact ed1
-          , esFindWord = edFindWord ed1
+          , esFind = marks
+          , esMatching = matching
           , esDiagnostics = diagnostics
           , esThumbHot = efThumbHot fr
           , esThumbXHot = efThumbXHot fr
@@ -132,8 +131,7 @@ data EditorScene = EditorScene
   , esGeometry :: !Geometry
   , esCaretOn :: !Bool
   , esFind :: !Text
-  , esFindExact :: !Bool
-  , esFindWord :: !Bool
+  , esMatching :: !B.Matching
   , esDiagnostics :: ![(Int, Int, Int)]
   , esThumbHot :: !Bool
   , esThumbXHot :: !Bool
@@ -179,8 +177,7 @@ editorSceneKey which sc =
           , keyPart (esCaretOn sc)
           , keyPart (esWhitespace sc)
           , keyPart (fromMaybe (-1) (esBlock sc))
-          , keyPart (esFindExact sc)
-          , keyPart (esFindWord sc)
+          , keyPart (show (esMatching sc))
           , keyPart (esFind sc)
           , keyPart (show (esDiagnostics sc))
           , keyPart (langName (esLang sc))
@@ -293,24 +290,16 @@ drawEditor which sc own@(Rect ox oy ow oh) =
                  in band colSelection ln c0 c1'
        in current ++ matches vr ++ selection
 
-    matches vr
-      | T.null (esFind sc) = []
-      | otherwise =
-          let t = if esFindExact sc then rowText vr else foldCase (rowText vr)
-              base = if rowLong vr then firstCell else 0
-              n = T.length (esFind sc)
-              -- What is before a match: the end of the text before it, or
-              -- of the match before that.
-              go !col prev rest = case T.breakOn (esFind sc) rest of
-                (_, m) | T.null m -> []
-                (pre, m) ->
-                  let c = col + T.length pre
-                      before = maybe prev (Just . snd) (T.unsnoc pre)
-                      after = fst <$> T.uncons (T.drop n m)
-                      whole = not (esFindWord sc) || wholeWord (esFind sc) before after
-                   in (if whole then band colFindMatch (rowLine vr) (cellIn vr (base + c)) (cellIn vr (base + c + n)) else [])
-                        ++ go (c + n) (Just (T.last (esFind sc))) (T.drop n m)
-           in go 0 Nothing t
+    -- A match overlapping the one before is not marked again.
+    matches vr =
+      let base = if rowLong vr then firstCell else 0
+          n = T.length (esFind sc)
+          apart !_ [] = []
+          apart !from (c : cs) = if c < from then apart from cs else c : apart (c + n) cs
+       in concat
+            [ band colFindMatch (rowLine vr) (cellIn vr (base + c)) (cellIn vr (base + c + n))
+            | c <- apart 0 (B.matchesIn (esMatching sc) (esFind sc) (rowText vr))
+            ]
 
     -- The indentation of a line: a dot in the middle of each space, and a
     -- rule along each tab.

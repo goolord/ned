@@ -151,13 +151,13 @@ chromeSig a =
   )
 
 -- | What of the application the editor draws.
-editorSig :: App -> (Int, Int, Int, Text, (Bool, Bool, Bool, Bool), Float, Text)
+editorSig :: App -> (Int, Int, Int, (B.Matching, Text), (Bool, Bool), Float, Text)
 editorSig a =
   ( B.bufVersion buf
   , B.bufCursor buf
   , B.bufAnchor buf
   , findMarks a
-  , (edFindExact ed, edFindWord ed, edReveal ed, edShowWhitespace ed)
+  , (edReveal ed, edShowWhitespace ed)
   , edFontSize ed
   , langName (edLang ed)
   )

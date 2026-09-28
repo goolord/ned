@@ -37,7 +37,7 @@ import NanoUI (Input (..), Key (..), Modifiers (..), NanoUI, foldInputKeys, getC
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
 import Ned.Editor.Keys (applyKeys)
-import Ned.Text (CharClass (..), clamp, classOf, indentOf, longLineLimit)
+import Ned.Text (clamp, classOf, indentOf, isWordChar, longLineLimit)
 import Text.Read (readMaybe)
 import Text.Regex.TDFA (CompOption (..), ExecOption (..), Regex, defaultCompOpt, defaultExecOpt, matchAllText)
 import Text.Regex.TDFA.Text (compile)
@@ -499,13 +499,10 @@ request rs v = v {vimRequests = vimRequests v ++ rs}
 -- along its line.
 wordUnder :: Buffer -> Maybe Text
 wordUnder b =
-  let st = B.lineStart b (line b)
-      (pre, post) = T.splitAt (B.bufCursor b - st) (slice b st (lineEnd b (line b)))
-      isWord c = classOf c == ClassWord
-      found = case T.uncons post of
-        Just (c, _) | isWord c -> T.takeWhileEnd isWord pre <> T.takeWhile isWord post
-        _ -> T.takeWhile isWord (T.dropWhile (not . isWord) post)
-   in if T.null found then Nothing else Just found
+  let c = B.bufCursor b
+      end = lineEnd b (line b)
+      at = c + T.length (T.takeWhile (not . isWordChar) (slice b c (min end (c + longLineLimit))))
+   in if at >= end then Nothing else Just (uncurry (slice b) (B.wordRangeAt at b))
 
 -- | Keep a find for ; and , to repeat.
 remember :: Motion -> Vim -> Vim

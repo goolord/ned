@@ -125,6 +125,8 @@ data App = App
   , appBarFocus :: !Bool
   -- ^ Whether the bar's field has the keyboard, and not the editor.
   , appFindText :: !Text
+  , appFindMatching :: !B.Matching
+  -- ^ How the find bar's text is matched: in its case, and as a whole word.
   , appGotoText :: !Text
   , appPending :: !(Maybe Pending)
   , appTitle :: !Text
@@ -191,6 +193,7 @@ newApp cfg = do
       , appBar = BarNone
       , appBarFocus = False
       , appFindText = ""
+      , appFindMatching = B.Matching False False
       , appGotoText = ""
       , appPending = Nothing
       , appTitle = ""
@@ -379,8 +382,8 @@ modalUp app = isJust (appPending app) || isJust (appPicker app)
 
 -- | What the editor marks the matches of: what the find bar holds, while it
 -- is up.
-findMarks :: App -> Text
-findMarks app = if appBar app == BarFind then appFindText app else ""
+findMarks :: App -> (B.Matching, Text)
+findMarks app = (appFindMatching app, if appBar app == BarFind then appFindText app else "")
 
 -- | Where words to complete the file in front come from, besides the file
 -- itself: the other tabs, in the order the strip shows them, and then the

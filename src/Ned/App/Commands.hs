@@ -61,6 +61,7 @@ module Ned.App.Commands
   , closeBar
   , findMatch
   , findPast
+  , confirmFind
   , zoom
   , resetZoom
 
@@ -321,12 +322,11 @@ openBar ref bar = modifyApp ref $ \a ->
   let sel = B.selectedText (edBuffer (appEditor a))
       seeded = bar == BarFind && not (T.null sel) && not (T.any (== '\n') sel) && T.length sel <= 200
       findText = if seeded then sel else appFindText a
-   in a
-        { appBar = bar
-        , appBarFocus = True
-        , appFindText = findText
-        , appGotoText = ""
-        }
+   in showBar bar True a {appFindText = findText}
+
+-- | A bar up under the text, with the keyboard or without it.
+showBar :: Bar -> Bool -> App -> App
+showBar bar focus a = a {appBar = bar, appBarFocus = focus, appGotoText = ""}
 
 closeBar :: IORef App -> NanoUI ()
 closeBar ref = modifyApp ref (\a -> a {appBar = BarNone, appBarFocus = False})
@@ -335,11 +335,10 @@ closeBar ref = modifyApp ref (\a -> a {appBar = BarNone, appBarFocus = False})
 findMatch :: IORef App -> Bool -> NanoUI ()
 findMatch ref forward = do
   a <- readApp ref
-  let ed = appEditor a
-      needle = appFindText a
+  let needle = appFindText a
       go = if forward then B.findNext else B.findPrev
   unless (T.null needle) $
-    case go (B.Matching (edFindExact ed) (edFindWord ed)) needle (edBuffer ed) of
+    case go (appFindMatching a) needle (edBuffer (appEditor a)) of
       Just b -> onBuffer ref (const b) >> setStatus ref ""
       Nothing -> setStatus ref ("No match for " <> needle)
 
@@ -350,6 +349,15 @@ findPast :: IORef App -> Bool -> NanoUI ()
 findPast ref forward = do
   onBuffer ref (\b -> if B.hasSelection b then b else B.setCursor True (B.bufCursor b + 1) b)
   findMatch ref forward
+
+-- | End vim's search: the caret stays on the match typed to, or goes on to
+-- the next one when the query has not put it on one, and the keyboard goes
+-- back to the text for n and N. Backward, it goes to the one before.
+confirmFind :: IORef App -> Bool -> NanoUI ()
+confirmFind ref back = do
+  a <- readApp ref
+  unless (not back && B.selectsMatch (appFindMatching a) (appFindText a) (edBuffer (appEditor a))) (findPast ref (not back))
+  modifyApp ref (\a' -> a' {appBarFocus = False})
 
 zoom :: IORef App -> (Float -> Float) -> NanoUI ()
 zoom ref f = modifyApp ref $ \a ->
@@ -516,7 +524,9 @@ syncServer ref = do
             >>= either (post . serverFailed) pure)
 
 -- | Go to the next thing the language server found wrong in the file in
--- front, or the one before, round from the ends, and say what it is.
+-- front, or the one before, round from the ends, and say what it is: in
+-- the status bar, and in full by the caret, with anything else found at the
+-- same place, which the jump would otherwise pass over.
 jumpDiagnostic :: IORef App -> Bool -> NanoUI ()
 jumpDiagnostic ref forward = do
   a <- readApp ref
@@ -589,13 +599,14 @@ vimRequest ref = \case
   V.Grep -> openPicker ref P.grepSource
   V.ToggleTree -> toggleTree ref
   -- Vim's / looks for text wherever it is, not only as a whole word.
-  V.FindBar -> onEditor ref (\ed -> ed {edFindWord = False}) >> openBar ref BarFind
+  V.FindBar -> do
+    modifyApp ref (\a -> a {appFindMatching = (appFindMatching a) {B.matchWord = False}})
+    openBar ref BarFind
   V.FindAgain forward -> findPast ref forward
   -- The bar is put up to show what is marked, and the keyboard stays with
   -- the text for n and N.
   V.Search needle whole forward -> do
-    modifyApp ref (\a -> a {appBar = BarFind, appBarFocus = False, appFindText = needle})
-    onEditor ref (\ed -> ed {edFindWord = whole})
+    modifyApp ref (\a -> showBar BarFind False a {appFindText = needle, appFindMatching = (appFindMatching a) {B.matchWord = whole}})
     findPast ref forward
   V.Save -> save ref False
   V.Quit force -> do

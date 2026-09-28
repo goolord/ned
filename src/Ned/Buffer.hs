@@ -91,6 +91,8 @@ module Ned.Buffer
 
     -- * Search
   , Matching (..)
+  , matchesIn
+  , selectsMatch
   , findNext
   , findPrev
   ) where
@@ -657,29 +659,42 @@ data Matching = Matching
   }
   deriving (Eq, Show)
 
--- | What a search compares: the text as it is when the flag is set, and
+-- | What a search compares: the text as it is when it matches case, and
 -- otherwise with its ASCII letters folded, which keeps every offset in place.
-matchCase :: Bool -> Text -> Text
-matchCase exact = if exact then id else foldCase
+matchCase :: Matching -> Text -> Text
+matchCase m = if matchExact m then id else foldCase
 
 -- | Where a needle starts in a text, every place in order, overlapping ones
--- too.
-matchesIn :: Text -> Text -> [Int]
-matchesIn needle = go 0
+-- too. Whether a match is a whole word is judged by the text either side of
+-- it, and an end of the text counts as a boundary.
+matchesIn :: Matching -> Text -> Text -> [Int]
+matchesIn m needle0 t
+  | T.null needle = []
+  | otherwise = go 0 Nothing (matchCase m t)
   where
-    go !at t = case T.breakOn needle t of
-      (_, m) | T.null m -> []
-      (pre, m) -> let i = at + T.length pre in i : go (i + 1) (T.drop 1 m)
+    needle = matchCase m needle0
+    n = T.length needle
+    go !at prev rest = case T.breakOn needle rest of
+      (_, r) | T.null r -> []
+      (pre, r) ->
+        let i = at + T.length pre
+            before = maybe prev (Just . snd) (T.unsnoc pre)
+            fits = not (matchWord m) || wholeWord needle before (fst <$> T.uncons (T.drop n r))
+         in (if fits then (i :) else id) (go (i + 1) (Just (T.head r)) (T.drop 1 r))
 
--- | The matches of a needle in the text between two offsets that the
--- matching takes.
+-- | The matches between two offsets. The text read is a character wider
+-- either side, for 'matchesIn' to see what is around a match at an end.
 matchesBetween :: Matching -> Text -> Int -> Int -> Buffer -> [Int]
 matchesBetween m needle from to b =
-  filter fits (map (from +) (matchesIn (matchCase (matchExact m) needle) (matchCase (matchExact m) (Rope.sliceText Chars from to (bufRope b)))))
-  where
-    n = T.length needle
-    fits i = not (matchWord m) || wholeWord needle (charAt (i - 1)) (charAt (i + n))
-    charAt i = if i < 0 || i >= size b then Nothing else fst <$> T.uncons (Rope.sliceText Chars i (i + 1) (bufRope b))
+  let lo = max 0 (from - 1)
+      within i = i >= from && i + T.length needle <= to
+   in filter within (map (lo +) (matchesIn m needle (Rope.sliceText Chars lo (min (size b) (to + 1)) (bufRope b))))
+
+-- | Whether the selection is a match.
+selectsMatch :: Matching -> Text -> Buffer -> Bool
+selectsMatch m needle b =
+  let (i, j) = selectionRange b
+   in hasSelection b && j - i == T.length needle && matchesBetween m needle i j b == [i]
 
 -- | The first match at or after an offset, going around the end of the text.
 findFrom :: Matching -> Text -> Int -> Buffer -> Maybe Int
@@ -719,8 +734,7 @@ findBack m needle before b
           [] -> Nothing
           is -> Just (last is)
       | otherwise =
-          let fold = matchCase (matchExact m)
-              (pre, _) = T.breakOnEnd (fold needle) (fold (Rope.sliceText Chars from end (bufRope b)))
+          let (pre, _) = T.breakOnEnd (matchCase m needle) (matchCase m (Rope.sliceText Chars from end (bufRope b)))
            in if T.null pre then Nothing else Just (from + T.length pre - n)
 
 -- | Select the next match after the selection.

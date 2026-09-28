@@ -22,6 +22,7 @@ module Ned.Text
     -- * Kinds of character
   , CharClass (..)
   , classOf
+  , isWordChar
   , indentOf
   , wholeWord
 
@@ -187,8 +188,10 @@ classOf c
 wholeWord :: Text -> Maybe Char -> Maybe Char -> Bool
 wholeWord needle before after = edge T.head before && edge T.last after
   where
-    edge end c = T.null needle || not (isWord (end needle)) || maybe True (not . isWord) c
-    isWord x = classOf x == ClassWord
+    edge end c = T.null needle || not (isWordChar (end needle)) || maybe True (not . isWordChar) c
+
+isWordChar :: Char -> Bool
+isWordChar c = classOf c == ClassWord
 
 -- | The spaces and tabs a line starts with.
 indentOf :: Text -> Text

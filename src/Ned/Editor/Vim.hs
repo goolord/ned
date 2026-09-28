@@ -103,6 +103,8 @@ data Request
     Definition
   | -- | Ask the language server what is under the caret.
     Hover
+  | -- | The next thing the language server found wrong, or the one before.
+    NextDiagnostic !Bool
   | Message !Text
   deriving (Eq, Show)
 
@@ -419,6 +421,8 @@ command clip page v s0 = case vimMode v of
       "gt" -> ask [NextTab True]
       "gT" -> ask [NextTab False]
       "gd" -> ask [Definition]
+      "g]" -> ask [NextDiagnostic True]
+      "g[" -> ask [NextDiagnostic False]
       "K" -> ask [Hover]
       "Z" -> More
       "ZZ" -> ask [Save, Quit False]

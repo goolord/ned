@@ -104,6 +104,7 @@ library
         nano-rope ^>=0.1,
         nano-ui ^>=0.2,
         nano-ui-sdl ^>=0.2,
+        nano-ui-markdown ^>=0.1,
         ned-fzf ^>=0.1,
         primitive ^>=0.9,
         process ^>=1.6,

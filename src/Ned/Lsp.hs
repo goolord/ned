@@ -5,7 +5,9 @@
 -- standard input and output. It is started the first time a file of its
 -- language asks for it, and kept for as long as the window is open. What it
 -- is told of a file is the whole text, again each time it has changed since
--- it was last asked, which is all the syncing there is.
+-- it was last told, which is all the syncing there is. What it finds wrong
+-- in a file it sends when it likes, and that is handed to a function given
+-- when it was started.
 --
 -- Everything here blocks until the server answers, so it is for a thread of
 -- its own. Positions are the protocol's: a line counted from zero, and a
@@ -16,25 +18,33 @@ module Ned.Lsp
   , newServers
   , Server
   , serverFor
+  , didNotStart
+  , Diagnostic (..)
   , syncDoc
   , definition
   , hover
   , languageId
   , toUtf16
   , fromUtf16
+
+    -- * A thread for the latest
+  , Latest
+  , newLatest
+  , handLatest
   ) where
 
 import Control.Applicative ((<|>))
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar
 import Control.Exception (SomeException, throwIO, try)
-import Control.Monad (forever, void)
+import Control.Monad (forever, void, (<=<))
 import Data.Aeson.Micro (Value (..), decodeStrict, encodeStrict, object, (.=))
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC
 import Data.Char (chr, isAlphaNum, ord)
 import Data.IORef
-import Data.List (find)
+import Data.Functor ((<&>))
+import Data.Maybe (isNothing, mapMaybe)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -46,8 +56,8 @@ import System.IO
 import System.Process (CreateProcess (..), StdStream (..), createProcess, proc)
 
 -- | The servers started so far, by the command line and the folder they
--- were started in.
-type Servers = MVar (Map ([String], FilePath) Server)
+-- were started in; 'Nothing' for one that would not start.
+type Servers = MVar (Map ([String], FilePath) (Maybe Server))
 
 newServers :: IO Servers
 newServers = newMVar Map.empty
@@ -60,28 +70,52 @@ data Server = Server
   , srvDocs :: !(MVar (Map FilePath (Int, Text)))
   -- ^ Each file the server has been told of, at the version and text it
   -- was last told.
+  , srvDiagnosed :: !(FilePath -> [Diagnostic] -> IO ())
   }
 
--- | The server for a command line in a folder: the one running already, or
--- one started and initialized now. One that has stopped is started again.
-serverFor :: Servers -> [String] -> FilePath -> IO Server
-serverFor servers cmd root = modifyMVar servers $ \running -> do
-  let fresh = (\s -> (Map.insert (cmd, root) s running, s)) <$> start cmd root
-  case Map.lookup (cmd, root) running of
-    Nothing -> fresh
-    Just s ->
-      readIORef (srvWaiting s) >>= \case
-        Just _ -> pure (running, s)
-        Nothing -> fresh
+-- | Something a server finds wrong in a file: where, from and to, how bad
+-- (1 an error, 2 a warning, 3 information, 4 a hint), and what.
+data Diagnostic = Diagnostic
+  { diagStart :: !(Int, Int)
+  , diagEnd :: !(Int, Int)
+  , diagSeverity :: !Int
+  , diagMessage :: !Text
+  }
+  deriving (Eq, Show)
 
-start :: [String] -> FilePath -> IO Server
-start cmd root = do
+-- | The server for a command line in a folder: the one running already, or
+-- one started and initialized now, which hands what it finds wrong in a file
+-- to @diagnosed@. One that has stopped, or would not start, is tried again.
+serverFor :: Servers -> (FilePath -> [Diagnostic] -> IO ()) -> [String] -> FilePath -> IO Server
+serverFor servers diagnosed cmd root = either throwIO pure <=< modifyMVar servers $ \running -> do
+  let fresh =
+        try @SomeException (start diagnosed cmd root) <&> \r ->
+          (Map.insert (cmd, root) (either (const Nothing) Just r) running, r)
+  case Map.lookup (cmd, root) running of
+    Just (Just s) ->
+      readIORef (srvWaiting s) >>= \case
+        Just _ -> pure (running, Right s)
+        Nothing -> fresh
+    _ -> fresh
+
+-- | Whether the server for a command line in a folder was tried and would
+-- not start, or has stopped since: what keeps a server that is not there
+-- from being tried again at every key.
+didNotStart :: Servers -> [String] -> FilePath -> IO Bool
+didNotStart servers cmd root =
+  withMVar servers $ \running -> case Map.lookup (cmd, root) running of
+    Nothing -> pure False
+    Just Nothing -> pure True
+    Just (Just s) -> isNothing <$> readIORef (srvWaiting s)
+
+start :: (FilePath -> [Diagnostic] -> IO ()) -> [String] -> FilePath -> IO Server
+start diagnosed cmd root = do
   (prog, args) <- case cmd of
     p : as -> pure (p, as)
     [] -> ioError (userError "the shell to run language servers in is empty")
   (Just hin, Just hout, _, _) <- createProcess (proc prog args) {cwd = Just root, std_in = CreatePipe, std_out = CreatePipe}
   mapM_ (`hSetBinaryMode` True) [hin, hout]
-  s <- Server <$> newMVar hin <*> newIORef 0 <*> newIORef (Just Map.empty) <*> newMVar Map.empty
+  s <- Server <$> newMVar hin <*> newIORef 0 <*> newIORef (Just Map.empty) <*> newMVar Map.empty <*> pure diagnosed
   -- When the output ends, whatever is still waiting is told so.
   void . forkIO $ do
     _ <- try @SomeException (forever (readMessage hout >>= answer s))
@@ -89,19 +123,31 @@ start cmd root = do
     mapM_ (mapM_ (`putMVar` Left "the language server stopped")) waiting
   _ <-
     orFail
-      =<< call s "initialize" (object ["processId" .= Null, "rootUri" .= pathUri root, "capabilities" .= object []])
+      =<< call s "initialize" (object ["processId" .= Null, "rootUri" .= pathUri root, "capabilities" .= capabilities])
   notify s "initialized" (object [])
   pure s
+
+-- | What the client can take: of what it does not say, only hover's text is
+-- worth saying, which is taken as markdown.
+capabilities :: Value
+capabilities = object ["textDocument" .= object ["hover" .= object ["contentFormat" .= (["markdown", "plaintext"] :: [Text])]]]
 
 orFail :: Either Text a -> IO a
 orFail = either (throwIO . userError . T.unpack) pure
 
 -- | What came from the server: an answer to one of ours, a request of its
--- own, which is answered with nothing, or a notification, which is not
--- listened to.
+-- own, which is answered with nothing, or a notification, of which only the
+-- diagnostics are listened to.
 answer :: Server -> Value -> IO ()
 answer s = \case
   Object m
+    | Just (String "textDocument/publishDiagnostics") <- Map.lookup "method" m
+    , Just (Object p) <- Map.lookup "params" m
+    , Just (String uri) <- Map.lookup "uri" p
+    , Just path <- uriPath uri ->
+        srvDiagnosed s path $ case Map.lookup "diagnostics" p of
+          Just (Array ds) -> mapMaybe diagnostic ds
+          _ -> []
     | Just n <- Map.lookup "id" m, Just _ <- Map.lookup "method" m ->
         send s (object ["jsonrpc" .= ("2.0" :: Text), "id" .= n, "result" .= Null])
     | Just (Number n) <- Map.lookup "id" m -> do
@@ -111,6 +157,14 @@ answer s = \case
         mapM_ (`putMVar` reply m) box
   _ -> pure ()
   where
+    diagnostic = \case
+      Object d
+        | Just (Object r) <- Map.lookup "range" d
+        , Just from <- position =<< Map.lookup "start" r
+        , Just to <- position =<< Map.lookup "end" r
+        , Just (String msg) <- Map.lookup "message" d ->
+            Just (Diagnostic from to (case Map.lookup "severity" d of Just (Number n) -> round n; _ -> 1) msg)
+      _ -> Nothing
     reply m = case Map.lookup "error" m of
       Just (Object e) | Just (String msg) <- Map.lookup "message" e -> Left msg
       Just _ -> Left "the language server answered with an error"
@@ -183,25 +237,28 @@ definition s path pos = located <$> (orFail =<< call s "textDocument/definition"
         , Just p <- position =<< Map.lookup "start" r ->
             (,p) <$> uriPath uri
       _ -> Nothing
-    position = \case
-      Object p | Just (Number l) <- Map.lookup "line" p, Just (Number c) <- Map.lookup "character" p -> Just (round l, round c)
-      _ -> Nothing
 
--- | What the server says of what is at a place in a file, as one line: the
--- first of its lines that is not a code fence, which is a signature more
--- often than not.
+-- | What the server says of what is at a place in a file, as markdown.
 hover :: Server -> FilePath -> (Int, Int) -> IO (Maybe Text)
-hover s path pos = firstLine . contents <$> (orFail =<< call s "textDocument/hover" (atPosition path pos))
+hover s path pos = nonBlank . contents <$> (orFail =<< call s "textDocument/hover" (atPosition path pos))
   where
     contents = \case
       Object m | Just c <- Map.lookup "contents" m -> markup c
       _ -> ""
     markup = \case
       String t -> t
-      Array vs -> T.unlines (map markup vs)
-      Object m | Just (String t) <- Map.lookup "value" m -> t
+      Array vs -> T.intercalate "\n\n" (map markup vs)
+      Object m
+        | Just (String t) <- Map.lookup "value" m, Just (String lang) <- Map.lookup "language" m -> "```" <> lang <> "\n" <> t <> "\n```"
+        | Just (String t) <- Map.lookup "value" m -> t
       _ -> ""
-    firstLine = find (\l -> not (T.null l) && not ("```" `T.isPrefixOf` l)) . map T.strip . T.lines
+    nonBlank t = if T.null (T.strip t) then Nothing else Just t
+
+-- | A line and a UTF-16 column, from the protocol's JSON.
+position :: Value -> Maybe (Int, Int)
+position = \case
+  Object p | Just (Number l) <- Map.lookup "line" p, Just (Number c) <- Map.lookup "character" p -> Just (round l, round c)
+  _ -> Nothing
 
 atPosition :: FilePath -> (Int, Int) -> Value
 atPosition path (l, c) =
@@ -246,3 +303,23 @@ uriPath uri = do
       '%' : a : b : more | [(w, "")] <- readHex [a, b] -> w : unescape more
       c : more -> BS.unpack (T.encodeUtf8 (T.singleton c)) <> unescape more
       [] -> []
+
+--------------------------------------------------------------------------------
+-- A thread for the latest
+--------------------------------------------------------------------------------
+
+-- | A thread that runs what it is handed, one at a time, and of what is
+-- handed to it while it is busy only the last: what tells a server of a file
+-- as it is typed into, where only the text as it stands matters.
+data Latest = Latest !(IORef (Maybe (IO ()))) !(MVar ())
+
+newLatest :: IO Latest
+newLatest = do
+  l@(Latest next ready) <- Latest <$> newIORef Nothing <*> newEmptyMVar
+  void . forkIO . forever $ do
+    takeMVar ready
+    atomicModifyIORef' next (Nothing,) >>= mapM_ (void . try @SomeException)
+  pure l
+
+handLatest :: Latest -> IO () -> IO ()
+handLatest (Latest next ready) job = writeIORef next (Just job) >> void (tryPutMVar ready ())

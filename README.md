@@ -91,7 +91,7 @@ the system clipboard, and what ends in a line break is put as whole lines.
 | Visual | `v V`, then motions, text objects, `o`, `d y c > < p J ~ u U`, and `:` for a command over the lines selected |
 | Search | `/` opens find, `n N` go to the next and previous match |
 | Tabs | `gt gT`, `:tabn`, `:tabp` |
-| Language server | `gd` / Ctrl+] go to definition, `K` shows what is under the caret on the status bar |
+| Language server | `gd` / Ctrl+] go to definition, `K` shows what is under the caret, `g]` / `g[` go to the next / previous diagnostic |
 | Panes | Ctrl+H / Ctrl+L to the file tree and back, Ctrl+J / Ctrl+K down to the find bar and back |
 | Commands | `:w`, `:q`, `:q!`, `:wq`, `:x`, `:qa`, `:<line>`, `ZZ`, `ZQ` |
 | Files | `:e file` in this tab, `:e` / `:e!` read this file again, `:enew` an untitled file in this tab, `:tabnew [file]` / `:tabe file` in a new tab |
@@ -181,11 +181,15 @@ does not read while ned is open leaves the current settings in place.
 
 ### Language servers
 
-A language server is started the first time you ask it something about a file
-of its language: Ctrl+] (or `gd` with vim keys) goes to a definition, and `K`
-puts the hover text on the status bar. The language is the name the status bar
-shows for the file, compared without case. The command runs through `shell`,
-in the folder the file tree is on:
+A language server is started when a file of its language is opened, and is
+sent the file's text as it changes. Its diagnostics are underlined: red for
+errors, yellow for warnings, blue for the rest. With vim keys, `g]` and `g[`
+jump to the next and previous one and show its message on the status bar.
+Ctrl+] (or `gd`) goes to a definition, and `K` shows the hover documentation,
+rendered as markdown, under the caret until it moves.
+
+The language is the name the status bar shows for the file, compared without
+case. The command runs through `shell`, in the folder the file tree is on:
 
 ```dhall
 { languageServers =
@@ -204,7 +208,8 @@ in the folder the file tree is on:
 A file under a project's `root` uses that project's server for its language,
 run in `root`. When several projects hold the file, the deepest one wins, and
 a language the project does not list falls back to `languageServers`. The
-server's stderr goes to the terminal ned was started from.
+server's stderr goes to the terminal ned was started from. A server that fails
+to start is not tried again while you type; Ctrl+], `gd` or `K` tries it again.
 
 ## Testing
 

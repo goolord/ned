@@ -27,6 +27,7 @@ module Ned.Theme
   , colThumb
   , colThumbHot
   , colWhitespace
+  , colDiagnostic
   , colMenu
   , colMenuEdge
   , colMenuPicked
@@ -86,6 +87,15 @@ colTrack = rgba 0x1D1F21 0xC0 -- scrollbar.track.background
 colThumb = rgb 0x63666E
 colThumbHot = rgb 0x7A7D85
 colWhitespace = rgb 0x4D5057 -- ignored (editor.invisible is unset)
+
+-- | What a language server found wrong, underlined by how bad it is: the
+-- theme's red for an error, its yellow for a warning, and its blue for the
+-- rest.
+colDiagnostic :: Int -> Color
+colDiagnostic = \case
+  1 -> rgb 0xCC6666
+  2 -> rgb 0xF0C674
+  _ -> rgb 0x81A2BE
 
 -- | The completion menu, which stands over the text: a step up from the page
 -- in the grey the current line is drawn in, edged in the selection's, with

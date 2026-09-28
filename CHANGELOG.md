@@ -136,3 +136,12 @@
   its language asks. `projects` gives the files under a folder servers of
   their own, run in that folder. The server is told the whole file each time
   it is asked, and waited for on a thread of its own.
+* Diagnostics: a file's server is started when the file is opened, and told
+  its text on a thread of its own each time it changes, only the latest
+  being sent when the typing is ahead of it. What it finds wrong is
+  underlined, red for an error, yellow for a warning and blue for the rest,
+  and with vim's keys `g]` and `g[` go to the next and the one before and put
+  what it is on the status bar. A server that would not start is not tried
+  again on each key, only when asked something outright.
+* `K` shows the server's hover in a popup under the caret, drawn as markdown
+  by nano-ui-markdown, until the caret or the text moves.

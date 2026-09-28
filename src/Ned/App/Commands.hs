@@ -73,6 +73,8 @@ module Ned.App.Commands
     -- * Language servers
   , gotoDefinition
   , showHover
+  , jumpDiagnostic
+  , syncServer
   , takeAnswers
 
     -- * Vim
@@ -86,7 +88,8 @@ import Data.Foldable (for_)
 import Data.Function ((&))
 import Data.Functor ((<&>))
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', readIORef, writeIORef)
-import Data.List (isPrefixOf, sortOn)
+import Data.List (find, isPrefixOf, sortOn)
+import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Ord (Down (..))
 import Data.Text (Text)
@@ -94,6 +97,7 @@ import qualified Data.Text as T
 import qualified Data.Text.NanoRope.Measured as Rope
 import NanoUI
 import NanoUI.Backend.Sdl
+import NanoUI.Markdown (parseMarkdown)
 import qualified NanoUI.Shortcut as K
 import Ned.App.State
 import Ned.Buffer (Buffer)
@@ -445,11 +449,15 @@ gotoDefinition ref = askServer ref $ \s path pos ->
           col = Lsp.fromUtf16 (B.lineText b l) c
       pure a' {appEditor = revealCaret ed {edBuffer = B.setCursor False (B.lineStart b l + col) b}}
 
--- | Put what the language server says of what is under the caret on the
--- status bar.
+-- | Show what the language server says of what is under the caret, by the
+-- caret, unless it has moved by the time the server answers.
 showHover :: IORef App -> NanoUI ()
-showHover ref = askServer ref $ \s path pos ->
-  Lsp.hover s path pos <&> \r a -> pure a {appStatus = fromMaybe "Nothing to show here" r}
+showHover ref = do
+  at <- hoverAt <$> readApp ref
+  askServer ref $ \s path pos ->
+    Lsp.hover s path pos <&> \r a -> pure $ case r of
+      Nothing -> a {appStatus = "Nothing to show here"}
+      Just md -> a {appStatus = "", appHover = Just (at, parseMarkdown md)}
 
 -- | Ask the language server for the file in front about the place of its
 -- caret, on a thread of its own: the server may take a while, starting the
@@ -470,16 +478,70 @@ askServer ref ask = do
         Nothing -> setStatus ref ("No language server for " <> lang)
         Just (cmd, root) -> do
           setStatus ref "Asking the language server..."
-          wake <- askWake
+          post <- answerer ref
           let text = Rope.toText (B.bufRope b)
           void . liftIO . forkIO $ do
             r <- try $ do
-              s <- Lsp.serverFor (appServers a) cmd root
+              s <- startServer a post cmd root
               Lsp.syncDoc s path (Lsp.languageId lang) text
               ask s path (l, col)
-            let failed e a' = pure a' {appStatus = "Language server: " <> T.pack (displayException (e :: SomeException))}
-            atomicModifyIORef' (appAnswers a) (\fs -> (fs ++ [either failed id r], ()))
-            wake
+            post (either serverFailed id r)
+
+-- | Tell the language server of the file in front what it holds, each time
+-- that changes, so that what it finds wrong in it follows the typing. It is
+-- told on a thread that only ever tells it the latest, and a server that
+-- would not start is left alone until it is asked something outright.
+syncServer :: IORef App -> NanoUI ()
+syncServer ref = do
+  a <- readApp ref
+  let ed = appEditor a
+      b = edBuffer ed
+      lang = langName (edLang ed)
+  for_ (appPath a) $ \path -> when (appSynced a /= (path, B.bufVersion b)) $ do
+    modifyApp ref (\a' -> a' {appSynced = (path, B.bufVersion b)})
+    post <- answerer ref
+    liftIO (serverCommand (appConfig a) (FT.ftRoot (appTree a)) lang path) >>= mapM_ (\(cmd, root) ->
+      liftIO . Lsp.handLatest (appSync a) $ do
+        gone <- Lsp.didNotStart (appServers a) cmd root
+        unless gone $
+          try (startServer a post cmd root >>= \s -> Lsp.syncDoc s path (Lsp.languageId lang) (Rope.toText (B.bufRope b)))
+            >>= either (post . serverFailed) pure)
+
+-- | Go to the next thing the language server found wrong in the file in
+-- front, or the one before, round from the ends, and say what it is.
+jumpDiagnostic :: IORef App -> Bool -> NanoUI ()
+jumpDiagnostic ref forward = do
+  a <- readApp ref
+  let b = edBuffer (appEditor a)
+      here = B.bufCursor b
+      found = sortOn fst [(lspOffset b (Lsp.diagStart d), d) | d <- frontDiagnostics a]
+      next
+        | forward = listToMaybe (filter ((> here) . fst) found <> found)
+        | otherwise = listToMaybe (reverse (filter ((< here) . fst) found) <> reverse found)
+  case next of
+    Nothing -> setStatus ref "No diagnostics"
+    Just (at, d) -> do
+      onBuffer ref (B.setCursor False at)
+      let kind = fromMaybe "note" (lookup (Lsp.diagSeverity d) [(1, "error"), (2, "warning"), (3, "info"), (4, "hint")])
+          msg = fromMaybe "" (find (not . T.null) (map T.strip (T.lines (Lsp.diagMessage d))))
+      setStatus ref (kind <> ": " <> msg)
+
+-- | Start the server for a command line in a folder, or find it running,
+-- with what it finds wrong going to the application by @post@.
+startServer :: App -> ((App -> IO App) -> IO ()) -> [String] -> FilePath -> IO Lsp.Server
+startServer a post = Lsp.serverFor (appServers a) $ \path ds ->
+  post (\a' -> pure a' {appDiagnostics = Map.insert path ds (appDiagnostics a')})
+
+serverFailed :: SomeException -> App -> IO App
+serverFailed e a = pure a {appStatus = "Language server: " <> T.pack (displayException e)}
+
+-- | How a thread hands the application something to do: it is queued for
+-- the next frame, which it wakes.
+answerer :: IORef App -> NanoUI ((App -> IO App) -> IO ())
+answerer ref = do
+  answers <- appAnswers <$> readApp ref
+  wake <- askWake
+  pure (\f -> atomicModifyIORef' answers (\fs -> (fs ++ [f], ())) >> wake)
 
 -- | The command line a file's language server is run by, and the folder it
 -- is run in: a project's own, for the deepest project the file is under
@@ -544,6 +606,7 @@ vimRequest ref = \case
     when (appBar a == BarFind) (closeBar ref)
   V.Definition -> gotoDefinition ref
   V.Hover -> showHover ref
+  V.NextDiagnostic forward -> jumpDiagnostic ref forward
   V.Message msg -> setStatus ref msg
   where
     run force = if force then runPending ref else guarded ref

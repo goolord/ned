@@ -34,6 +34,10 @@ module Ned.App.State
   , findMarks
   , otherWords
   , titleFor
+  , frontDiagnostics
+  , hoverAt
+  , diagnosticSpans
+  , lspOffset
   ) where
 
 import Data.IORef (IORef, newIORef)
@@ -42,6 +46,7 @@ import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import NanoUI.Backend.Sdl (FileDialogId)
+import NanoUI.Markdown (MarkdownDoc)
 import qualified Ned.Buffer as B
 import Ned.Complete (Source, buffersSource)
 import Ned.Complete.Tags (Tags, tagSource)
@@ -52,7 +57,9 @@ import Ned.File
 import Ned.FileTree (FileTree)
 import qualified Ned.FileTree as FT
 import Ned.Highlight (languageFor, plainText)
-import Ned.Lsp (Servers, newServers)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
+import Ned.Lsp (Diagnostic (..), Latest, Servers, fromUtf16, newLatest, newServers)
 import Ned.Picker (Picker)
 import System.Directory (doesFileExist, getCurrentDirectory, makeAbsolute)
 import System.FilePath (equalFilePath, takeFileName)
@@ -141,6 +148,15 @@ data App = App
   -- ^ What the language servers' answers do to the application, oldest
   -- first, put here by the threads that waited for them for the next frame
   -- to do.
+  , appSync :: !Latest
+  -- ^ The thread that tells the servers what the files hold as they change.
+  , appSynced :: !(FilePath, Int)
+  -- ^ The file in front and its version, as last handed to that thread.
+  , appDiagnostics :: !(Map FilePath [Diagnostic])
+  -- ^ What the servers last said is wrong in each file.
+  , appHover :: !(Maybe ((Int, Int, Int), MarkdownDoc))
+  -- ^ What a server said of what is under the caret, shown by it for as
+  -- long as the caret and the text are where they were asked from ('hoverAt').
   }
 
 -- | A fresh application on some settings, with its tree on the directory the
@@ -150,6 +166,7 @@ newApp cfg = do
   cwd <- getCurrentDirectory
   servers <- newServers
   answers <- newIORef []
+  sync <- newLatest
   pure
     App
       { -- The first tab is set up as the settings say, and every tab after it
@@ -186,6 +203,10 @@ newApp cfg = do
       , appConfigSeen = 0
       , appServers = servers
       , appAnswers = answers
+      , appSync = sync
+      , appSynced = ("", -1)
+      , appDiagnostics = Map.empty
+      , appHover = Nothing
       }
 
 --------------------------------------------------------------------------------
@@ -372,6 +393,36 @@ otherWords tags app =
     , docKey d /= appDocKey app
     ]
     <> tagSource tags
+
+-- | Where the caret is: in which tab, at which version of its text, and where
+-- in it.
+hoverAt :: App -> (Int, Int, Int)
+hoverAt app = (appDocKey app, B.bufVersion b, B.bufCursor b)
+  where
+    b = edBuffer (appEditor app)
+
+-- | What the servers last said is wrong in the file in front.
+frontDiagnostics :: App -> [Diagnostic]
+frontDiagnostics app = maybe [] (\p -> Map.findWithDefault [] p (appDiagnostics app)) (appPath app)
+
+-- | What the editor underlines: where each of those runs in the text, and
+-- how bad it is. A diagnostic with nothing in its range marks a character.
+diagnosticSpans :: App -> [(Int, Int, Int)]
+diagnosticSpans app =
+  [ (i, max (i + 1) (lspOffset b (diagEnd d)), diagSeverity d)
+  | d <- frontDiagnostics app
+  , let i = lspOffset b (diagStart d)
+  ]
+  where
+    b = edBuffer (appEditor app)
+
+-- | The offset in the text of a server's line and UTF-16 column. The text
+-- may have changed since the server looked, so both are kept to what is
+-- there.
+lspOffset :: B.Buffer -> (Int, Int) -> Int
+lspOffset b (l, c) = B.lineStart b l' + min (B.lineLength b l') (fromUtf16 (B.lineText b l') c)
+  where
+    l' = max 0 (min (B.lineCount b - 1) l)
 
 -- | The name of the file in front, starred while it has changes to save.
 titleFor :: App -> Text

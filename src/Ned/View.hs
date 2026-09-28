@@ -34,6 +34,7 @@ import qualified Data.Text as T
 import Data.Word (Word64)
 import GHC.Clock (getMonotonicTime)
 import NanoUI
+import NanoUI.Markdown (markdown)
 import Ned.App.Commands
 import Ned.App.Frame
 import Ned.App.State
@@ -67,6 +68,7 @@ appView ref = do
   -- the state it runs on.
   runVimRequests ref
   takeAnswers ref
+  syncServer ref
   tags <- watchedTags ref
   reloadConfig ref
   app0 <- readApp ref
@@ -142,7 +144,7 @@ appView ref = do
             -- one to put a newline in the file it opened.
             appNow <- readApp ref
             let wantFocus = not (appBarFocus app1) && not (appTreeFocus app1) && unblocked
-            (resp, ed) <- editorView (appDocKey appNow) wantFocus (findMarks appNow) (otherWords tags appNow) (appEditor appNow)
+            (resp, ed, caret) <- editorView (appDocKey appNow) wantFocus (findMarks appNow) (diagnosticSpans appNow) (otherWords tags appNow) (appEditor appNow)
             liftIO (writeIORef respRef (Just resp))
             when (any (not . null . vimRequests) (edVim ed)) requestFrame
             modifyApp ref $ \a ->
@@ -151,6 +153,7 @@ appView ref = do
                 , appBarFocus = appBarFocus a && not (edPressed ed)
                 , appTreeFocus = appTreeFocus a && not (edPressed ed)
                 }
+            hoverPopup ref caret
           pure (PaneView "" False Nothing)
     -- What each pane hangs its menu on, which the grid's own response does
     -- not carry out of it.
@@ -197,6 +200,18 @@ appView ref = do
 
   appEnd <- readApp ref
   when (chromeSig appEnd /= chromeSig app0 || editorSig appEnd /= drawn) requestFrame
+
+-- | What the language server said of what is under the caret, under it, for
+-- as long as the caret and the text stay as they were. Escape or a click
+-- elsewhere puts it away.
+hoverPopup :: IORef App -> Rect -> NanoUI ()
+hoverPopup ref caret = do
+  a <- readApp ref
+  let shown = [doc | Just (at, doc) <- [appHover a], at == hoverAt a]
+  (resp, _) <-
+    popupWith (not (null shown)) (defaultPopupConfig (AnchorRect caret)) {cfgPlacement = PlacementBelow} (fixedW 560 . maxH 420) $
+      scrollWith fillW (mapM_ markdown shown)
+  when (respClicked resp || (isJust (appHover a) && null shown)) (modifyApp ref (\a' -> a' {appHover = Nothing}))
 
 -- | One label and nothing else, which NED_BLANK swaps the application for: it
 -- tells what a frame costs nano-ui from what it costs the editor.

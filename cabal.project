@@ -11,6 +11,7 @@ source-repository-package
   subdir:
     packages/nano-ui
     packages/nano-ui-sdl
+    packages/nano-ui-markdown
 
 source-repository-package
   type: git
@@ -34,3 +35,7 @@ package dhall
 -- C:\msys64\ucrt64\lib\pkgconfig (see README.md).
 package nano-ui-sdl
   flags: +sdl +simd
+
+-- Without its example window.
+package nano-ui-markdown
+  flags: -sdl

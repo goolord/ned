@@ -40,16 +40,18 @@ import Ned.Widget (markOp, rounding, thumbSpan)
 -- | The editor, filling the space its parent gives it: four custom widgets,
 -- the line numbers, the text and the upright scrollbar in a row, and the
 -- sideways scrollbar in a lane under them. Pass the editor and keep the
--- result; the response is for hanging a context menu on. It takes the
+-- result; the response is for hanging a context menu on, and the rectangle
+-- is the caret's, for putting something by it. It takes the
 -- keyboard when @wantFocus@ is set, which an application clears while a
--- field of its own is being typed into, and marks the matches of @marks@.
+-- field of its own is being typed into, marks the matches of @marks@, and
+-- underlines @diagnostics@, each from and to an offset, by its severity.
 -- @others@ offers words to complete from besides the text's own.
 --
 -- @textKey@ names the text the editor holds, and changes when it is another
 -- text: two files just opened are at the same version with the caret and the
 -- view in the same place, and without it the second would not be drawn.
-editorView :: Int -> Bool -> Text -> Source -> Editor -> NanoUI (Response, Editor)
-editorView textKey wantFocus marks others ed0 = do
+editorView :: Int -> Bool -> Text -> [(Int, Int, Int)] -> Source -> Editor -> NanoUI (Response, Editor, Rect)
+editorView textKey wantFocus marks diagnostics others ed0 = do
   widGutter <- nextId
   wid <- nextId
   widBar <- nextId
@@ -89,6 +91,7 @@ editorView textKey wantFocus marks others ed0 = do
           , esCaretOn = efCaretOn fr
           , esFind = if edFindExact ed1 then marks else foldCase marks
           , esFindExact = edFindExact ed1
+          , esDiagnostics = diagnostics
           , esThumbHot = efThumbHot fr
           , esThumbXHot = efThumbXHot fr
           , esWhitespace = edShowWhitespace ed1
@@ -113,7 +116,7 @@ editorView textKey wantFocus marks others ed0 = do
       pure (respGutter <> respText)
     (respHBar, ()) <- customWidgetWithId widHBar (part PartHBar UiCursorDefault (fillW . fixedH scrollBarH))
     pure (respRow <> respHBar)
-  pure (resp, ed1)
+  pure (resp, ed1, caretRect g rect ed1)
 
 -- | Everything the editor's drawing reads.
 data EditorScene = EditorScene
@@ -129,6 +132,7 @@ data EditorScene = EditorScene
   , esCaretOn :: !Bool
   , esFind :: !Text
   , esFindExact :: !Bool
+  , esDiagnostics :: ![(Int, Int, Int)]
   , esThumbHot :: !Bool
   , esThumbXHot :: !Bool
   , esWhitespace :: !Bool
@@ -175,6 +179,7 @@ editorSceneKey which sc =
           , keyPart (fromMaybe (-1) (esBlock sc))
           , keyPart (esFindExact sc)
           , keyPart (esFind sc)
+          , keyPart (show (esDiagnostics sc))
           , keyPart (langName (esLang sc))
           , keyPart (show (esLexStart sc))
           , -- The menu's words change with the text, which the version has
@@ -199,6 +204,7 @@ drawEditor which sc own@(Rect ox oy ow oh) =
             [ backdrops
             , if esWhitespace sc then concatMap indentation rows else []
             , texts
+            , concatMap underlines rows
             , caret
             , maybe [] menuOps (esMenu sc)
             ]
@@ -312,6 +318,19 @@ drawEditor which sc own@(Rect ox oy ow oh) =
           | otherwise =
               let next = cell + cellsAt cell '\t'
                in [FillRect (Rect (cellX cell + 2) midY (fromIntegral (next - cell) * cellW - 4) 1) colWhitespace | next > firstCell] ++ marks next cs
+
+    -- What a language server found wrong on a row: a line under it along
+    -- the foot of the row, over the text.
+    underlines vr =
+      [ FillRect (Rect (cellX c0) (lineY ln + lineH - 2) (fromIntegral (max 1 (c1 - c0)) * cellW) 2) (colDiagnostic sev)
+      | let ln = rowLine vr
+            start = B.lineStart buf ln
+            end = start + B.lineLength buf ln
+      , (i, j, sev) <- esDiagnostics sc
+      , i <= end && j > start
+      , let c0 = cellIn vr (max 0 (i - start))
+            c1 = cellIn vr (min (end - start) (j - start))
+      ]
 
     texts = concatMap lineOps rows
     lineOps vr

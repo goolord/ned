@@ -106,8 +106,9 @@ defaultConfigText =
     , ", shell = " <> (if isWindows then "[ \"cmd\", \"/c\" ]" else "[ \"sh\", \"-c\" ]")
     , "  -- A server for a language, named as the status bar names it:"
     , "  -- [ { language = \"Haskell\", command = \"haskell-language-server-wrapper --lsp\" } ]"
-    , "  -- Ctrl+] goes to a definition; with vim's keys, gd does too, and K shows"
-    , "  -- what is under the caret."
+    , "  -- Its diagnostics are underlined. Ctrl+] goes to a definition; with vim's"
+    , "  -- keys, gd does too, K shows what is under the caret, and g] and g[ go to"
+    , "  -- the next diagnostic and the one before."
     , ", languageServers = [] : List { language : Text, command : Text }"
     , "  -- Servers for the files under a folder, in place of the ones above:"
     , "  -- [ { root = \"~/src/app\", languageServers = [ { language = \"Haskell\", command = \"nix develop -c haskell-language-server-wrapper --lsp\" } ] } ]"

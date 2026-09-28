@@ -4,7 +4,7 @@ A small, fast source code editor built on
 [nano-rope](https://github.com/goolord/nano-rope) and
 [nano-ui](https://github.com/goolord/nano-ui), using SDL3.
 
-<img width="1102" height="760" alt="ned editor" src="https://github.com/user-attachments/assets/5c986cf4-0e5b-49fb-a991-a42d5e1966fe" />
+<img width="2205" height="1523" alt="ned editor" src="https://github.com/user-attachments/assets/63baafff-c79f-4f67-9668-7fcfdfab42cd" />
 
 ```sh
 cabal run ned -- path/to/file.hs [more files...]

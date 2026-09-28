@@ -20,7 +20,6 @@ import Data.Maybe (fromMaybe)
 import Data.Primitive.SmallArray (SmallArray, indexSmallArray, sizeofSmallArray, smallArrayFromList)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Effectful (Eff, type (:>))
 -- 'Row' here is a row of the tree, not nano-ui's layout direction.
 import NanoUI hiding (Row)
 import Ned.FileTree
@@ -39,7 +38,7 @@ import System.FilePath (equalFilePath)
 -- It takes the keyboard when @wantFocus@ is set, which the application does
 -- while the tree is the thing last clicked on. The bar that resizes the panel
 -- is the pane grid's, above; this is only what the pane holds.
-fileTreePanel :: Ui :> es => Bool -> Maybe FilePath -> FileTree -> Eff es (Response, FileTree, Maybe FilePath)
+fileTreePanel :: Bool -> Maybe FilePath -> FileTree -> NanoUI (Response, FileTree, Maybe FilePath)
 fileTreePanel wantFocus current ft0 =
   columnWith (tight . gap 0 . fillW . fillH) $ do
     -- The padding goes on last: 'tight' before it would take it off again,
@@ -53,7 +52,7 @@ fileTreePanel wantFocus current ft0 =
     treeRows wantFocus current ft0
 
 -- | The rows, in one widget that scrolls itself.
-treeRows :: Ui :> es => Bool -> Maybe FilePath -> FileTree -> Eff es (Response, FileTree, Maybe FilePath)
+treeRows :: Bool -> Maybe FilePath -> FileTree -> NanoUI (Response, FileTree, Maybe FilePath)
 treeRows wantFocus current ft0 = do
   wid <- nextId
   lineH <- rowHeight <$> uiFontMetrics
@@ -86,7 +85,7 @@ treeRows wantFocus current ft0 = do
         { widgetLayout = (grow . fillH) defaultLayout
         , widgetDraw = \cdc r -> drawTree cdc scene r
         , widgetContent = treeSceneKey scene
-        , widgetCursor = Just (const UiCursorDefault)
+        , widgetCursor = Just (\_ _ _ -> UiCursorDefault)
         , widgetFocusable = True
         , widgetDamageSlop = 0
         , -- Every row is this one widget, so a pointer moving from one row

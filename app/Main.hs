@@ -9,4 +9,4 @@ main :: IO ()
 main =
   getArgs >>= \case
     "--selftest" : dir : rest -> selftest dir (listToMaybe rest)
-    args -> runNed (listToMaybe args)
+    paths -> runNed paths

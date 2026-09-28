@@ -38,7 +38,6 @@ module Ned.FileTree
   ) where
 
 import Data.Primitive.SmallArray (indexSmallArray, sizeofSmallArray)
-import Effectful (Eff, type (:>))
 -- 'Row' here is a row of the tree, not nano-ui's layout direction.
 import NanoUI hiding (Row)
 import Ned.FileTree.Model
@@ -68,7 +67,7 @@ data TreeFrame = TreeFrame
 -- @wantFocus@ says the tree has the keyboard, which the application gives it
 -- while the tree is the thing last clicked on; @lineH@ is the height of a row,
 -- which whoever lays it out has worked out from the font already.
-treeFrame :: Ui :> es => Bool -> Rect -> Float -> FileTree -> Eff es TreeFrame
+treeFrame :: Bool -> Rect -> Float -> FileTree -> NanoUI TreeFrame
 treeFrame wantFocus rect lineH ft0 = do
   inp <- askInput
   let viewRows = realToFrac (rectH rect / lineH) :: Double
@@ -107,7 +106,7 @@ treeFrame wantFocus rect lineH ft0 = do
             _ -> (ft0, Nothing)
 
   -- A directory opened by this frame's click is read before the frame draws it.
-  ftLoaded <- uiIO (loadPending ftMouse)
+  ftLoaded <- liftIO (loadPending ftMouse)
 
   -- The keyboard, when the tree has it.
   let (ftKeys, openedByKey)

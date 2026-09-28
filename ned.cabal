@@ -92,7 +92,6 @@ library
         containers ^>=0.8,
         directory ^>=1.3,
         dir-traverse ^>=0.2.3,
-        effectful-core ^>=2.6,
         filepath ^>=1.5,
         microaeson ^>=0.1.0.3,
         nano-rope ^>=0.1,

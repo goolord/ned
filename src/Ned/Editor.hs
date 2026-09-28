@@ -32,7 +32,6 @@ module Ned.Editor
 
 import Control.Monad (when)
 import Data.Maybe (isNothing)
-import Effectful (Eff, type (:>))
 import NanoUI
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
@@ -67,7 +66,7 @@ data EditorFrame = EditorFrame
 -- @focused@ says the editor has the keyboard, which an application clears
 -- while a field of its own is being typed into; @cellW@ and @fm@ are the font
 -- it is set in, which whoever lays it out has resolved already.
-editorFrame :: Ui :> es => Bool -> Rect -> Float -> FontMetrics -> Editor -> Eff es EditorFrame
+editorFrame :: Bool -> Rect -> Float -> FontMetrics -> Editor -> NanoUI EditorFrame
 editorFrame focused rect cellW fm ed0 = do
   inp <- askInput
   now <- uiTime

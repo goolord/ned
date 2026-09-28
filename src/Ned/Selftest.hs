@@ -16,12 +16,13 @@ import qualified Data.Text as T
 import qualified Data.Text.NanoRope.Measured as Rope
 import GHC.Clock (getMonotonicTime)
 import NanoUI
-import NanoUI.Backend (lineWidthIO)
+import NanoUI.Backend (lineWidthIO, textInputArea)
 import NanoUI.Backend.Sdl
 import NanoUI.Input (emptyInput, inputKeysFromList)
 import NanoUI.Internal.Context (Context (..))
 import NanoUI.Testing (cursorKindIs, needsRedraw, newPixelContext, uiCursorKind)
 import Ned.App
+import Ned.App.State (Doc (..), appDocs, docName, selectDoc)
 import qualified Ned.Buffer as B
 import Ned.Editor (Editor (..), cellWidth, defaultFontSize)
 import qualified Ned.FileTree as FT
@@ -53,25 +54,36 @@ selftestIn dir mfile say = do
   ctx0 <- newPixelContext >>= (`withTheme` tomorrowNightMinDarkTheme)
   blankApp <- newApp
   tLoad0 <- getMonotonicTime
-  app0 <- maybe pure (openPath Nothing) mfile blankApp
+  app0 <- maybe pure (openPath InNewTab Nothing) mfile blankApp
   tLoad1 <- B.lineCount (edBuffer (appEditor app0)) `seq` getMonotonicTime
   say (printf "loaded %d lines in %.1f ms" (B.lineCount (edBuffer (appEditor app0))) ((tLoad1 - tLoad0) * 1000))
   ref <- newIORef app0
   let size = Size 1100 760
-  withSdl defaultSdlOptions {sdlWindowHidden = True, sdlAppVsync = False, sdlWindowSize = size, sdlWindowResizable = False} ctx0 $ \ctx env -> do
+  withSdl defaultSdlOptions {sdlWindowSettings = defaultWindowSettings {wsMode = Hidden, wsSize = size, wsResizable = False}, sdlAppVsync = False} ctx0 $ \ctx env -> do
     let base = emptyInput {inputWindowSize = size, inputMousePos = V2 600 400}
         frame inp = void (sdlDrawFrame ctx (appView ref) env inp False)
         idle = frame base >> frame base
         typed t = frame base {inputChars = t} >> idle
-        chord c = frame base {inputChars = T.singleton c, inputModifiers = Modifiers False True False} >> idle
-        key mods k = frame base {inputKeys = inputKeysFromList [k], inputModifiers = mods} >> idle
-        plain = Modifiers False False False
+        -- A chord types nothing: it is the key, pressed with Ctrl held.
+        chord c = key ctrlM (KeyChar c)
+        key mods k = frame base {inputKeys = inputKeysFromList [k], inputKeysNew = inputKeysFromList [k], inputModifiers = mods} >> idle
+        plain = noModifiers
+        ctrlM = noModifiers {modCtrl = True}
+        shiftM = noModifiers {modShift = True}
+        ctrlShiftM = noModifiers {modCtrl = True, modShift = True}
+        leftButton = buttonsFromList [MouseLeft]
+        rightButton = buttonsFromList [MouseRight]
         at x y = base {inputMousePos = V2 x y}
         -- A click is a press and, a frame later, the release.
         tap x y = do
-          frame (at x y) {inputMouseDown = True, inputMousePressed = True}
-          frame (at x y) {inputMouseReleased = True}
+          frame (at x y) {inputButtonsHeld = leftButton, inputButtonsPressed = leftButton}
+          frame (at x y) {inputButtonsReleased = leftButton}
         click x y = tap x y >> idle
+        -- A press, a move with the button held, and the release there.
+        drag x0 y0 x1 y1 = do
+          frame (at x0 y0) {inputButtonsHeld = leftButton, inputButtonsPressed = leftButton}
+          frame (at x1 y1) {inputButtonsHeld = leftButton}
+          frame (at x1 y1) {inputButtonsReleased = leftButton}
         -- A screenshot of the window as it stands, or with the pointer put
         -- back where it rests.
         snap name = do
@@ -86,6 +98,10 @@ selftestIn dir mfile say = do
 
     idle
     shot "01-open.bmp"
+    -- The window hands over typed text only while a widget asks for it, and
+    -- the text, which has the keyboard, has to.
+    asking <- textInputArea ctx
+    unless (isJust asking) (fail "selftest: the text has the keyboard and asks for no typed text")
 
     -- Everything below places the pointer by what the editor's own rectangle
     -- holds, so the tree is put away first and taken up again at the end.
@@ -121,7 +137,7 @@ selftestIn dir mfile say = do
         t1 <- getMonotonicTime
         say (printf "200 scrolled frames in %.1f ms (%.2f ms a frame)" ((t1 - t0) * 1000) ((t1 - t0) * 5))
         shot "02-scrolled.bmp"
-        key (Modifiers False True False) KeyEnd
+        key ctrlM KeyEnd
         shot "03-end.bmp"
         t2 <- getMonotonicTime
         forM_ [1 :: Int .. 200] $ \i -> frame base {inputChars = T.singleton (toEnum (97 + i `rem` 26))}
@@ -147,7 +163,7 @@ selftestIn dir mfile say = do
         expect "redo" "main :: IO ()\nmain = do\n    putStrLn \"hello\" -- greet\n    pure ()"
 
         -- Select the last line's text and replace it.
-        key (Modifiers True False False) KeyHome
+        key shiftM KeyHome
         typed "x"
         expect "replace selection" "main :: IO ()\nmain = do\n    putStrLn \"hello\" -- greet\n    x"
         key plain KeyBackspace
@@ -193,7 +209,7 @@ selftestIn dir mfile say = do
         chord 'a'
         key plain KeyTab
         expect "indent selection" "    main :: IO ()\n    main = do\n        putStrLn \"hello\" -- greet\n        ok"
-        key (Modifiers True False False) KeyTab
+        key shiftM KeyTab
         expect "unindent selection" "main :: IO ()\nmain = do\n    putStrLn \"hello\" -- greet\n    ok"
         shot "04-selected.bmp"
 
@@ -205,11 +221,11 @@ selftestIn dir mfile say = do
 
         -- A press on a line number selects the line; dragging down takes more.
         let selection = B.selectedText . edBuffer . appEditor <$> readIORef ref
-        frame (at 20 55) {inputMouseDown = True, inputMousePressed = True}
+        frame (at 20 55) {inputButtonsHeld = leftButton, inputButtonsPressed = leftButton}
         one <- selection
         when (one /= "main = do" <> T.singleton (toEnum 10)) $ fail ("selftest: gutter press selected " <> show one)
-        frame (at 20 75) {inputMouseDown = True}
-        frame (at 20 75) {inputMouseReleased = True}
+        frame (at 20 75) {inputButtonsHeld = leftButton}
+        frame (at 20 75) {inputButtonsReleased = leftButton}
         two <- selection
         when (length (T.lines two) /= 2) $ fail ("selftest: gutter drag selected " <> show two)
         shot "06-gutter.bmp"
@@ -217,16 +233,17 @@ selftestIn dir mfile say = do
         -- A double click takes the word and a triple click the line, and both
         -- keep them through the frames that hold the button, which report
         -- one click as the session's frames do. "putStrLn" is at 85..150.
-        let press n x y = frame (at x y) {inputMouseDown = True, inputMousePressed = True, inputMouseClicks = n}
-            hold x y = frame (at x y) {inputMouseDown = True}
-            release x y = frame (at x y) {inputMouseReleased = True} >> idle
-        press 2 100 73 >> hold 100 73 >> hold 100 73 >> release 100 73
+        let press n x y = frame (at x y) {inputButtonsHeld = leftButton, inputButtonsPressed = leftButton, inputMouseClicks = n}
+            hold x y = frame (at x y) {inputButtonsHeld = leftButton}
+            release x y = frame (at x y) {inputButtonsReleased = leftButton} >> idle
+        let putY = 73
+        press 2 100 putY >> hold 100 putY >> hold 100 putY >> release 100 putY
         word <- selection
         when (word /= "putStrLn") $ fail ("selftest: double click selected " <> show word)
-        press 2 100 73 >> hold 100 73 >> hold 180 73 >> release 180 73
+        press 2 100 putY >> hold 100 putY >> hold 180 putY >> release 180 putY
         words2 <- selection
         when (words2 /= "putStrLn " <> T.init (T.pack (show ("hello" :: String)))) $ fail ("selftest: double click and drag selected " <> show words2)
-        press 3 100 73 >> hold 100 73 >> hold 100 73 >> release 100 73
+        press 3 100 putY >> hold 100 putY >> hold 100 putY >> release 100 putY
         line <- selection
         when (line /= "    putStrLn " <> T.pack (show ("hello" :: String)) <> " -- greet" <> T.singleton (toEnum 10)) $
           fail ("selftest: triple click selected " <> show line)
@@ -242,9 +259,7 @@ selftestIn dir mfile say = do
         idle
         still <- edScrollX . appEditor <$> readIORef ref
         when (still /= 0) $ fail ("selftest: a long line left the view sideways at " <> show still)
-        frame (at 600 721) {inputMouseDown = True, inputMousePressed = True}
-        frame (at 1000 721) {inputMouseDown = True}
-        frame (at 1000 721) {inputMouseReleased = True}
+        drag 600 721 1000 721
         idle
         draggedX <- edScrollX . appEditor <$> readIORef ref
         when (draggedX <= 0) $
@@ -264,15 +279,13 @@ selftestIn dir mfile say = do
         -- long one so it is walked out of sight, the bar stays and the view
         -- still goes to it.
         forM_ [1 :: Int .. 40] (const (key plain KeyEnter))
-        key (Modifiers True False False) KeyHome
-        frame (at 600 721) {inputMouseDown = True, inputMousePressed = True}
-        frame (at 1000 721) {inputMouseDown = True}
-        frame (at 1000 721) {inputMouseReleased = True}
+        key shiftM KeyHome
+        drag 600 721 1000 721
         idle
         reached <- edScrollX . appEditor <$> readIORef ref
         when (reached <= 0) $
           fail ("selftest: with the long line out of view the sideways bar dragged to " <> show reached)
-        key (Modifiers True False False) KeyHome
+        key shiftM KeyHome
         idle
         backTop <- edScrollX . appEditor <$> readIORef ref
         when (backTop /= 0) $ fail ("selftest: Ctrl+Home left the view sideways at " <> show backTop)
@@ -289,8 +302,8 @@ selftestIn dir mfile say = do
         crossing "on the line numbers" 20 400 UiCursorDefault
 
         -- A right click outside the selection moves the caret and opens the menu.
-        frame (at 300 40) {inputMouseRightDown = True, inputMouseRightPressed = True}
-        frame (at 300 40) {inputMouseRightReleased = True}
+        frame (at 300 40) {inputButtonsHeld = rightButton, inputButtonsPressed = rightButton}
+        frame (at 300 40) {inputButtonsReleased = rightButton}
         none <- selection
         unless (T.null none) $ fail "selftest: right click kept the selection"
         frame (at 300 40)
@@ -299,8 +312,8 @@ selftestIn dir mfile say = do
 
         -- A click on a menu's button has to ask for the frame that shows the
         -- menu: nothing else will, with the pointer at rest.
-        _ <- sdlDrawFrame ctx (appView ref) env (at 17 13) {inputMouseDown = True, inputMousePressed = True} False
-        dirty1 <- sdlDrawFrame ctx (appView ref) env (at 17 13) {inputMouseReleased = True} False
+        _ <- sdlDrawFrame ctx (appView ref) env (at 17 13) {inputButtonsHeld = leftButton, inputButtonsPressed = leftButton} False
+        dirty1 <- sdlDrawFrame ctx (appView ref) env (at 17 13) {inputButtonsReleased = leftButton} False
         opened <- appOpenMenu <$> readIORef ref
         when (opened /= "File") $ fail "selftest: the File menu did not open"
         unless dirty1 $ fail "selftest: opening a menu asked for no frame"
@@ -324,8 +337,8 @@ selftestIn dir mfile say = do
     createDirectoryIfMissing True (treeDir </> "sub")
     writeFile (treeDir </> "sub" </> "inner.txt") "inner\n"
     writeFile (treeDir </> "outer.txt") "outer\n"
-    -- A file the tree opens goes through the guard every other open does, and
-    -- the text here has changes; they are put down rather than asked about.
+    -- A file the tree opens takes the place of the one in front, which asks
+    -- first when that has changes; the ones typed here are put down.
     modifyIORef' ref $ \a ->
       a {appEditor = (appEditor a) {edBuffer = B.markSaved (edBuffer (appEditor a))}}
     chord 'b'
@@ -372,9 +385,32 @@ selftestIn dir mfile say = do
     expectRows "the tree after opening a file" ["sub", "inner.txt", "outer.txt"]
     treeHasKeys <- appTreeFocus <$> readIORef ref
     when treeHasKeys (fail "selftest: opening a file left the keyboard in the tree")
+    -- In the tab that was in front, in place of what it held.
+    let tabNames = map docName . appDocs <$> readIORef ref
+    inPlace <- tabNames
+    when (inPlace /= ["inner.txt"]) $
+      fail ("selftest: after the tree opened a file the tabs were " <> show inPlace)
     typed "x"
     typedInto <- text
     when (typedInto == opened) $ fail "selftest: the text took nothing after the tree opened it"
+
+    -- A shift-click on a file in the tree opens it in a tab of its own, and
+    -- leaves the one with changes alone without asking. The rows start under
+    -- the menu bar and the tree's own heading, a row every 22.
+    frame (at 60 114) {inputModifiers = shiftM, inputButtonsHeld = leftButton, inputButtonsPressed = leftButton}
+    frame (at 60 114) {inputModifiers = shiftM, inputButtonsReleased = leftButton}
+    idle
+    newTab <- tabNames
+    shiftAsked <- appPending <$> readIORef ref
+    when (newTab /= ["inner.txt", "outer.txt"] || isJust shiftAsked) $
+      fail ("selftest: a shift-click in the tree left the tabs at " <> show newTab)
+    -- A plain click on a file that is open brings its tab forward, changes
+    -- and all, rather than asking to put it in the place of this one.
+    click 60 92
+    backTo <- appPath <$> readIORef ref
+    plainAsked <- appPending <$> readIORef ref
+    unless (maybe False (equalFilePath (treeDir </> "sub" </> "inner.txt")) backTo && not (isJust plainAsked)) $
+      fail ("selftest: a click on an open file in the tree brought " <> show backTo <> " forward")
 
     -- Every row of the tree is the one widget, so a pointer that moves from
     -- one row to the next crosses onto no other widget. The tree asks for a
@@ -462,16 +498,20 @@ selftestIn dir mfile say = do
     landedOn "the query \"inner\"" "sub/inner.txt" narrowed
     shot "12-picker-query.bmp"
 
-    -- Enter opens what the keyboard is on and puts the finder away. The text
-    -- has changes typed into it above, which are put down rather than asked
-    -- about, as they are everywhere else in this test.
-    modifyIORef' ref $ \a ->
-      a {appEditor = (appEditor a) {edBuffer = B.markSaved (edBuffer (appEditor a))}}
+    -- Enter opens what the keyboard is on and puts the finder away. The file
+    -- is open in a tab already, from the tree, and that tab is what comes to
+    -- the front, with what was typed into it.
+    tabsBefore <- length . appDocs <$> readIORef ref
     key plain KeyEnter
     idle
     pickedPath <- appPath <$> readIORef ref
     unless (maybe False (equalFilePath (treeDir </> "sub" </> "inner.txt")) pickedPath) $
       fail ("selftest: the finder opened " <> show pickedPath)
+    tabsAfter <- length . appDocs <$> readIORef ref
+    when (tabsAfter /= tabsBefore) $
+      fail ("selftest: opening a file that was open made " <> show tabsAfter <> " tabs of " <> show tabsBefore)
+    reopened <- text
+    when (reopened == "inner\n") $ fail "selftest: opening a file that was open lost what was typed into it"
     stillUp <- pickerNow
     when (isJust stillUp) (fail "selftest: picking a file left the finder up")
 
@@ -529,9 +569,7 @@ selftestIn dir mfile say = do
 
     -- The rows' scrollbar is down the right of them. Its thumb, held and
     -- dragged down, scrolls them; the button coming up lets go of it.
-    frame (at 462 130) {inputMouseDown = True, inputMousePressed = True}
-    frame (at 462 400) {inputMouseDown = True}
-    frame (at 462 400) {inputMouseReleased = True}
+    drag 462 130 462 400
     idle
     dragged <- settle 20
     when (P.pkScroll dragged <= 0) $
@@ -597,7 +635,7 @@ selftestIn dir mfile say = do
     findExecutable "rg" >>= \case
       Nothing -> say "skip: no rg on the PATH, so the live grep is not run"
       Just _ -> do
-        frame base {inputChars = "f", inputModifiers = Modifiers True True False} >> idle
+        key ctrlShiftM (KeyChar 'f')
         let answered :: Int -> IO P.Picker
             answered 0 = fail "selftest: the grep never answered"
             answered k =
@@ -629,8 +667,6 @@ selftestIn dir mfile say = do
         key plain KeyBackspace
         _ <- answered 200
         -- Enter opens the file with the caret on the line that was found.
-        modifyIORef' ref $ \a ->
-          a {appEditor = (appEditor a) {edBuffer = B.markSaved (edBuffer (appEditor a))}}
         key plain KeyEnter
         idle
         landed <- readIORef ref
@@ -639,16 +675,63 @@ selftestIn dir mfile say = do
           fail ("selftest: the grep opened " <> show (appPath landed) <> " at line " <> show (B.lineOf buf (B.bufCursor buf)))
 
 
+    -- The tabs. Ctrl+N opens an untitled one after the one in front, which
+    -- is put on the last for this, and brings it to the front.
+    modifyIORef' ref (\a -> selectDoc (docKey (last (appDocs a))) a)
+    idle
+    let docsNow = appDocs <$> readIORef ref
+        frontNow = appDocKey <$> readIORef ref
+    before <- docsNow
+    chord 'n'
+    opened' <- docsNow
+    newKey <- frontNow
+    unless (length opened' == length before + 1 && docKey (last opened') == newKey) $
+      fail ("selftest: Ctrl+N left the tabs at " <> show (map docName opened'))
+    typed "draft"
+    shot "17-tabs.bmp"
+
+    -- Ctrl+Tab walks the tabs round from the last to the first, and
+    -- Ctrl+Shift+Tab back again.
+    key ctrlM KeyTab
+    wrapped <- frontNow
+    when ([wrapped] /= take 1 (map docKey opened')) $ fail "selftest: Ctrl+Tab on the last tab did not go round to the first"
+    key ctrlShiftM KeyTab
+    back' <- frontNow
+    when (back' /= newKey) $ fail "selftest: Ctrl+Shift+Tab on the first tab did not go round to the last"
+
+    -- Closing a tab with changes asks first; closing it once they are saved
+    -- does not, and brings the tab before it to the front.
+    chord 'w'
+    asked <- appPending <$> readIORef ref
+    unless (isJust asked) $ fail "selftest: Ctrl+W closed a tab with changes without asking"
+    shot "18-close-asked.bmp"
+    modifyIORef' ref $ \a ->
+      a {appPending = Nothing, appEditor = (appEditor a) {edBuffer = B.markSaved (edBuffer (appEditor a))}}
+    idle
+    chord 'w'
+    closed' <- docsNow
+    front' <- frontNow
+    unless (map docKey closed' == map docKey before && front' == docKey (last before)) $
+      fail ("selftest: Ctrl+W left the tabs at " <> show (map docName closed'))
+
+    -- A click on a tab brings it to the front. With the tree put away the
+    -- tabs start at the window's left edge, under the title bar.
+    chord 'b'
+    click 60 57
+    clickedTab <- frontNow
+    when ([clickedTab] /= take 1 (map docKey before)) $ fail "selftest: a click on the first tab did not bring it to the front"
+    chord 'b'
+
     -- Resize the window a step at a time, as a drag of its border does, and
     -- time the frames; then the same under a view of one label, for what the
-    -- toolkit itself spends on a new size.
+    -- toolkit itself spends on a new size. Each frame asks for the size the
+    -- next is drawn at, as a view asks the window for one.
     let resizeRun name ui = do
           t0 <- getMonotonicTime
           forM_ [1 :: Int .. 100] $ \i -> do
-            setWindowSize env (Size (1500 + 8 * fromIntegral i) (900 + 4 * fromIntegral i))
             (ctx', inp') <- syncDisplay ctx env base
             when (i == 100) (say ("  window is now " <> show (inputWindowSize inp')))
-            void (sdlDrawFrame ctx' ui env inp' True)
+            void (sdlDrawFrame ctx' (ui >> resizeWindowUi (Size (1500 + 8 * fromIntegral i) (900 + 4 * fromIntegral i))) env inp' True)
           t1 <- getMonotonicTime
           say (printf "100 resized frames, %s: %.1f ms (%.2f ms a frame)" (name :: String) ((t1 - t0) * 1000) ((t1 - t0) * 10))
     resizeRun "editor" (appView ref)

@@ -25,6 +25,7 @@ module Ned.Buffer
   , setUsesTabs
 
     -- * Geometry
+  , size
   , lineCount
   , lineOf
   , lineStart

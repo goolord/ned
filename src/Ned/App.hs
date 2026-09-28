@@ -3,7 +3,7 @@
 -- Everything the window is made of is elsewhere -- what it draws in
 -- "Ned.View", what it is between frames in "Ned.App.State", what it can be
 -- asked to do in "Ned.App.Commands", what a frame answers to in
--- "Ned.App.Frame" -- so what is left here is starting it: the file named on
+-- "Ned.App.Frame" -- so what is left here is starting it: the files named on
 -- the command line, the window's size and theme, and the two environment
 -- variables that time a frame.
 module Ned.App
@@ -13,9 +13,11 @@ module Ned.App
     -- * The state it runs on
   , App (..)
   , newApp
+  , Placement (..)
   , openPath
   ) where
 
+import Control.Monad (foldM)
 import Data.IORef (newIORef)
 import NanoUI (Size (..), tomorrowNightMinDarkTheme)
 import NanoUI.Backend.Sdl
@@ -23,10 +25,11 @@ import Ned.App.State
 import Ned.View (appView, blankView, tracedView)
 import System.Environment (lookupEnv)
 
--- | Run the editor, on a file if one is given.
-runNed :: Maybe FilePath -> IO ()
-runNed mpath = do
-  app0 <- maybe pure (openPath Nothing) mpath =<< newApp
+-- | Run the editor, on the files given, a tab each.
+runNed :: [FilePath] -> IO ()
+runNed paths = do
+  fresh <- newApp
+  app0 <- foldM (\app path -> openPath InNewTab Nothing path app) fresh paths
   ref <- newIORef app0
   -- NED_TRACE names a file to log a line a frame to: the time, the window's
   -- size, and what the frame cost.
@@ -38,8 +41,7 @@ runNed mpath = do
       view = maybe body (`tracedView` body) trace
   runSdlApp
     defaultSdlOptions
-      { sdlWindowTitle = titleFor app0
-      , sdlWindowSize = Size 1100 760
+      { sdlWindowSettings = defaultWindowSettings {wsTitle = titleFor app0, wsSize = Size 1100 760}
       , -- The window has no title bar of the desktop's: its title, its
         -- buttons and the strip that drags it are all in the bar along the
         -- top of the frame, in "Ned.View.Chrome". It keeps the desktop's

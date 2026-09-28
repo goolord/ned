@@ -1,6 +1,6 @@
 -- | The bars around the editor: the window's own title bar along the top,
--- the find and go-to-line bar under the text, and the status along the
--- bottom.
+-- the tabs of the open files over the text, the find and go-to-line bar
+-- under it, and the status along the bottom.
 --
 -- None of this edits anything itself. Every row and button asks for one of
 -- "Ned.App.Commands", so what a menu says and what it does sit on the same
@@ -13,6 +13,7 @@ module Ned.View.Chrome
   , treeMenu
 
     -- * The bars
+  , docTabs
   , editorBar
   , statusBar
   ) where
@@ -24,8 +25,11 @@ import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
 import NanoUI
-import NanoUI.Backend.Sdl (CaptionOptions (..), defaultCaptionOptions, defaultResizeBorder, windowCaptionWith, windowMaximizedUi)
+import qualified NanoUI.Adornment as A
+import NanoUI.Backend.Sdl (CaptionOptions (..), defaultCaptionOptions, defaultResizeBorder, windowCaptionWith)
 import NanoUI.Monad (askFrameInput)
+import NanoUI.Shortcut (Shortcut)
+import qualified NanoUI.Shortcut as K
 import Ned.App.Commands
 import Ned.App.State
 import Ned.Buffer (Buffer)
@@ -37,7 +41,6 @@ import qualified Ned.FileTree as FT
 import Ned.Highlight (langName)
 import qualified Ned.Picker as P
 import Ned.Theme (closeRed, menuChrome, windowEdge)
-import System.FilePath (takeFileName)
 import Text.Read (readMaybe)
 
 --------------------------------------------------------------------------------
@@ -73,7 +76,8 @@ windowBorderWidth = 1
 windowBorder :: NanoUI a -> NanoUI a
 windowBorder body = do
   theme <- uiTheme
-  maximized <- windowMaximizedUi
+  win <- askWindow
+  let maximized = winMaximized win || winFullscreen win
   windowFrame
     WindowFrame
       { frameWidth = if maximized then 0 else windowBorderWidth
@@ -144,37 +148,37 @@ titleBarPad l = l {layoutPadding = Padding 6 0 0 0}
 menus :: IORef App -> App -> NanoUI [Rect]
 menus ref app = do
   -- The pointer as it is, where a button under an open menu sees none.
-  pointer <- askFrameInput
-  rects <- traverse (entry pointer) (appMenus ref app)
-  when (inputMouseReleased pointer && not (T.null swallow)) (setSwallow "")
+  mouse <- askFrameInput
+  rects <- traverse (entry mouse) (appMenus ref app)
+  when (inputMouseReleased mouse && not (T.null swallow)) (setSwallow "")
   pure rects
   where
     open = appOpenMenu app
     swallow = appMenuSwallow app
     setOpen m = modifyApp ref (\a -> a {appOpenMenu = m})
     setSwallow m = modifyApp ref (\a -> a {appMenuSwallow = m})
-    entry pointer (title, body) = do
+    entry mouse (title, body) = do
       let isOpen = open == title
       btn <- menuButtonWith' fillH title isOpen
       let cfg = (defaultPopupConfig (AnchorRect (respRect btn))) {cfgPlacement = PlacementBelow, cfgOffset = 0}
-          onButton = rectContains (respRect btn) (inputMousePos pointer)
+          onButton = rectContains (respRect btn) (inputMousePos mouse)
       when (respClicked btn && swallow /= title) (setOpen (if isOpen then "" else title))
       when (not isOpen && not (T.null open) && respHovered btn) (setOpen title)
       (popupResp, _) <- popup isOpen cfg (columnWith (tight . gap 0) body)
       when (respClicked popupResp) $ do
         setOpen ""
-        when (inputMousePressed pointer && onButton) (setSwallow title)
+        when (inputMousePressed mouse && onButton) (setSwallow title)
       pure (respRect btn)
 
 -- | A row of a menu, greyed when it does not apply; 'menuRow' always does.
 -- Picking one closes the menu bar's menu, which a context menu has none of
 -- and loses nothing by.
-menuEntry :: IORef App -> Bool -> Text -> Text -> NanoUI () -> NanoUI ()
-menuEntry ref ok lbl shortcut action
+menuEntry :: IORef App -> Bool -> Text -> Maybe Shortcut -> NanoUI () -> NanoUI ()
+menuEntry ref ok lbl chord action
   | not ok = menuItemDisabled lbl
-  | otherwise = whenM (if T.null shortcut then menuItem lbl else menuItemShortcut lbl shortcut) (modifyApp ref (\a -> a {appOpenMenu = ""}) >> action)
+  | otherwise = whenM (maybe (menuItem lbl) (menuItemShortcut lbl) chord) (modifyApp ref (\a -> a {appOpenMenu = ""}) >> action)
 
-menuRow :: IORef App -> Text -> Text -> NanoUI () -> NanoUI ()
+menuRow :: IORef App -> Text -> Maybe Shortcut -> NanoUI () -> NanoUI ()
 menuRow ref = menuEntry ref True
 
 -- | The menus along the top, and what each of their rows does. A row that
@@ -186,70 +190,95 @@ appMenus ref app = [("File", fileMenu), ("Edit", editMenu), ("View", viewMenu)]
     item = menuRow ref
     buf0 = edBuffer (appEditor app)
     fileMenu = do
-      item "New" "Ctrl+N" (guarded ref PendingNew)
-      item "Open..." "Ctrl+O" (guarded ref PendingOpen)
-      item "Find File..." "Ctrl+P" (openPicker ref P.fileSource)
-      item "Save" "Ctrl+S" (save ref False)
-      item "Save As..." "Ctrl+Shift+S" (save ref True)
+      item "New" (Just chordNew) (newFile ref)
+      item "Open..." (Just chordOpen) (openDialog ref)
+      item "Find File..." (Just chordFindFile) (openPicker ref P.fileSource)
+      item "Save" (Just chordSave) (save ref False)
+      item "Save As..." (Just chordSaveAs) (save ref True)
       menuSeparator
-      item "Exit" "Ctrl+Q" (guarded ref PendingQuit)
+      item "Close Tab" (Just chordCloseTab) (closeTab ref (appDocKey app))
+      item "Exit" (Just chordQuit) (guarded ref PendingQuit)
     editMenu = do
       editEntries ref buf0
       menuSeparator
-      item "Find..." "Ctrl+F" (openBar ref BarFind)
-      item "Search in Files..." "Ctrl+Shift+F" (openPicker ref P.grepSource)
-      item "Go to Line..." "Ctrl+G" (openBar ref BarGoto)
+      item "Find..." (Just chordFind) (openBar ref BarFind)
+      item "Search in Files..." (Just chordGrep) (openPicker ref P.grepSource)
+      item "Go to Line..." (Just chordGoto) (openBar ref BarGoto)
     viewMenu = do
       item
         (if appTreeShown app then "Hide File Tree" else "Show File Tree")
-        "Ctrl+B"
+        (Just chordTree)
         (toggleTree ref)
       menuSeparator
-      item "Zoom In" "Ctrl+=" (zoom ref (* 1.1))
-      item "Zoom Out" "Ctrl+-" (zoom ref (/ 1.1))
-      item "Reset Zoom" "Ctrl+0" (zoom ref (const defaultFontSize))
+      item "Zoom In" (Just chordZoomIn) (zoom ref (* 1.1))
+      item "Zoom Out" (Just chordZoomOut) (zoom ref (/ 1.1))
+      item "Reset Zoom" (Just chordZoomReset) (zoom ref (const defaultFontSize))
       menuSeparator
       item
         (if edShowWhitespace (appEditor app) then "Hide Indentation Marks" else "Show Indentation Marks")
-        ""
-        (onEditor ref (\e -> e {edShowWhitespace = not (edShowWhitespace e)}))
+        Nothing
+        (modifyApp ref (everyEditor (\e -> e {edShowWhitespace = not (edShowWhitespace (appEditor app))})))
       item
         (if B.usesTabs buf0 then "Indent with Spaces" else "Indent with Tabs")
-        ""
+        Nothing
         (onBuffer ref (B.setUsesTabs (not (B.usesTabs buf0))))
       item
         (if formatEol (appFormat app) == LF then "Line Endings: CRLF" else "Line Endings: LF")
-        ""
+        Nothing
         (modifyApp ref (\a -> a {appFormat = (appFormat a) {formatEol = if formatEol (appFormat a) == LF then CRLF else LF}}))
 
 -- | What the Edit menu and the editor's own menu both start with.
 editEntries :: IORef App -> Buffer -> NanoUI ()
 editEntries ref buf = do
-  menuEntry ref (B.canUndo buf) "Undo" "Ctrl+Z" (onBuffer ref B.undo)
-  menuEntry ref (B.canRedo buf) "Redo" "Ctrl+Y" (onBuffer ref B.redo)
+  menuEntry ref (B.canUndo buf) "Undo" (Just (K.ctrl <> K.key 'z')) (onBuffer ref B.undo)
+  menuEntry ref (B.canRedo buf) "Redo" (Just (K.ctrl <> K.key 'y')) (onBuffer ref B.redo)
   menuSeparator
-  menuRow ref "Cut" "Ctrl+X" (onBufferIO ref clipboardCut)
-  menuRow ref "Copy" "Ctrl+C" (onBufferIO ref clipboardCopy)
-  menuRow ref "Paste" "Ctrl+V" (onBufferIO ref clipboardPaste)
+  menuRow ref "Cut" (Just (K.ctrl <> K.key 'x')) (onBufferIO ref clipboardCut)
+  menuRow ref "Copy" (Just (K.ctrl <> K.key 'c')) (onBufferIO ref clipboardCopy)
+  menuRow ref "Paste" (Just (K.ctrl <> K.key 'v')) (onBufferIO ref clipboardPaste)
   menuSeparator
-  menuRow ref "Select All" "Ctrl+A" (onBuffer ref B.selectAll)
+  menuRow ref "Select All" (Just (K.ctrl <> K.key 'a')) (onBuffer ref B.selectAll)
 
 -- | The editor's own menu, on the right button.
 editorMenu :: IORef App -> Buffer -> NanoUI ()
 editorMenu ref buf = do
   editEntries ref buf
-  menuRow ref "Find..." "Ctrl+F" (openBar ref BarFind)
+  menuRow ref "Find..." (Just chordFind) (openBar ref BarFind)
 
 -- | The file tree's own menu, on the right button.
 treeMenu :: IORef App -> App -> NanoUI ()
 treeMenu ref app = do
-  menuEntry ref (isJust (appPath app)) "Reveal Current File" "" (for_ (appPath app) (onTree ref . FT.reveal))
-  menuEntry ref (hasParentRoot (appTree app)) "Open Parent Folder" "" (onTree ref FT.parentRoot)
+  menuEntry ref (isJust (appPath app)) "Reveal Current File" Nothing (for_ (appPath app) (onTree ref . FT.reveal))
+  menuEntry ref (hasParentRoot (appTree app)) "Open Parent Folder" Nothing (onTree ref FT.parentRoot)
   menuSeparator
-  menuRow ref "Collapse All" "" (onTree ref FT.collapseAll)
-  menuRow ref "Refresh" "" (onTree ref FT.refresh)
+  menuRow ref "Collapse All" Nothing (onTree ref FT.collapseAll)
+  menuRow ref "Refresh" Nothing (onTree ref FT.refresh)
   menuSeparator
-  menuRow ref "Hide File Tree" "" (toggleTree ref)
+  menuRow ref "Hide File Tree" Nothing (toggleTree ref)
+
+--------------------------------------------------------------------------------
+-- The tabs over the editor
+--------------------------------------------------------------------------------
+
+-- | The open files, a tab each, over the text: folder tabs, the one in front
+-- opening onto the text beneath it. A click brings a file to the front and
+-- gives the text the keyboard; the cross on a tab, or a middle click on it,
+-- closes it, asking first if it has changes; the button after the tabs opens
+-- a new one. A file with changes to save carries a dot after its name, as it
+-- does on the status bar.
+docTabs :: IORef App -> App -> NanoUI ()
+docTabs ref app = do
+  resp <- tabBarConfigured' (TabsConfig TabContained TabTop newTab) (appDocKey app) (map docTab (appDocs app))
+  when (tabActive resp /= appDocKey app) $ do
+    showTab ref (tabActive resp)
+    modifyApp ref (\a -> a {appTreeFocus = False, appBarFocus = False})
+  for_ (tabClosed resp) (closeTab ref)
+  where
+    newTab = whenM (styled subtle (buttonWith (tight . fixedWH 28 28) "+")) (newFile ref)
+    docTab d =
+      (closableTab (docKey d) (docName d) ())
+        { tabAdornments = if docDirty d then A.trailing (A.affix "\x2022") else mempty
+        }
 
 --------------------------------------------------------------------------------
 -- The bar under the editor
@@ -334,7 +363,7 @@ statusBar app =
     flex
     -- A file with changes to save carries a dot, the way an editor's tab
     -- does. An asterisk read as part of the name.
-    labelWith (tight . fontSemiBold) (name <> (if B.isDirty buf then " \x2022" else ""))
+    labelWith (tight . fontSemiBold) (docName doc <> (if docDirty doc then " \x2022" else ""))
     labelWith tight ("Ln " <> showT (ln + 1) <> ", Col " <> showT (col + 1))
     labelWith (tight . fontMuted) (showT (B.lineCount buf) <> " lines")
     labelWith (tight . fontMuted) (langName (edLang ed))
@@ -345,7 +374,7 @@ statusBar app =
   where
     ed = appEditor app
     buf = edBuffer ed
-    name = maybe "Untitled" (T.pack . takeFileName) (appPath app)
+    doc = activeDoc app
     zoomed = round (edFontSize ed / defaultFontSize * 100) :: Int
     (ln, col) = B.cursorPosition buf
     showT :: Show a => a -> Text

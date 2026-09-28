@@ -32,7 +32,6 @@ import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Maybe (isJust)
 import qualified Data.Text as T
 import Data.Word (Word64)
-import Effectful (Eff, type (:>))
 import GHC.Clock (getMonotonicTime)
 import NanoUI
 import Ned.App.Commands
@@ -92,19 +91,20 @@ appView ref = do
               (appTreeFocus app1 && not (appBarFocus app1) && unblocked)
               (appPath app1)
               (appTree app1)
-          uiIO (writeIORef respRef (Just resp))
+          liftIO (writeIORef respRef (Just resp))
           modifyApp ref $ \a ->
             a
               { appTree = ft
               , appTreeFocus = appTreeFocus a || ftPressed ft
               , appBarFocus = appBarFocus a && not (ftPressed ft)
               }
-          -- A file the tree was clicked on opens as any other does, with the
-          -- text asked about if it has changes to lose, and the keyboard
-          -- going to it so that it can be typed into at once.
+          -- A file the tree was clicked on opens in the tab in front, in
+          -- place of what it held, or with Shift in a tab of its own; the
+          -- keyboard goes to it so that it can be typed into at once.
+          shifted <- modShift . inputModifiers <$> askInput
           for_ opened $ \path -> do
             modifyApp ref (\a -> a {appTreeFocus = False})
-            guarded ref (PendingOpenPath Nothing path)
+            if shifted then openFile ref Nothing path else openHere ref path
           -- The pane grid moves the pane by the pick it is told about; the
           -- tree's is its header, the strip of the pane the root's name
           -- stands on, so a hold there drags the pane as the grid's own bars
@@ -112,40 +112,47 @@ appView ref = do
           fm <- uiFontMetrics
           let (Rect px py pw _) = pgcRect pctx
           pure (PaneView (rootName ft) False (Just (Rect px py pw (treeHeaderHeight fm))))
-        -- The editor pane. Putting the tree away makes this pane the whole
-        -- row: the grid calls that maximizing it, and keeps the split where
-        -- it was, so showing the tree again brings it back at its width.
+        -- The editor pane: the tabs of the open files, and the text of the
+        -- one in front. Putting the tree away makes this pane the whole row:
+        -- the grid calls that maximizing it, and keeps the split where it
+        -- was, so showing the tree again brings it back at its width.
         editorPane respRef pctx = do
           if appTreeShown app1
             then when (pgcMaximized pctx) (pgcRestore pctx)
             else unless (pgcMaximized pctx) (pgcMaximize pctx)
-          -- The tree may have just opened a file, which is the editor's
-          -- buffer now. Who has the keyboard is read from before the tree
-          -- ran, though: the keys of this frame are the tree's, and an Enter
-          -- that opened a file there is not one to put a newline in the file
-          -- it opened.
-          appNow <- readApp ref
-          let wantFocus = not (appBarFocus app1) && not (appTreeFocus app1) && unblocked
-          (resp, ed) <- editorView wantFocus (findMarks appNow) (appEditor appNow)
-          uiIO (writeIORef respRef (Just resp))
-          modifyApp ref $ \a ->
-            a
-              { appEditor = ed
-              , appBarFocus = appBarFocus a && not (edPressed ed)
-              , appTreeFocus = appTreeFocus a && not (edPressed ed)
-              }
+          columnWith (grow . gap 0 . padAll 0) $ do
+            -- Scoped so that the editor keeps its ids whether or not the
+            -- tabs are there: one file has none.
+            scope $ do
+              appTabs <- readApp ref
+              when (manyTabs appTabs) (docTabs ref appTabs)
+            -- The tree or the tabs may have just brought another file to the
+            -- front, which is the editor's buffer now. Who has the keyboard
+            -- is read from before either ran, though: the keys of this frame
+            -- are theirs, and an Enter that opened a file in the tree is not
+            -- one to put a newline in the file it opened.
+            appNow <- readApp ref
+            let wantFocus = not (appBarFocus app1) && not (appTreeFocus app1) && unblocked
+            (resp, ed) <- editorView (appDocKey appNow) wantFocus (findMarks appNow) (appEditor appNow)
+            liftIO (writeIORef respRef (Just resp))
+            modifyApp ref $ \a ->
+              a
+                { appEditor = ed
+                , appBarFocus = appBarFocus a && not (edPressed ed)
+                , appTreeFocus = appTreeFocus a && not (edPressed ed)
+                }
           pure (PaneView "" False Nothing)
     -- What each pane hangs its menu on, which the grid's own response does
     -- not carry out of it.
-    treeResp <- uiIO (newIORef Nothing)
-    edResp <- uiIO (newIORef Nothing)
+    treeResp <- liftIO (newIORef Nothing)
+    edResp <- liftIO (newIORef Nothing)
     _ <- treeEditorGrid (treePane treeResp) (editorPane edResp)
     app2 <- readApp ref
 
     -- Scoped so that the editor's own menu below keeps its ids whether or not
     -- the tree hangs its own menu this frame.
-    scope $ uiIO (readIORef treeResp) >>= traverse_ (`contextMenu` treeMenu ref app2)
-    uiIO (readIORef edResp) >>= traverse_ (`contextMenu` editorMenu ref (edBuffer (appEditor app2)))
+    scope $ liftIO (readIORef treeResp) >>= traverse_ (`contextMenu` treeMenu ref app2)
+    liftIO (readIORef edResp) >>= traverse_ (`contextMenu` editorMenu ref (edBuffer (appEditor app2)))
 
     editorBar ref app2
     separator
@@ -160,19 +167,22 @@ appView ref = do
   modifyApp ref (\a -> a {appPicker = picker})
   -- A grep hit opens its file on the line it was found on.
   for_ picked $ \item ->
-    guarded ref (PendingOpenPath (itemLine item) (itemPath item))
+    openFile ref (itemLine item) (itemPath item)
 
   app3 <- readApp ref
   syncTitle ref app3
-  _ <- modal (isJust (appPending app3)) "Unsaved changes" $ do
-    label "This file has changes that are not saved."
-    labelWith fontMuted "Discard them and carry on?"
+  let (question, ask) = maybe ("", "") (pendingQuestion app3) (appPending app3)
+  -- Its own close button is Cancel.
+  (closeResp, _) <- modal (isJust (appPending app3)) "Unsaved changes" $ do
+    label question
+    labelWith fontMuted ask
     rowWith (fillW . gap 8) $ do
       flex
       whenM (button "Cancel") (modifyApp ref (\a -> a {appPending = Nothing}))
       whenM (button "Discard") $ do
         modifyApp ref (\a -> a {appPending = Nothing})
         traverse_ (runPending ref) (appPending app3)
+  when (respClicked closeResp) (modifyApp ref (\a -> a {appPending = Nothing}))
 
   appEnd <- readApp ref
   when (chromeSig appEnd /= chromeSig app0 || editorSig appEnd /= drawn) requestFrame
@@ -188,11 +198,11 @@ blankView = label "blank"
 tracedView :: FilePath -> NanoUI () -> NanoUI ()
 tracedView file body = do
   inp <- askInput
-  t0 <- uiIO getMonotonicTime
+  t0 <- liftIO getMonotonicTime
   body
-  t1 <- uiIO getMonotonicTime
+  t1 <- liftIO getMonotonicTime
   let Size w h = inputWindowSize inp
-  uiIO (appendFile file (printf "%.4f %.0f %.0f %.3f\n" t0 w h ((t1 - t0) * 1000)))
+  liftIO (appendFile file (printf "%.4f %.0f %.0f %.3f\n" t0 w h ((t1 - t0) * 1000)))
 
 --------------------------------------------------------------------------------
 -- The row the tree and the editor share
@@ -235,10 +245,9 @@ paneLeeway = 2
 -- The grid is no Tab stop: its own keys act on its panes, and ned's widgets
 -- own the keyboard this side of it.
 treeEditorGrid ::
-  Ui :> es =>
-  (PaneGridCtx es -> Eff es PaneView) ->
-  (PaneGridCtx es -> Eff es PaneView) ->
-  Eff es PaneGridResponse
+  (PaneGridCtx -> NanoUI PaneView) ->
+  (PaneGridCtx -> NanoUI PaneView) ->
+  NanoUI PaneGridResponse
 treeEditorGrid treePane editorPane = do
   winW <- windowWidth
   styled paneChrome $

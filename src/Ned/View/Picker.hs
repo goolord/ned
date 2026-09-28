@@ -21,9 +21,9 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
-import Effectful (Eff, type (:>))
 import NanoUI
 import qualified NanoUI.Adornment as A
+import qualified NanoUI.Shortcut as K
 import Ned.Editor (cellWidth, defaultFontSize)
 import Ned.Highlight (TokenKind (..), langName, languageFor)
 import Ned.Picker
@@ -41,7 +41,7 @@ import System.FilePath (takeFileName)
 -- and takes nothing, and nothing else in the frame moves when it comes and
 -- goes. 'Nothing' back puts the finder away; the item is one that was picked,
 -- which puts it away as well.
-pickerOverlay :: Ui :> es => Maybe Picker -> Eff es (Maybe Picker, Maybe Item)
+pickerOverlay :: Maybe Picker -> NanoUI (Maybe Picker, Maybe Item)
 pickerOverlay mpk = do
   winW <- windowWidth
   winH <- windowHeight
@@ -57,14 +57,14 @@ pickerOverlay mpk = do
   let (kept, chosen) = fromMaybe (Nothing, Nothing) out
       left = if respClicked closeResp then Nothing else kept
   -- Whatever put it away, the gathering thread is told to stop.
-  when (isNothing left) (mapM_ (uiIO . closePicker) mpk)
+  when (isNothing left) (mapM_ (liftIO . closePicker) mpk)
   pure (left, chosen)
 
 -- | The panel, @bodyW@ wide: the prompt over the rows down the left, and the
 -- heading of the file the keyboard is on over its preview down the right,
 -- the two halves of it the same height so one rule runs under both. It is
 -- set in the editor's font, at the size the editor starts at.
-pickerBody :: Ui :> es => Float -> Picker -> Eff es (Maybe Picker, Maybe Item)
+pickerBody :: Float -> Picker -> NanoUI (Maybe Picker, Maybe Item)
 pickerBody bodyW pk0 = do
   fm <- resolveFontUi defaultFontSize WeightNormal FontStyleNormal FontMono
   cellW <- cellWidth (lineWidthUi fm)
@@ -78,14 +78,14 @@ pickerBody bodyW pk0 = do
       -- else, and Enter does not open one of them.
       (resp, typed) <- prompt headH pk0
       holdFocus (respId resp)
-      pk1 <- uiIO (restock pk0 typed (respSubmitted resp))
-      uiIO (untilSettled pk1) >>= mapM_ wakeAfter
+      pk1 <- liftIO (restock pk0 typed (respSubmitted resp))
+      liftIO (untilSettled pk1) >>= mapM_ wakeAfter
       separator
       rowsPane fm cellW rowsW pk1
     separator
     -- The preview: a heading that says what the file is, over the head of it
     -- in the colours the editor would open it in.
-    pk3 <- uiIO (ensurePreview pk2) >>= \pkp ->
+    pk3 <- liftIO (ensurePreview pk2) >>= \pkp ->
       columnWith (tight . gap 0 . grow . fillH) $ do
         previewHeading headH pkp
         separator
@@ -96,14 +96,14 @@ pickerBody bodyW pk0 = do
 -- magnifier before what is typed, and after it the count of what answered
 -- and, while there is something to clear, a button that clears it. A press
 -- on that button is its own: the field keeps the keyboard and its caret.
-prompt :: Ui :> es => Float -> Picker -> Eff es (Response, Text)
+prompt :: Float -> Picker -> NanoUI (Response, Text)
 prompt h pk = do
-  cleared <- uiIO (newIORef False)
+  cleared <- liftIO (newIORef False)
   -- A small button with no fill of its own, muted like the rest of what the
   -- field draws beside its text.
   let quiet t = subtle (buttonStyle (foreground (themeMuted t)) t)
       clearButton = buttonConfigured defaultButtonConfig {bcLayout = (tight . fixedWH 20 20) defaultLayout, bcAdornments = A.leading (A.iconSized 12 clearIcon)} ""
-      clear = whenM (styled quiet clearButton) (uiIO (writeIORef cleared True))
+      clear = whenM (styled quiet clearButton) (liftIO (writeIORef cleared True))
   (resp, typed) <-
     styled bare $
       textInputConfigured'
@@ -117,7 +117,7 @@ prompt h pk = do
           }
         (pkTyped pk)
   -- The field takes the empty prompt up as the caller's next frame.
-  wasCleared <- uiIO (readIORef cleared)
+  wasCleared <- liftIO (readIORef cleared)
   pure (resp, if wasCleared then "" else typed)
   where
     bare t = inputStyle (borderWidth 0 . cornerRadius 0 . background (themeWindow t)) t
@@ -148,14 +148,12 @@ icon = either (error . ("Ned.View.Picker: an icon did not parse: " <>)) id . par
 -- | A scroller in a floating panel is framed in the panel's border, which
 -- the rows and the preview, drawn to the scroller's edges, would paint over.
 -- The rules between the parts of the panel already say where each ends.
-borderless :: Ui :> es => Eff es a -> Eff es a
+borderless :: NanoUI a -> NanoUI a
 borderless = styled (windowStyle (borderWidth 0))
 
--- | Whether a chord of Ctrl and this letter was typed this frame.
+-- | Whether a chord of Ctrl and this letter was pressed this frame.
 chorded :: Input -> Char -> Bool
-chorded inp c = modCtrl mods && not (modAlt mods) && T.any (== c) (inputChars inp)
-  where
-    mods = inputModifiers inp
+chorded inp c = K.shortcutIn (K.ctrl <> K.key c) inp
 
 --------------------------------------------------------------------------------
 -- The rows
@@ -167,7 +165,7 @@ chorded inp c = modCtrl mods && not (modAlt mods) && T.any (== c) (inputChars in
 -- above and below them. This is where the finder's keys are read; what comes
 -- back is the finder as the frame leaves it, an item that was picked, and
 -- whether the finder was put away.
-rowsPane :: Ui :> es => FontMetrics -> Float -> Float -> Picker -> Eff es (Picker, Maybe Item, Bool)
+rowsPane :: FontMetrics -> Float -> Float -> Picker -> NanoUI (Picker, Maybe Item, Bool)
 rowsPane fm cellW rowsW pk0 = do
   inp <- askInput
   sid <- currentId
@@ -222,7 +220,7 @@ rowsPane fm cellW rowsW pk0 = do
   -- knows that more rows have arrived.
   unless (pkDone pk1) (wakeAfter 0.03)
   -- The rows on screen, each with the characters of it the query matched.
-  shown <- uiIO (smallArrayFromList <$> traverse (visibleRow pk1) [first .. last'])
+  shown <- liftIO (smallArrayFromList <$> traverse (visibleRow pk1) [first .. last'])
   let widest = foldl' (\m (PickRow item _) -> max m (T.length (rowLead item))) 0 shown
       pk2 = pk1 {pkNameCells = max (pkNameCells pk1) (min 36 widest)}
       scene =
@@ -263,7 +261,7 @@ rowsPane fm cellW rowsW pk0 = do
                 { widgetLayout = (fillW . fixedH inView) defaultLayout
                 , widgetDraw = \cdc r -> drawRows cdc scene r
                 , widgetContent = key
-                , widgetCursor = Just (const UiCursorDefault)
+                , widgetCursor = Just (\_ _ _ -> UiCursorDefault)
                 , widgetDamageSlop = 0
                 , -- Every row in view is this one widget, so the row under a
                   -- moving pointer keeps up only with a frame for every move
@@ -395,7 +393,7 @@ clipFront cells txt
 -- | Where the file is and what it is, with its length and its language as the
 -- status bar says them, @h@ tall so that it lines up with the prompt. The path is worked out from the file rather than
 -- taken from the row, which for a grep hit is a line of code.
-previewHeading :: Ui :> es => Float -> Picker -> Eff es ()
+previewHeading :: Float -> Picker -> NanoUI ()
 previewHeading h pk =
   rowWith (padXY rowPad 0 . tight . fillW . fixedH h . gap 12 . alignMid) $ case currentItem pk of
     Nothing -> labelWith (tight . fontMuted . alignMid) " "
@@ -419,7 +417,7 @@ previewHeading h pk =
 -- Ctrl+U move it. A preview that has just been read opens on what it is
 -- about: the top of a file, or the line a grep found, far enough along that
 -- line to show what was found. What stands in for the lines wraps.
-previewBody :: Ui :> es => FontMetrics -> Float -> Picker -> Eff es Picker
+previewBody :: FontMetrics -> Float -> Picker -> NanoUI Picker
 previewBody fm cellW pk0
   | not (T.null (pvNote pv)) = scope $ do
       columnWith (padXY rowPad 6 . tight . grow . fillH) $
@@ -471,7 +469,7 @@ previewBody fm cellW pk0
               { widgetLayout = fixedWH contentW contentH defaultLayout
               , widgetDraw = \_ r -> drawCode scene r
               , widgetContent = contentKeyOf [keyPart (pvVersion pv), keyPart (csScrollX scene), keyPart viewW]
-              , widgetCursor = Just (const UiCursorDefault)
+              , widgetCursor = Just (\_ _ _ -> UiCursorDefault)
               , widgetDamageSlop = 0
               }
       pure pk0 {pkPreview = pv {pvScroll = 0}}

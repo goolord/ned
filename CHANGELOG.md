@@ -59,3 +59,23 @@
 * The finder's preview draws its lines with the editor's own code, so a tab,
   a wide character or a semibold name stands on the cells it would in the
   editor, and a line is coloured as the editor colours it.
+* Tabs: every open file has a tab over the text, in nano-ui's contained tab
+  style; with one file open there is no strip. A click (or Enter) on a file
+  in the tree opens it in the tab in front, asking first if that tab has
+  unsaved changes, and Shift opens it in a new tab. The finder, the open
+  dialog and a drop open files in a new tab after the one in front (or in
+  place of an empty untitled tab), and opening one that is already open
+  brings its tab to the front. Ctrl+N opens an untitled tab, as does the + after the
+  tabs; Ctrl+W, a tab's cross or a middle click closes one, asking first if
+  it has unsaved changes; Ctrl+Tab and Ctrl+Shift+Tab, or Ctrl+PageDown and
+  Ctrl+PageUp, go to the next and previous tab. A tab with unsaved changes
+  has a dot after its name. Quitting asks about every tab with unsaved
+  changes. Zoom and indentation marks are the same in every tab. Every file
+  named on the command line opens in its own tab.
+* Page Up and Page Down move the caret a page.
+* Built against nano-ui 0.2: views are `NanoUI` actions, and chords are read
+  as key presses, since 0.2 puts no characters in the input for a chord. The
+  text asks for the input method while it has the keyboard, since 0.2 hands
+  over typed text only then, and puts the candidate window at the caret.
+  The application's chords go through `shortcut`, so a menu row bound to
+  the same chord does not act on a press a second time.

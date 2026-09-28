@@ -13,20 +13,19 @@ module Ned.Editor.Keys
 
 import Control.Monad (foldM)
 import qualified Data.Text as T
-import Effectful (Eff, type (:>))
 import NanoUI
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
 
 -- | Run the frame's keys and typed characters on the buffer. Chords the
 -- application owns (save, open, find and so on) are left alone.
-applyKeys :: Ui :> es => Input -> Int -> Buffer -> Eff es Buffer
+--
+-- A chord types nothing: Ctrl+C is the key 'c' pressed with Ctrl held, and
+-- the characters are only what was typed.
+applyKeys :: Input -> Int -> Buffer -> NanoUI Buffer
 applyKeys inp page buf0
-  | T.null typed = pure buf1
-  | ctrl && not alt = foldM (flip chord) buf1 (T.unpack typed)
-  -- AltGr arrives as Ctrl+Alt, with the key's own letter ahead of the
-  -- character it types.
-  | ctrl = pure (B.insertText (T.filter (\c -> c > '\x7E' || not (isPlainKey c)) typed) buf1)
+  | ctrl && not alt = foldM (flip chord) buf1 chordKeys
+  -- AltGr arrives as Ctrl+Alt, and what it types is typed.
   | otherwise = pure (B.insertText (T.filter (>= ' ') typed) buf1)
   where
     mods = inputModifiers inp
@@ -35,6 +34,7 @@ applyKeys inp page buf0
     alt = modAlt mods
     typed = inputChars inp
     buf1 = foldInputKeys key buf0 (inputKeys inp)
+    chordKeys = reverse (foldInputKeys (\cs k -> case k of KeyChar c -> c : cs; _ -> cs) [] (inputKeys inp))
 
     key b = \case
       KeyLeft -> (if ctrl then B.moveWordLeft else B.moveLeft) shift b
@@ -50,13 +50,14 @@ applyKeys inp page buf0
         | ctrl || alt -> b
         | shift -> B.unindentKey b
         | otherwise -> B.indentKey b
+      KeyPageUp | not ctrl -> B.moveLines (negate page) shift b
+      KeyPageDown | not ctrl -> B.moveLines page shift b
       KeyEscape -> B.setCursor False (B.bufCursor b) b
+      _ -> b
 
     chord c b = case c of
       'a' -> pure (B.selectAll b)
-      'A' -> pure (B.selectAll b)
       'z' | shift -> pure (B.redo b)
-      'Z' -> pure (B.redo b)
       'z' -> pure (B.undo b)
       'y' -> pure (B.redo b)
       'c' -> clipboardCopy b
@@ -64,11 +65,10 @@ applyKeys inp page buf0
       'v' -> clipboardPaste b
       _ -> pure b
 
-    isPlainKey c = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
 
 -- | Copy, cut and paste through the host's clipboard. With nothing selected,
 -- copy and cut take the whole line.
-clipboardCopy, clipboardCut, clipboardPaste :: Ui :> es => Buffer -> Eff es Buffer
+clipboardCopy, clipboardCut, clipboardPaste :: Buffer -> NanoUI Buffer
 clipboardCopy b = b <$ copyFrom (orLine b)
 clipboardCut b = do
   copied <- copyFrom (orLine b)
@@ -77,7 +77,7 @@ clipboardPaste b = maybe b (`B.insertText` b) <$> getClipboard
 
 -- | Put the selection on the clipboard, and say whether it went. An empty
 -- line has nothing to take, and what the clipboard holds stays.
-copyFrom :: Ui :> es => Buffer -> Eff es Bool
+copyFrom :: Buffer -> NanoUI Bool
 copyFrom b =
   let t = B.selectedText b
    in if T.null t then pure False else setClipboard t

@@ -19,7 +19,6 @@ import Control.Monad (when)
 import Data.Primitive.SmallArray (SmallArray, smallArrayFromList)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Effectful (Eff, type (:>))
 import NanoUI
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
@@ -41,8 +40,12 @@ import Ned.Widget (rounding, thumbSpan)
 -- result; the response is for hanging a context menu on. It takes the
 -- keyboard when @wantFocus@ is set, which an application clears while a
 -- field of its own is being typed into, and marks the matches of @marks@.
-editorView :: Ui :> es => Bool -> Text -> Editor -> Eff es (Response, Editor)
-editorView wantFocus marks ed0 = do
+--
+-- @textKey@ names the text the editor holds, and changes when it is another
+-- text: two files just opened are at the same version with the caret and the
+-- view in the same place, and without it the second would not be drawn.
+editorView :: Int -> Bool -> Text -> Editor -> NanoUI (Response, Editor)
+editorView textKey wantFocus marks ed0 = do
   widGutter <- nextId
   wid <- nextId
   widBar <- nextId
@@ -66,9 +69,13 @@ editorView wantFocus marks ed0 = do
   fr <- editorFrame wantFocus rect cellW fm ed0
   let ed1 = efEditor fr
       g = efGeometry fr
-      scene =
+  -- The window hands over typed text only while a widget asks for it, and
+  -- puts the input method's candidates by the caret it is given.
+  _ <- useInputMethod wid InputNormal (caretRect g rect ed1)
+  let scene =
         EditorScene
-          { esBuffer = edBuffer ed1
+          { esKey = textKey
+          , esBuffer = edBuffer ed1
           , esLang = edLang ed1
           , esLexStart = efLexStart fr
           , esScrollY = edScrollY ed1
@@ -82,18 +89,20 @@ editorView wantFocus marks ed0 = do
           , esThumbXHot = efThumbXHot fr
           , esWhitespace = edShowWhitespace ed1
           }
-      part which pointer layout =
+      part which cursor layout =
         defaultCustomWidgetSpec
           { widgetLayout = layout defaultLayout
           , widgetDraw = \_ r -> drawEditor which scene r
           , widgetContent = editorSceneKey which scene
-          , widgetCursor = Just (const pointer)
+          , widgetCursor = Just (\_ _ _ -> cursor)
           , widgetDamageSlop = 0
           }
   resp <- columnWith (grow . gap 0 . padAll 0) $ do
     respRow <- rowWith (grow . gap 0 . padAll 0) $ do
       (respGutter, ()) <- customWidgetWithId widGutter (part PartGutter UiCursorDefault (fillH . fixedW (gGutterW g)))
-      (respText, ()) <- customWidgetWithId wid (part PartText UiCursorText grow) {widgetFocusable = True}
+      -- The text takes the keys a text area does, the editing chords among
+      -- them, so a menu row bound to Ctrl+Z leaves that press to the text.
+      (respText, ()) <- customWidgetWithId wid (part PartText UiCursorText grow) {widgetFocusable = True, widgetKeys = KeysType}
       _ <- customWidgetWithId widBar (part PartBar UiCursorDefault (fillH . fixedW scrollBarW))
       pure (respGutter <> respText)
     (respHBar, ()) <- customWidgetWithId widHBar (part PartHBar UiCursorDefault (fillW . fixedH scrollBarH))
@@ -102,7 +111,9 @@ editorView wantFocus marks ed0 = do
 
 -- | Everything the editor's drawing reads.
 data EditorScene = EditorScene
-  { esBuffer :: !Buffer
+  { esKey :: !Int
+  -- ^ Which text it is ('editorView').
+  , esBuffer :: !Buffer
   , esLang :: !Lang
   , esLexStart :: !LexState
   , esScrollY :: !Double
@@ -116,6 +127,16 @@ data EditorScene = EditorScene
   , esThumbXHot :: !Bool
   , esWhitespace :: !Bool
   }
+
+-- | Where the caret is in the window, given the whole editor's rectangle, as
+-- the text draws it.
+caretRect :: Geometry -> Rect -> Editor -> Rect
+caretRect g (Rect x y _ _) ed =
+  Rect (textX + fromIntegral (B.colToVisual buf ln col) * gCellW g) (y + realToFrac (fromIntegral ln - edScrollY ed) * gLineH g) 2 (gLineH g)
+  where
+    buf = edBuffer ed
+    (ln, col) = B.cursorPosition buf
+    textX = x + gGutterW g + textPad - edScrollX ed
 
 -- | The widgets the editor is made of.
 data Part = PartGutter | PartText | PartBar | PartHBar
@@ -133,6 +154,7 @@ editorSceneKey which sc =
         PartHBar -> [keyPart (4 :: Int), keyPart (esScrollX sc), keyPart (esFontSize sc), keyPart (B.widestLine buf), keyPart (esThumbXHot sc)]
         PartText ->
           [ keyPart (3 :: Int)
+          , keyPart (esKey sc)
           , keyPart (B.bufVersion buf)
           , keyPart (B.bufCursor buf)
           , keyPart (B.bufAnchor buf)

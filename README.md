@@ -7,12 +7,15 @@ A small, fast source code editor built on
 <img width="1102" height="760" alt="ned editor" src="https://github.com/user-attachments/assets/5c986cf4-0e5b-49fb-a991-a42d5e1966fe" />
 
 ```sh
-cabal run ned -- path/to/file.hs
+cabal run ned -- path/to/file.hs [more files...]
 ```
 
 ## Features
 
 - Syntax highlighting for Haskell, Rust, C/C++, JavaScript, Python and more.
+- Tabs for open files, with a dot on each one that has unsaved changes. The
+  strip is hidden while only one file is open. A click in the file tree opens
+  the file in the current tab; Shift+click opens it in a new one.
 - Resizable file tree and drag-and-drop file opening.
 - Fuzzy file finder with a live preview, matching with fzf's own algorithm.
 - Live grep across the tree's folder, through ripgrep (`rg` on the `PATH`).
@@ -49,7 +52,9 @@ Keep `C:\msys64\ucrt64\bin` on `PATH` when running `ned.exe`.
 
 | Key | Action |
 | --- | --- |
-| Ctrl+N / Ctrl+O / Ctrl+S / Ctrl+Shift+S | New / open / save / save as |
+| Ctrl+N / Ctrl+O / Ctrl+S / Ctrl+Shift+S | New tab / open / save / save as |
+| Ctrl+W | Close tab (middle click also closes one) |
+| Ctrl+Tab / Ctrl+Shift+Tab | Next / previous tab (also Ctrl+PageDown / Ctrl+PageUp) |
 | Ctrl+Z / Ctrl+Y | Undo / redo |
 | Ctrl+B | Toggle file tree |
 | Ctrl+P | Find a file; Up / Down or Ctrl+P / Ctrl+N walk the rows, Ctrl+U / Ctrl+D scroll the preview, Enter opens |
@@ -57,7 +62,7 @@ Keep `C:\msys64\ucrt64\bin` on `PATH` when running `ned.exe`.
 | Ctrl+F | Find; Enter / Shift+Enter for next / previous match |
 | Ctrl+G | Go to line |
 | Tab / Shift+Tab | Indent / unindent |
-| Alt+Up / Alt+Down | Page up / down |
+| Page Up / Page Down, Alt+Up / Alt+Down | Page up / down |
 | Ctrl+= / Ctrl+- / Ctrl+0 | Zoom in / out / reset |
 | Ctrl+Q | Quit |
 
@@ -72,7 +77,7 @@ The self-test runs in a hidden window and writes screenshots and a log to `out`.
 
 ## Limitations
 
-- One file at a time; no replace or soft wrap.
+- No replace or soft wrap.
 - Closing the window does not prompt to save; use Ctrl+Q or the File menu.
 - The file tree requires a manual refresh for external changes.
 - Highlighting is lexical and may be inaccurate after jumping into a file.

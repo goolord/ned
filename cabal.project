@@ -7,7 +7,7 @@ packages: ned-fzf
 source-repository-package
   type: git
   location: git@github.com:goolord/nano-ui.git
-  tag: c6e766b2fc451194d44e57c2e7937a61afcb9c8e
+  tag: b1f5bbf3af328cee3a3258b52ea5887f5be17610
   subdir:
     packages/nano-ui
     packages/nano-ui-sdl

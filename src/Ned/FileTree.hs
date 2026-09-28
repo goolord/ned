@@ -33,7 +33,6 @@ module Ned.FileTree
   , treeChevron
   , treeBarW
   , treeHeaderPad
-  , treeHeaderHeight
   , treeScroller
   ) where
 
@@ -269,11 +268,6 @@ treeBarW = 10
 -- rather than sitting against the panel's edge.
 treeHeaderPad :: Float
 treeHeaderPad = rowPad + treeChevron + 2
-
--- | The panel's header: the root's name, with the header's own padding above
--- and below it. The pane grid's drag picks the pane by this strip.
-treeHeaderHeight :: FontMetrics -> Float
-treeHeaderHeight fm = lineHeight fm + 12
 
 maxScroll :: Int -> Double -> Double
 maxScroll rowCount viewRows = max 0 (fromIntegral rowCount - viewRows)

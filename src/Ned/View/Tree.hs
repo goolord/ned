@@ -38,16 +38,24 @@ import System.FilePath (equalFilePath)
 -- It takes the keyboard when @wantFocus@ is set, which the application does
 -- while the tree is the thing last clicked on, and answers vim's keys as well
 -- as the arrows when @vim@ is. The bar that resizes the panel
--- is the pane grid's, above; this is only what the pane holds.
-fileTreePanel :: Bool -> Bool -> Maybe FilePath -> FileTree -> NanoUI (Response, FileTree, Maybe FilePath)
-fileTreePanel vim wantFocus current ft0 =
+-- is the pane grid's, above; this is only what the pane holds. @header@
+-- lays out the header row, like 'rowWith': the pane grid's 'paneDragHandle',
+-- so that a hold on the root's name drags the pane.
+fileTreePanel ::
+  ((Layout -> Layout) -> NanoUI () -> NanoUI ()) ->
+  Bool ->
+  Bool ->
+  Maybe FilePath ->
+  FileTree ->
+  NanoUI (Response, FileTree, Maybe FilePath)
+fileTreePanel header vim wantFocus current ft0 =
   columnWith (tight . gap 0 . fillW . fillH) $ do
     -- The padding goes on last: 'tight' before it would take it off again,
     -- and the name is meant to start where the rows' own names do. It is
     -- set at full strength and semibold: it names the thing the panel is
     -- about, and muted grey had it reading as a row that could not be
     -- clicked.
-    rowWith (padXY treeHeaderPad 6 . tight . fillW . gap 4 . alignMid) $
+    header (padXY treeHeaderPad 6 . tight . fillW . gap 4 . alignMid) $
       labelWith (tight . fontSemiBold) (rootName ft0)
     separator
     treeRows vim wantFocus current ft0

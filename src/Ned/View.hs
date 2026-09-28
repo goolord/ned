@@ -46,7 +46,7 @@ import Ned.Complete.Tags (Tags, noTags, watchTags)
 import Ned.Config (Config (..), watchConfig)
 import Ned.Editor (Editor (..))
 import Ned.Editor.Vim (Vim (..))
-import Ned.FileTree (FileTree (..), defaultTreeWidth, minTreeWidth, rootName, treeHeaderHeight)
+import Ned.FileTree (FileTree (..), defaultTreeWidth, minTreeWidth, rootName)
 import Ned.Highlight (Lang, LexState (LexNormal), Span (..), TokenKind (TokPlain), languageNamed, lexLine, plainText)
 import Ned.Lsp (Diagnostic (..), severityName)
 import Ned.Picker (Item (..))
@@ -105,6 +105,7 @@ appView ref = do
         treePane respRef pctx = do
           (resp, ft, opened) <-
             fileTreePanel
+              (paneDragHandle pctx)
               (isJust (edVim (appEditor app1)))
               (appTreeFocus app1 && not (appBarFocus app1) && unblocked)
               (appPath app1)
@@ -123,13 +124,9 @@ appView ref = do
           for_ opened $ \path -> do
             modifyApp ref (\a -> a {appTreeFocus = False})
             if shifted then openFile ref Nothing path else openHere ref path
-          -- The pane grid moves the pane by the pick it is told about; the
-          -- tree's is its header, the strip of the pane the root's name
-          -- stands on, so a hold there drags the pane as the grid's own bars
-          -- are dragged and nothing else does.
-          fm <- uiFontMetrics
-          let (Rect px py pw _) = pgcRect pctx
-          pure (PaneView (rootName ft) False (Just (Rect px py pw (treeHeaderHeight fm))))
+          -- The header is the pane's drag handle, so a hold on the root's
+          -- name drags the pane and nothing else in it does.
+          pure (PaneView (rootName ft) False)
         -- The editor pane: the tabs of the open files, and the text of the
         -- one in front. Putting the tree away makes this pane the whole row:
         -- the grid calls that maximizing it, and keeps the split where it
@@ -161,7 +158,7 @@ appView ref = do
                 , appTreeFocus = appTreeFocus a && not (edPressed ed)
                 }
             hoverPopup ref caret
-          pure (PaneView "" False Nothing)
+          pure (PaneView "" False)
     -- What each pane hangs its menu on, which the grid's own response does
     -- not carry out of it.
     treeResp <- liftIO (newIORef Nothing)
@@ -219,9 +216,7 @@ hoverPopup ref caret = do
     popupWith (not (null shown)) (defaultPopupConfig (AnchorRect caret)) {cfgPlacement = PlacementBelow} (fixedW 560 . maxH 420) $
       for_ shown $ \case
         TipDoc doc -> scrollWith fillW (void (markdownConfigured (codeColoured (edLang (appEditor a))) doc))
-        -- Not in a scroll area, which takes the height of a line that wraps
-        -- in it for the height it has unwrapped, and so cuts the end off.
-        TipDiagnostics ds -> columnWith (tight . gap 10 . fillW) (mapM_ diagnosticTip ds)
+        TipDiagnostics ds -> scrollWith (tight . gap 10 . fillW) (mapM_ diagnosticTip ds)
   when (respClicked resp || (isJust (appHover a) && null shown)) (modifyApp ref (\a' -> a' {appHover = Nothing}))
 
 -- | A diagnostic as the popup by the caret shows it: how bad it is, in the
@@ -356,20 +351,29 @@ treeEditorGrid ::
   NanoUI PaneGridResponse
 treeEditorGrid treePane editorPane = do
   winW <- windowWidth
-  styled paneChrome $
-    paneGrid
-      defaultPaneGridConfig
-        { pgSpacing = paneSpacing
-        , pgMinSize = minTreeWidth
-        , pgLeeway = paneLeeway
-        , pgPreserveDragSize = True
-        , -- The window's width is the editor's to take or give up: the tree
-          -- is as wide as it was left, whatever the window does.
-          pgFixedPanes = (== treePaneId)
-        , pgInitial = Just (Split treeEditorSplit AxisV (treeShare winW) (Pane treePaneId) (Pane editorPaneId))
-        , pgFocusable = False
-        , pgViewPane = \pid pctx -> if pid == treePaneId then treePane pctx else editorPane pctx
-        }
+  -- The grid's own tree, handed back each frame. The first frame starts it
+  -- from the window's width; after that a resize changes the editor's width
+  -- and not the split, which the grid would take again if it were passed a
+  -- new one.
+  (arrangement, setArrangement) <-
+    useState (Just (Split treeEditorSplit AxisV (treeShare winW) (Pane treePaneId) (Pane editorPaneId)))
+  resp <-
+    styled paneChrome $
+      paneGrid
+        defaultPaneGridConfig
+          { pgSpacing = paneSpacing
+          , pgMinSize = minTreeWidth
+          , pgLeeway = paneLeeway
+          , pgPreserveDragSize = True
+          , -- The window's width is the editor's to take or give up: the tree
+            -- is as wide as it was left, whatever the window does.
+            pgFixedPanes = (== treePaneId)
+          , pgTree = arrangement
+          , pgFocusable = False
+          , pgViewPane = \pid pctx -> if pid == treePaneId then treePane pctx else editorPane pctx
+          }
+  setArrangement (pgrTree resp)
+  pure resp
   where
     -- The tree's share of the row: the width the tree has always started at,
     -- of what the panes share out. The row spans the window and the grid has

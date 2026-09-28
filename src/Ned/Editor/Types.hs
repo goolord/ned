@@ -15,6 +15,7 @@ module Ned.Editor.Types
   ) where
 
 import Ned.Buffer (Buffer)
+import Ned.Complete (Completion)
 import Ned.Editor.Vim (Vim)
 import Ned.Highlight (Lang, LexState (..))
 
@@ -58,6 +59,8 @@ data Editor = Editor
   -- ^ Whether the indentation of a line is drawn: a dot a space, a rule a tab.
   , edVim :: !(Maybe Vim)
   -- ^ Vim's modes, while the keys are vim's.
+  , edCompletion :: !(Maybe Completion)
+  -- ^ The menu of words for the one before the caret, while it is open.
   }
 
 defaultFontSize :: Float
@@ -84,6 +87,7 @@ newEditor lang buf =
     , edPressed = False
     , edShowWhitespace = True
     , edVim = Nothing
+    , edCompletion = Nothing
     }
 
 -- | Have the next frame scroll the caret into view.

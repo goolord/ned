@@ -20,16 +20,18 @@ import Data.Maybe (fromMaybe)
 import Data.Primitive.SmallArray (SmallArray, smallArrayFromList)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Vector as V
 import NanoUI
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
+import Ned.Complete (Candidate (..), Completion (..), Source, menuLimit)
 import Ned.Editor
 import Ned.Editor.Geometry
 import Ned.Highlight
-import Ned.Text (cellOfCol, cellsAt, foldCase, indentOf)
+import Ned.Text (cellOfCol, cellsAt, clamp, foldCase, indentOf)
 import Ned.Theme
 import Ned.View.Code
-import Ned.Widget (rounding, thumbSpan)
+import Ned.Widget (markOp, rounding, thumbSpan)
 
 --------------------------------------------------------------------------------
 -- The editor
@@ -41,12 +43,13 @@ import Ned.Widget (rounding, thumbSpan)
 -- result; the response is for hanging a context menu on. It takes the
 -- keyboard when @wantFocus@ is set, which an application clears while a
 -- field of its own is being typed into, and marks the matches of @marks@.
+-- @others@ offers words to complete from besides the text's own.
 --
 -- @textKey@ names the text the editor holds, and changes when it is another
 -- text: two files just opened are at the same version with the caret and the
 -- view in the same place, and without it the second would not be drawn.
-editorView :: Int -> Bool -> Text -> Editor -> NanoUI (Response, Editor)
-editorView textKey wantFocus marks ed0 = do
+editorView :: Int -> Bool -> Text -> Source -> Editor -> NanoUI (Response, Editor)
+editorView textKey wantFocus marks others ed0 = do
   widGutter <- nextId
   wid <- nextId
   widBar <- nextId
@@ -67,7 +70,7 @@ editorView textKey wantFocus marks ed0 = do
   -- it there; the editor takes it back for as long as it is wanted.
   when wantFocus (holdFocus wid)
 
-  fr <- editorFrame wantFocus rect cellW fm ed0
+  fr <- editorFrame wantFocus others rect cellW fm ed0
   let ed1 = efEditor fr
       g = efGeometry fr
   -- The window hands over typed text only while a widget asks for it, and
@@ -90,6 +93,7 @@ editorView textKey wantFocus marks ed0 = do
           , esThumbXHot = efThumbXHot fr
           , esWhitespace = edShowWhitespace ed1
           , esBlock = efBlock fr
+          , esMenu = edCompletion ed1
           }
       part which cursor layout =
         defaultCustomWidgetSpec
@@ -130,6 +134,7 @@ data EditorScene = EditorScene
   , esWhitespace :: !Bool
   , esBlock :: !(Maybe Int)
   -- ^ The character a block caret is on, in vim's modes that draw one.
+  , esMenu :: !(Maybe Completion)
   }
 
 -- | Where the caret is in the window, given the whole editor's rectangle, as
@@ -172,6 +177,10 @@ editorSceneKey which sc =
           , keyPart (esFind sc)
           , keyPart (langName (esLang sc))
           , keyPart (show (esLexStart sc))
+          , -- The menu's words change with the text, which the version has
+            -- already; what is left is which of them is picked.
+            keyPart (maybe (-1) cmStart (esMenu sc))
+          , keyPart (maybe (-1) cmPicked (esMenu sc))
           ]
 
 -- | The draw ops of one part, given the rectangle that part was laid out in.
@@ -191,6 +200,7 @@ drawEditor which sc own@(Rect ox oy ow oh) =
             , if esWhitespace sc then concatMap indentation rows else []
             , texts
             , caret
+            , maybe [] menuOps (esMenu sc)
             ]
       PartBar ->
         FillRect own colBackground
@@ -347,6 +357,50 @@ drawEditor which sc own@(Rect ox oy ow oh) =
         , cell >= firstCell
         , cell <= lastCell
         ]
+
+    -- The completion menu, under the word it completes, or over it when
+    -- there is no room below: a row a word, with where each is from in a
+    -- column after it, and the one in the text picked out. The words stand
+    -- on the cells of the word in the text, and the menu is kept to the text.
+    menuOps m =
+      FillRect menuRect colMenu
+        : StrokeRoundedRect menuRect 0 1 colMenuEdge
+        : concat (zipWith menuRow [0 ..] [firstRow .. firstRow + showing - 1])
+        ++ menuThumb
+      where
+        shown = cmShown m
+        total = V.length shown
+        showing = min menuLimit total
+        firstRow = max 0 (cmPicked m - showing + 1)
+        widest f cap = min cap (V.maximum (V.map (\c -> let t = f c in cellOfCol t (T.length t)) shown))
+        wordCells = widest candWord 48
+        noteCells = widest candNote 24
+        panelW = fromIntegral (1 + wordCells + (if noteCells > 0 then 2 + noteCells else 0) + 1) * cellW + 2
+        panelH = fromIntegral showing * lineH + 2
+        sLine = B.lineOf buf (cmStart m)
+        sCell = B.colToVisual buf sLine (cmStart m - B.lineStart buf sLine)
+        px = clamp ox (max ox (ox + ow - panelW)) (cellX sCell - cellW - 1)
+        under = lineY sLine + lineH
+        py = if under + panelH > oy + oh && lineY sLine - panelH >= oy then lineY sLine - panelH else under
+        menuRect = Rect px py panelW panelH
+        rowY k = py + 1 + fromIntegral (k :: Int) * lineH
+        menuRow k i =
+          let c = shown V.! i
+              picked = i == cmPicked m
+           in [FillRect (Rect (px + 1) (rowY k) (panelW - 2) lineH) colMenuPicked | picked]
+                ++ [markOp (Rect (px + 1) (rowY k) 0 lineH) colCaret | picked]
+                ++ [DrawTextStyled (px + 1 + cellW) (rowY k) font (T.take wordCells (candWord c)) (tokenColor TokPlain)]
+                ++ [ DrawTextStyled (px + 1 + fromIntegral (wordCells + 3) * cellW) (rowY k) font (T.take noteCells (candNote c)) colGutterText
+                   | not (T.null (candNote c))
+                   ]
+        -- A lane down the right edge while there are more words than show.
+        menuThumb
+          | total <= showing = []
+          | otherwise =
+              let trackH = panelH - 4
+                  lane = max 6 (trackH * fromIntegral showing / fromIntegral total)
+                  top = py + 2 + (trackH - lane) * fromIntegral firstRow / fromIntegral (total - showing)
+               in [FillRect (Rect (px + panelW - 4) top 2 lane) colThumb]
 
 -- | A line on screen, as the drawing has it: its number, whether it is one of
 -- the long ones that are never read whole, the text it shows, and what the

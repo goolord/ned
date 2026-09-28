@@ -191,14 +191,19 @@ appMenus ref app = [("File", fileMenu), ("Edit", editMenu), ("View", viewMenu)]
   where
     item = menuRow ref
     buf0 = edBuffer (appEditor app)
+    -- A chord vim's keys have taken is not shown, nor answered to, beside
+    -- its row: the row is still there to click.
+    bound chord
+      | isJust (edVim (appEditor app)) && chord `elem` vimChords = Nothing
+      | otherwise = Just chord
     fileMenu = do
-      item "New" (Just chordNew) (newFile ref)
+      item "New" (bound chordNew) (newFile ref)
       item "Open..." (Just chordOpen) (openDialog ref)
-      item "Find File..." (Just chordFindFile) (openPicker ref P.fileSource)
+      item "Find File..." (bound chordFindFile) (openPicker ref P.fileSource)
       item "Save" (Just chordSave) (save ref False)
       item "Save As..." (Just chordSaveAs) (save ref True)
       menuSeparator
-      item "Close Tab" (Just chordCloseTab) (closeTab ref (appDocKey app))
+      item "Close Tab" (bound chordCloseTab) (closeTab ref (appDocKey app))
       item "Exit" (Just chordQuit) (guarded ref PendingQuit)
     editMenu = do
       editEntries ref buf0

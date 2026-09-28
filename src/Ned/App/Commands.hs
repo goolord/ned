@@ -53,6 +53,7 @@ module Ned.App.Commands
   , chordZoomIn
   , chordZoomOut
   , chordZoomReset
+  , vimChords
 
     -- * The bar, the tree and the finder
   , openBar
@@ -277,6 +278,13 @@ chordTree = K.ctrl <> K.key 'b'
 chordZoomIn = K.ctrl <> K.key '='
 chordZoomOut = K.ctrl <> K.key '-'
 chordZoomReset = K.ctrl <> K.key '0'
+
+-- | The chords that are vim's with vim's keys on, and not the application's:
+-- Ctrl+N and Ctrl+P complete a word in insert mode and move down and up in
+-- normal mode, and Ctrl+W deletes the word before the caret. What they did
+-- here is on the File menu still, and on the leader and the command line.
+vimChords :: [K.Shortcut]
+vimChords = [chordNew, chordFindFile, chordCloseTab]
 
 --------------------------------------------------------------------------------
 -- The bar, the tree and the finder

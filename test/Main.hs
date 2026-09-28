@@ -12,9 +12,12 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Data.Text.NanoRope.Measured as Rope
+import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
+import Ned.Complete
+import Ned.Complete.Tags (findTagsFile, parseTags, tagCount, tagSource)
 import Ned.Config (Config (..), Font (..), defaultConfig, defaultConfigText, readConfig, watchConfig)
 import Ned.Editor.Vim (Clip (..), Mode (..), Request (..), Vim (..), feedKeys, newVim, vimSettle)
 import Ned.File (Eol (..), FileFormat (..), Loaded (..), loadFile, saveFile)
@@ -145,6 +148,8 @@ main = do
   checkVim "G goes to the last line, and not the empty one after it" src 5 "G" (src, 24, Normal)
   checkVim "j stops on the last line" src 24 "j" (src, 24, Normal)
   checkVim "gg" src 26 "gg" (src, 0, Normal)
+  checkVim "Ctrl+N and Ctrl+P go down and up" src 0 "\SO\SO\DLE" (src, 12, Normal)
+  checkVim "Ctrl+W deletes the word before the caret in insert mode" src 6 "i\ETB" ("foo r baz\n  qux(a, b)\nend\n", 4, Insert)
   checkVim "G with a count goes to that line" src 0 "2G" (src, 14, Normal)
   checkVim "f and ;" src 0 "fa;" (src, 9, Normal)
   checkVim "t stops short" src 0 "tz" (src, 9, Normal)
@@ -394,6 +399,68 @@ main = do
   check "a changed file is read again" (Just (Right (defaultConfig {cfgScale = 1.5}, Nothing))) changed
   killThread watcher
   removePathForcibly cfgDir
+
+  -- Completion ---------------------------------------------------------------
+  let hsLang = languageFor "Main.hs"
+      atEnd t = B.setCursor False (T.length t) (B.fromText t)
+      wordsOf = map candWord
+  check "words of a line" [(0, "foo'"), (5, "bar_1"), (15, "baz")] (wordsIn hsLang "foo' bar_1 9x 'baz")
+  check "a language's own identifier characters" [(1, "foo-bar")] (wordsIn (languageFor "a.css") "(foo-bar)")
+  check "the word before the caret" (Just (13, "fo")) (wordBefore hsLang (atEnd "let fooBar = fo"))
+  check "no word before a space" Nothing (wordBefore hsLang (atEnd "fo "))
+  check "no word in a number" Nothing (wordBefore hsLang (atEnd "x = 12"))
+  let near = B.setCursor False 18 (B.fromText "football\nfoobar\n\nfo\nfoodie")
+  check "the text's words, nearest first" ["foodie", "foobar", "football"] (wordsOf (bufferSource hsLang near "fo"))
+  check "lower case matches any case" ["foo", "Foo"] (wordsOf (bufferSource hsLang (atEnd "Foo foo f") "f"))
+  check "a capital matches its case" ["FooBar"] (wordsOf (bufferSource hsLang (atEnd "FooBar fooBaz Fo") "Fo"))
+  check "a word is not its own completion" ["food"] (wordsOf (bufferSource hsLang (atEnd "foo food foo") "foo"))
+  check "each word once, where it was first offered" ["whereas", "where"]
+    (wordsOf (gather (bufferSource hsLang (atEnd "where whereas wh") <> keywordSource hsLang) "wh"))
+  check "keywords say so" [Candidate "import" "keyword"] (keywordSource hsLang "impo")
+  check "other files say which" [Candidate "helper" "Util.hs"] (buffersSource [("Util.hs", hsLang, B.fromText "helper = 1")] "hel")
+
+  let menuOn t = openCompletion (bufferSource hsLang (atEnd t)) hsLang (atEnd t)
+      opened = menuOn "foobar football\nfo"
+  check "Tab puts the first word in" (Just "foobar football\nfoobar") (text . snd <$> opened)
+  check "the menu has every word" (Just ["foobar", "football"]) (wordsOf . V.toList . cmShown <$> (fst =<< opened))
+  case opened of
+    Just (Just m0, b0) -> do
+      let (m1, b1) = stepCompletion 1 m0 b0
+          (m2, b2) = stepCompletion 1 m1 b1
+          (m3, b3) = stepCompletion 1 m2 b2
+      check "the next word" ("foobar football\nfootball", 1) (text b1, cmPicked m1)
+      check "past the end is what was typed" ("foobar football\nfo", -1) (text b2, cmPicked m2)
+      check "and round again" ("foobar football\nfoobar", 0) (text b3, cmPicked m3)
+      check "up from the top is what was typed" ("foobar football\nfo", -1) (let (m, b) = stepCompletion (-1) m0 b0 in (text b, cmPicked m))
+      check "the words tried undo as one" "foobar football\nfo" (text (B.undo b3))
+      check "cancelling puts back what was typed" "foobar football\nfo" (text (cancelCompletion m1 b1))
+      let typedOn = B.insertText "ot" b2
+      check "typing on narrows the menu" (Just ["football"]) (wordsOf . V.toList . cmShown <$> settleCompletion hsLang m2 b2 typedOn)
+      check "typing what nothing answers closes it" Nothing (cmPicked <$> settleCompletion hsLang m0 b0 (B.insertText "x" b0))
+      check "moving the caret closes it" Nothing (cmPicked <$> settleCompletion hsLang m0 b0 (B.moveLeft False b0))
+      check "a frame that changed nothing leaves it" (Just 0) (cmPicked <$> settleCompletion hsLang m0 b0 b0)
+    _ -> check "the menu opens" True False
+  check "one word is completed with no menu" (Just (True, "unique\nunique")) ((\(m, b) -> (isNothing m, text b)) <$> menuOn "unique\nun")
+  check "nothing to complete after a space" True (isNothing (menuOn "foobar "))
+  check "nothing to complete that nothing answers" True (isNothing (menuOn "foobar\nzz"))
+
+  let tags =
+        parseTags
+          "!_TAG_FILE_FORMAT\t2\t/extended/\n\
+          \FooBar\tsrc/A.hs\t/^FooBar/;\"\tt\n\
+          \foo\tsrc/B.hs\t1;\"\n\
+          \fooBar\tC.hs\t2\n\
+          \bar\tD.hs\t3\n\
+          \foo\tE.hs\t9\n"
+  check "a name in two files is one tag" 4 (tagCount tags)
+  check "tags a word starts, in any case" [Candidate "FooBar" "A.hs", Candidate "fooBar" "C.hs"] (tagSource tags "foo")
+  check "tags in the case typed" [Candidate "fooBar" "C.hs"] (tagSource tags "fooB")
+  check "no tags for another word" [] (tagSource tags "baz")
+  tagsDir <- (</> "ned-tags-test") <$> getTemporaryDirectory
+  createDirectoryIfMissing True (tagsDir </> "a" </> "b")
+  TIO.writeFile (tagsDir </> "tags") "foo\tfoo.c\t1\n"
+  findTagsFile (tagsDir </> "a" </> "b") >>= check "a tags file in a folder above" (Just (tagsDir </> "tags"))
+  removePathForcibly tagsDir
 
   n <- readIORef failures
   if n == 0

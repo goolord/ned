@@ -121,12 +121,14 @@ leaderKeys =
 --------------------------------------------------------------------------------
 
 -- | Run the frame's keys through vim. Insert mode is the editor's own keys
--- less Escape, and the other modes read what was typed; the named keys are
--- the motions they stand for.
+-- less Escape, and Ctrl+W, which deletes the word before the caret; the
+-- other modes read what was typed, and the named keys are the motions they
+-- stand for.
 vimKeys :: Input -> Int -> Vim -> Buffer -> NanoUI (Vim, Buffer)
 vimKeys inp page v b = case vimMode v of
   Insert
     | KeyEscape `elem` keys -> applyKeys inp page b >>= \b' -> feed "\ESC" b'
+    | modCtrl mods && not (modAlt mods) && KeyChar 'w' `elem` keys -> feed "\ETB" b
     | otherwise -> (v,) <$> applyKeys inp page b
   _
     | modCtrl mods && not (modAlt mods) -> case traverse control [c | KeyChar c <- keys] of
@@ -153,6 +155,8 @@ vimKeys inp page v b = case vimMode v of
       | (c == 'j' || c == 'k') && stride > 1 && T.null (vimPending v) = show stride ++ [c]
       | otherwise = [c]
     control = \case
+      'n' -> Just '\SO'
+      'p' -> Just '\DLE'
       'r' -> Just '\DC2'
       'd' -> Just '\EOT'
       'u' -> Just '\NAK'
@@ -187,6 +191,7 @@ key clip page c (v, b) = case vimMode v of
     '\r' -> (v, B.newline b)
     '\b' -> (v, B.backspace b)
     '\DEL' -> (v, B.deleteForward b)
+    '\ETB' -> (v, B.deleteWordBack b)
     _ | c >= ' ' -> (v, B.insertText (T.singleton c) b)
     _ -> (v, b)
   _ | Just (':', typed) <- T.uncons pending -> pure $ case c of
@@ -490,8 +495,8 @@ motion page v = \case
   "\b" -> left
   "l" -> exclusive (\n b -> to b (min (lineEnd b (line b)) (B.bufCursor b + n)))
   -- As far as the last line or the first, and nowhere from there.
-  "j" -> linewise (\n b -> if line b >= lastLine b then Nothing else Just (B.moveLines (min n (lastLine b - line b)) False b))
-  "k" -> linewise (\n b -> if line b <= 0 then Nothing else Just (B.moveLines (negate (min n (line b))) False b))
+  [k] | k == 'j' || k == '\SO' -> linewise (\n b -> if line b >= lastLine b then Nothing else Just (B.moveLines (min n (lastLine b - line b)) False b))
+  [k] | k == 'k' || k == '\DLE' -> linewise (\n b -> if line b <= 0 then Nothing else Just (B.moveLines (negate (min n (line b))) False b))
   [k] | k == '+' || k == '\r' -> linewise (\n b -> nonBlank b (line b + n))
   "-" -> linewise (\n b -> nonBlank b (line b - n))
   "w" -> exclusive (\n b -> Just (times n (B.moveWordRight False) b))

@@ -37,6 +37,7 @@ import NanoUI
 import Ned.App.Commands
 import Ned.App.Frame
 import Ned.App.State
+import Ned.Complete.Tags (Tags, noTags, watchTags)
 import Ned.Config (Config (..), watchConfig)
 import Ned.Editor (Editor (..))
 import Ned.Editor.Vim (Vim (..))
@@ -65,6 +66,7 @@ appView ref = do
   -- What vim's keys asked for last frame is done before the frame reads
   -- the state it runs on.
   runVimRequests ref
+  tags <- watchedTags ref
   reloadConfig ref
   app0 <- readApp ref
 
@@ -139,7 +141,7 @@ appView ref = do
             -- one to put a newline in the file it opened.
             appNow <- readApp ref
             let wantFocus = not (appBarFocus app1) && not (appTreeFocus app1) && unblocked
-            (resp, ed) <- editorView (appDocKey appNow) wantFocus (findMarks appNow) (appEditor appNow)
+            (resp, ed) <- editorView (appDocKey appNow) wantFocus (findMarks appNow) (otherWords tags appNow) (appEditor appNow)
             liftIO (writeIORef respRef (Just resp))
             when (any (not . null . vimRequests) (edVim ed)) requestFrame
             modifyApp ref $ \a ->
@@ -212,6 +214,13 @@ tracedView file body = do
   let Size w h = inputWindowSize inp
   liftIO (appendFile file (printf "%.4f %.0f %.0f %.3f\n" t0 w h ((t1 - t0) * 1000)))
 
+
+-- | The names in the tags file for the folder the tree is on, read again as
+-- it changes on a thread the frame owns. Another folder is another thread.
+watchedTags :: IORef App -> NanoUI Tags
+watchedTags ref = do
+  root <- ftRoot . appTree <$> readApp ref
+  useStream root noTags (watchTags root)
 
 -- | Take up the settings each time their file changes. The file is watched
 -- on a thread the frame owns, which counts its readings and wakes the window

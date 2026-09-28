@@ -24,6 +24,9 @@ cabal run ned -- path/to/file.hs [more files...]
 - UTF-8 editing with line endings and byte order marks preserved.
 - Vim keys: normal, insert, visual and visual line modes, on by default and
   turned off from the View menu.
+- Tab completion of the word before the caret, from the file itself (nearest
+  words first), the other open tabs, a ctags `tags` file, and the language's
+  keywords and types.
 
 ## Building
 
@@ -63,7 +66,7 @@ Keep `C:\msys64\ucrt64\bin` on `PATH` when running `ned.exe`.
 | Ctrl+Shift+F | Search in files; the same keys as the file finder, and Enter opens the file at the line |
 | Ctrl+F | Find; Enter / Shift+Enter for next / previous match |
 | Ctrl+G | Go to line |
-| Tab / Shift+Tab | Indent / unindent |
+| Tab / Shift+Tab | Complete the word before the caret; indent / unindent where there is none |
 | Page Up / Page Down, Alt+Up / Alt+Down | Page up / down |
 | Ctrl+= / Ctrl+- / Ctrl+0 | Zoom in / out / reset |
 | Ctrl+Q | Quit |
@@ -72,21 +75,51 @@ Keep `C:\msys64\ucrt64\bin` on `PATH` when running `ned.exe`.
 
 The mode is on the left of the status bar, with a command's keys as they are
 typed. The caret does not blink, and is a block in normal and visual mode; insert mode is the editor's
-own keys, so every shortcut above still works there. Yanks and puts go through
+own keys, so the shortcuts above work there too, except Ctrl+N, Ctrl+P and
+Ctrl+W, which are vim's (below). New tab, find file and close tab are still
+on the File menu, and on `SPC f f` and `:q`. Yanks and puts go through
 the system clipboard, and what ends in a line break is put as whole lines.
 
 | Keys | |
 | --- | --- |
-| Motions | `h j k l`, `w b e`, `0 ^ $`, `gg G`, `{ }`, `f F t T` and `; ,`, `+ -`, Ctrl+D / Ctrl+U, all with counts; `j` and `k` speed up while held |
+| Motions | `h j k l`, `w b e`, `0 ^ $`, `gg G`, `{ }`, `f F t T` and `; ,`, `+ -`, Ctrl+N / Ctrl+P, Ctrl+D / Ctrl+U, all with counts; `j` and `k` speed up while held |
 | Operators | `d c y > <` with a motion, a text object or doubled (`dd`, `cc`, `yy`, `>>`, `<<`) |
 | Text objects | `iw aw`, `i( a(` (also `b`), `i{ a{` (also `B`), `i[ a[`, `i< a<`, `i" a"`, `i' a'` |
 | Edits | `i a I A o O`, `x X s S D C Y`, `p P`, `J`, `r`, `~`, `u` / Ctrl+R |
+| Insert mode | Tab, Ctrl+N and Ctrl+P complete the word before the caret; Ctrl+W deletes the word before it |
 | Visual | `v V`, then motions, text objects, `o`, `d y c > < p J ~ u U` |
 | Search | `/` opens find, `n N` go to the next and previous match |
 | Tabs | `gt gT` |
 | Panes | Ctrl+H / Ctrl+L to the file tree and back, Ctrl+J / Ctrl+K down to the find bar and back |
 | Commands | `:w`, `:q`, `:q!`, `:wq`, `:x`, `:qa`, `:<line>`, `ZZ`, `ZQ` |
 | Leader (Space) | `SPC f f` find a file, `SPC f g` search in files, `SPC d` toggle the file tree |
+
+## Completion
+
+Tab after a word puts in the first word that starts with it and opens a menu
+of the rest. What is typed in lower case matches any case; a capital matches
+its own case. Words come from, in this order:
+
+1. The file being edited, nearest the caret first.
+2. The other open tabs, in the order the tab strip shows them.
+3. The `tags` file in the file tree's folder or the nearest folder above it,
+   as written by `ctags -R`. It is read again when it changes.
+4. The language's keywords and built-in types.
+
+When only one word answers, it goes in with no menu. Where there is no
+word before the caret, or nothing answers it, Tab indents as before.
+
+| Key | While the menu is open |
+| --- | --- |
+| Tab / Down / Ctrl+N | Next word |
+| Shift+Tab / Up / Ctrl+P | Previous word; past either end is what was typed |
+| Enter | Take the word |
+| Ctrl+E | Put back what was typed |
+| Escape | Close the menu, keeping the word (and leave insert mode, with vim keys) |
+
+Typing on narrows the menu; anything else closes it with the word in place.
+The words tried undo as one step. With vim keys, completion works in insert
+mode, and Ctrl+N and Ctrl+P open the menu as Tab does.
 
 ## Configuration
 

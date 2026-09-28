@@ -78,6 +78,7 @@ module Ned.Buffer
   , deleteWordForward
   , deleteSelection
   , replace
+  , completeWord
   , indentUnit
   , indentKey
   , unindentKey
@@ -137,7 +138,7 @@ data Snapshot = Snapshot
   }
 
 -- | Edits of one kind that continue each other undo together.
-data EditKind = EditOther | EditType | EditSpace | EditBackspace | EditDelete
+data EditKind = EditOther | EditType | EditSpace | EditBackspace | EditDelete | EditComplete
   deriving (Eq)
 
 -- | Whether an edit of a kind goes on with the run before it. Typing goes on
@@ -450,7 +451,7 @@ edit kind i j t b
     continues =
       continuesRun (bufLastEdit b) kind
         && not (hasSelection b)
-        && bufLastEnd b == (if kind == EditBackspace then j else i)
+        && bufLastEnd b == (if kind == EditBackspace || kind == EditComplete then j else i)
 
 -- | Put a new text in place, with its anchor and caret, as a step of the
 -- history: the text before it goes on the undo stack, unless this edit
@@ -508,6 +509,13 @@ deleteSelection b =
 -- and leave the caret after it: one step of the history.
 replace :: Int -> Int -> Text -> Buffer -> Buffer
 replace = edit EditOther
+
+-- | Put a completion in place of the word from one offset up to the caret.
+-- Stepping through the words a menu offers puts one after another in the
+-- same place, and those undo together: undo takes the word back to what was
+-- typed of it, however many were tried on the way.
+completeWord :: Int -> Int -> Text -> Buffer -> Buffer
+completeWord = edit EditComplete
 
 -- | Delete the selection, or the character before the caret. Within
 -- indentation made of spaces that is back to the previous tab stop.

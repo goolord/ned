@@ -31,6 +31,7 @@ module Ned.App.State
     -- * What follows from the state
   , modalUp
   , findMarks
+  , otherWords
   , titleFor
   ) where
 
@@ -40,6 +41,8 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import NanoUI.Backend.Sdl (FileDialogId)
 import qualified Ned.Buffer as B
+import Ned.Complete (Source, buffersSource)
+import Ned.Complete.Tags (Tags, tagSource)
 import Ned.Config (Config (..))
 import Ned.Editor
 import Ned.Editor.Vim (newVim)
@@ -338,6 +341,18 @@ modalUp app = isJust (appPending app) || isJust (appPicker app)
 -- is up.
 findMarks :: App -> Text
 findMarks app = if appBar app == BarFind then appFindText app else ""
+
+-- | Where words to complete the file in front come from, besides the file
+-- itself: the other tabs, in the order the strip shows them, and then the
+-- names in the tags file.
+otherWords :: Tags -> App -> Source
+otherWords tags app =
+  buffersSource
+    [ (docName d, edLang (docEditor d), edBuffer (docEditor d))
+    | d <- appDocs app
+    , docKey d /= appDocKey app
+    ]
+    <> tagSource tags
 
 -- | The name of the file in front, starred while it has changes to save.
 titleFor :: App -> Text

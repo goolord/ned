@@ -14,6 +14,7 @@ import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Maybe (isJust)
 import qualified Data.Text as T
 import qualified Data.Text.NanoRope.Measured as Rope
+import qualified Data.Vector as V
 import GHC.Clock (getMonotonicTime)
 import NanoUI
 import NanoUI.Backend (lineWidthIO, textInputArea)
@@ -24,13 +25,14 @@ import NanoUI.Testing (cursorKindIs, needsRedraw, newPixelContext, uiCursorKind)
 import Ned.App
 import Ned.App.State (Doc (..), appDocs, docName, everyEditor, selectDoc)
 import qualified Ned.Buffer as B
+import Ned.Complete (Candidate (..), Completion (..))
 import Ned.Config (defaultConfig)
 import Ned.Editor (Editor (..), cellWidth, defaultFontSize)
 import Ned.Editor.Vim (Mode (..), Vim (..), newVim)
 import qualified Ned.FileTree as FT
 import qualified Ned.Picker as P
 import Ned.View (appView)
-import System.Directory (createDirectoryIfMissing, doesFileExist, findExecutable, listDirectory, makeAbsolute)
+import System.Directory (createDirectoryIfMissing, doesFileExist, findExecutable, listDirectory, makeAbsolute, removeFile)
 import System.Exit (exitFailure)
 import System.FilePath (equalFilePath, (</>))
 import System.IO (hPutStrLn, stderr)
@@ -725,6 +727,83 @@ selftestIn dir mfile say = do
     clickedTab <- frontNow
     when ([clickedTab] /= take 1 (map docKey before)) $ fail "selftest: a click on the first tab did not bring it to the front"
     chord 'b'
+
+    -- Completion, in a tab of its own: Tab after a word puts in the nearest
+    -- word it starts and opens the menu on it, Ctrl+N steps down it and opens
+    -- no file, Enter takes the word, and Ctrl+E puts back what was typed. The
+    -- words of the other tabs are offered after the text's own.
+    chord 'n'
+    let menuNow = fmap (V.toList . cmShown) . edCompletion . appEditor <$> readIORef ref
+        tabsNow = length . appDocs <$> readIORef ref
+    tabsWere <- tabsNow
+    typed "football foobar greeting"
+    key plain KeyEnter
+    typed "fo"
+    key plain KeyTab
+    expect "Tab completes the word before the caret" "football foobar greeting\nfootball"
+    shot "18b-complete.bmp"
+    chord 'n'
+    expect "Ctrl+N steps down the menu" "football foobar greeting\nfoobar"
+    tabsAre <- tabsNow
+    when (tabsAre /= tabsWere) (fail "selftest: Ctrl+N opened a file while the menu was open")
+    key plain KeyEnter
+    expect "Enter takes the word, and breaks no line" "football foobar greeting\nfoobar"
+    menuNow >>= \m -> when (isJust m) (fail "selftest: Enter left the menu open")
+    typed " gre"
+    key plain KeyTab
+    menuNow >>= \case
+      Just [Candidate "greeting" "", Candidate "greet" "demo.hs"] -> pure ()
+      other -> fail ("selftest: the menu for gre is " <> show other)
+    shot "18c-complete-sources.bmp"
+    chord 'e'
+    expect "Ctrl+E puts back what was typed" "football foobar greeting\nfoobar gre"
+    menuNow >>= \m -> when (isJust m) (fail "selftest: Ctrl+E left the menu open")
+    -- The names in a tags file above the tree's folder are offered too, once
+    -- the watcher has found the file, which it looks for every two seconds.
+    -- One name alone is put in with no menu.
+    treeRoot <- FT.ftRoot . appTree <$> readIORef ref
+    unless (equalFilePath treeRoot treeDir) (fail ("selftest: the tree is on " <> treeRoot <> " and not on " <> treeDir))
+    writeFile (dir </> "tags") "!_TAG_FILE_SORTED\t1\t//\nzebraStripes\tzebra.c\t/^int zebraStripes;$/;\"\tv\n"
+    forM_ [1 :: Int .. 25] (\_ -> idle >> threadDelay 100000)
+    typed " zeb"
+    key plain KeyTab
+    expect "Tab completes a name in the tags file" "football foobar greeting\nfoobar gre zebraStripes"
+    removeFile (dir </> "tags")
+
+    -- With vim's keys, Tab completes in insert mode and Escape leaves it,
+    -- closing the menu.
+    modifyIORef' ref (everyEditor (\e -> e {edVim = Just newVim}))
+    idle
+    typed "Sfoo"
+    key plain KeyTab
+    expect "Tab completes in insert mode" "football foobar greeting\nfootball"
+    key plain KeyEscape
+    menuNow >>= \m -> when (isJust m) (fail "selftest: Escape left the menu open")
+    vimMode' <- fmap vimMode . edVim . appEditor <$> readIORef ref
+    unless (vimMode' == Just Normal) (fail ("selftest: Escape with the menu open left vim in " <> show vimMode'))
+    -- Ctrl+N and Ctrl+P are vim's: they open the menu in insert mode as Tab
+    -- does, and step through it; Ctrl+W deletes the word before the caret.
+    -- None of them opens, finds or closes a file.
+    typed "Sfoo"
+    chord 'n'
+    expect "Ctrl+N completes in insert mode" "football foobar greeting\nfootball"
+    chord 'n'
+    expect "Ctrl+N steps down the menu in insert mode" "football foobar greeting\nfoobar"
+    chord 'p'
+    expect "Ctrl+P steps up the menu in insert mode" "football foobar greeting\nfootball"
+    key plain KeyEnter
+    typed " zebra"
+    chord 'w'
+    expect "Ctrl+W deletes the word before the caret" "football foobar greeting\nfootball "
+    key plain KeyEscape
+    chord 'p'
+    caretLine <- (\a -> let b = edBuffer (appEditor a) in B.lineOf b (B.bufCursor b)) <$> readIORef ref
+    unless (caretLine == 0) (fail "selftest: Ctrl+P in normal mode did not move up a line")
+    chord 'w'
+    (,) <$> tabsNow <*> (isJust . appPicker <$> readIORef ref) >>= \case
+      (n, False) | n == tabsWere -> pure ()
+      other -> fail ("selftest: vim's Ctrl+N, Ctrl+P or Ctrl+W reached the application: " <> show other)
+    modifyIORef' ref (everyEditor (\e -> e {edVim = Nothing}))
 
     -- Vim's keys, in a tab of their own: insert mode types, Escape steps back
     -- onto the text, normal mode edits it, and the leader puts the finder up

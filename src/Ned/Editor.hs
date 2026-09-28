@@ -37,10 +37,11 @@ import Data.Maybe (fromMaybe, isJust, isNothing)
 import NanoUI
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
+import Ned.Complete (Source, bufferSource, keywordSource, settleCompletion)
 import Ned.Editor.Geometry
 import Ned.Editor.Keys
 import Ned.Editor.Types
-import Ned.Editor.Vim (vimBlock, vimKeys, vimSettle)
+import Ned.Editor.Vim (Mode (..), Vim (..), vimBlock, vimKeys, vimSettle)
 import Ned.Highlight
 import Ned.Text (clamp)
 import Ned.Widget
@@ -71,16 +72,33 @@ data EditorFrame = EditorFrame
 -- @focused@ says the editor has the keyboard, which an application clears
 -- while a field of its own is being typed into; @cellW@ and @fm@ are the font
 -- it is set in, which whoever lays it out has resolved already.
-editorFrame :: Bool -> Rect -> Float -> FontMetrics -> Editor -> NanoUI EditorFrame
-editorFrame focused rect cellW fm ed0 = do
+--
+-- @others@ is where words to complete come from besides the text itself and
+-- its language: the other files open, say. It is read only when Tab asks.
+editorFrame :: Bool -> Source -> Rect -> Float -> FontMetrics -> Editor -> NanoUI EditorFrame
+editorFrame focused others rect cellW fm ed0 = do
   inp <- askInput
   now <- uiTime
 
+  -- The completion menu has the keys it answers to first, while the text is
+  -- being typed into; the rest go on to the editor, or to vim, and the menu
+  -- is settled after them. Escape closes it and does what it always does.
   let buf0 = edBuffer ed0
-  (vim1, buf1) <- case edVim ed0 of
-    _ | not focused -> pure (edVim ed0, buf0)
-    Nothing -> (Nothing,) <$> applyKeys inp (edViewLines ed0) buf0
-    Just vim -> first Just <$> vimKeys inp (edViewLines ed0) vim buf0
+      lang = edLang ed0
+      typing = maybe True ((== Insert) . vimMode)
+      sourceFor b = bufferSource lang b <> others <> keywordSource lang
+      completed
+        | focused && typing (edVim ed0) = completionKeys (isJust (edVim ed0)) inp sourceFor lang (edCompletion ed0) buf0
+        | otherwise = Nothing
+  (vim1, buf1, menu1) <- case completed of
+    Just (menu, buf) -> pure (edVim ed0, buf, menu)
+    Nothing -> do
+      (vim, buf) <- case edVim ed0 of
+        _ | not focused -> pure (edVim ed0, buf0)
+        Nothing -> (Nothing,) <$> applyKeys inp (edViewLines ed0) buf0
+        Just vim -> first Just <$> vimKeys inp (edViewLines ed0) vim buf0
+      let escaped = inputKeysElem KeyEscape (inputKeys inp)
+      pure (vim, buf, if escaped then Nothing else edCompletion ed0 >>= \m -> settleCompletion lang m buf0 buf)
 
   let g = geometry cellW fm buf1
       -- The editor less its sideways bar, which is the rectangle the text has
@@ -156,6 +174,11 @@ editorFrame focused rect cellW fm ed0 = do
         Just vim | focused -> first Just (vimSettle (drag1 /= DragNone) vim bufPointed)
         _ -> (vim1, bufPointed)
       block = vim2 >>= (`vimBlock` buf2)
+      -- What the pointer did to the text, or the editor losing the keyboard,
+      -- closes the menu.
+      menu2
+        | focused && typing vim2 && B.bufCursor buf2 == B.bufCursor buf1 && B.bufVersion buf2 == B.bufVersion buf1 = menu1
+        | otherwise = Nothing
       -- Past the top or bottom edge the view follows the pointer.
       edgeScrolled =
         let over
@@ -225,6 +248,7 @@ editorFrame focused rect cellW fm ed0 = do
           ed0
             { edBuffer = buf2
             , edVim = vim2
+            , edCompletion = menu2
             , edScrollY = scrollY3
             , edScrollX = scrollX3
             , edDrag = drag1

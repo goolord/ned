@@ -102,3 +102,18 @@
   left alone stays as the View menu or the zoom left it. The chrome's text
   size and the text's font still wait for a restart, which the status bar
   says. A file that does not read changes nothing and says why.
+* Tab completes the word before the caret. The first word that starts with it
+  goes in, and a menu under it offers the rest, each with where it is from:
+  the file itself, nearest the caret first; the other tabs; the names in a
+  ctags `tags` file in the tree's folder or above it, read on a thread of its
+  own and again when it changes; and the language's keywords and types. Tab,
+  Down and Ctrl+N step down the menu and Shift+Tab, Up and Ctrl+P up it, Enter
+  takes the word and Ctrl+E puts back what was typed; typing on narrows it.
+  The words tried undo as one step. Tab still indents where there is no word
+  to complete, and works the same in vim's insert mode.
+* With vim's keys, Ctrl+N, Ctrl+P and Ctrl+W are vim's and not the
+  application's: in insert mode Ctrl+N and Ctrl+P complete the word before
+  the caret and step through the menu, and Ctrl+W deletes the word before the
+  caret; in normal and visual mode Ctrl+N and Ctrl+P move down and up a line.
+  New tab, find file and close tab stay on the File menu, which shows no chord
+  for them while vim's keys are on.

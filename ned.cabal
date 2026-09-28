@@ -50,6 +50,8 @@ library
         Ned.Highlight.Lang
         Ned.Highlight.Lex
         Ned.Highlight.Languages
+        Ned.Complete
+        Ned.Complete.Tags
 
         -- The window.
         Ned.Theme

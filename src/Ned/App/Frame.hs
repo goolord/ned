@@ -65,9 +65,16 @@ appChords ref app = do
   inp <- askInput
   -- A frame with no key down, which is most of them, has no chord in it.
   unless (modalUp app || null (inputKeys inp)) $
-    forM_ (appBindings ref <> (if isJust (edVim (appEditor app)) then vimBindings ref else [])) $ \(chord, action) ->
-      whenM (shortcut chord) action
+    forM_ bindings $ \(chord, action) ->
+      -- While the completion menu is open, Ctrl+N and Ctrl+P step through
+      -- it, as they do in vim, and open no file.
+      unless (isJust (edCompletion (appEditor app)) && chord `elem` [chordNew, chordFindFile]) $
+        whenM (shortcut chord) action
   when (inputKeysElem KeyEscape (inputKeys inp) && appBar app /= BarNone && not (modalUp app)) (closeBar ref)
+  where
+    bindings
+      | isJust (edVim (appEditor app)) = filter ((`notElem` vimChords) . fst) (appBindings ref) <> vimBindings ref
+      | otherwise = appBindings ref
 
 -- | Every chord of the application's and what it does: the ones the menus
 -- show, and the others a keyboard reaches for as well.

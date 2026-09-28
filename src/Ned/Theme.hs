@@ -27,6 +27,9 @@ module Ned.Theme
   , colThumb
   , colThumbHot
   , colWhitespace
+  , colMenu
+  , colMenuEdge
+  , colMenuPicked
 
     -- * Code
   , tokenColor
@@ -83,6 +86,16 @@ colTrack = rgba 0x1D1F21 0xC0 -- scrollbar.track.background
 colThumb = rgb 0x63666E
 colThumbHot = rgb 0x7A7D85
 colWhitespace = rgb 0x4D5057 -- ignored (editor.invisible is unset)
+
+-- | The completion menu, which stands over the text: a step up from the page
+-- in the grey the current line is drawn in, edged in the selection's, with
+-- the row that is in the text a step further up. A row picked in a menu
+-- means only that it is the one, so it is told apart by brightness, and the
+-- mark down its left is the caret's, as the finder's is.
+colMenu, colMenuEdge, colMenuPicked :: Color
+colMenu = rgb 0x282A2E -- editor.active_line.background, made solid
+colMenuEdge = rgb 0x373B41 -- players[0].selection, made solid
+colMenuPicked = rgb 0x373B41
 
 --------------------------------------------------------------------------------
 -- Code

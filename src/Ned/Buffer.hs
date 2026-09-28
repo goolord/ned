@@ -32,6 +32,9 @@ module Ned.Buffer
   , lineLength
   , lineText
   , lineWindow
+  , firstNonBlank
+  , textAfter
+  , textBefore
   , isLongLine
   , widestLine
   , cursorPosition
@@ -50,6 +53,7 @@ module Ned.Buffer
   , selectLineAt
   , selectLines
   , setCursor
+  , placeCaret
 
     -- * Movement
   , moveLeft
@@ -73,6 +77,8 @@ module Ned.Buffer
   , deleteWordBack
   , deleteWordForward
   , deleteSelection
+  , replace
+  , indentUnit
   , indentKey
   , unindentKey
 
@@ -228,6 +234,10 @@ lineWindow b ln c0 c1 =
       to = clamp from len c1
    in if to <= from then T.empty else Rope.sliceText Chars (s + from) (s + to) (bufRope b)
 
+-- | Where a line's text starts, past its indentation.
+firstNonBlank :: Buffer -> Int -> Int
+firstNonBlank b ln = lineStart b ln + T.length (indentOf (lineWindow b ln 0 longLineLimit))
+
 -- | Line and column of the caret, both from zero, the column in code points.
 cursorPosition :: Buffer -> (Int, Int)
 cursorPosition b =
@@ -281,6 +291,13 @@ setCursor :: Bool -> Int -> Buffer -> Buffer
 setCursor extend off b =
   let off' = clamp 0 (size b) off
    in moved b {bufCursor = off', bufAnchor = if extend then bufAnchor b else off'}
+
+-- | Put the anchor and the caret at offsets, keeping the column vertical
+-- movement aims for: for a caret stepped aside on its way somewhere, as a
+-- block caret is stepped back off the end of a short line it moved down to.
+placeCaret :: Int -> Int -> Buffer -> Buffer
+placeCaret anchor cursor b =
+  b {bufAnchor = clamp 0 (size b) anchor, bufCursor = clamp 0 (size b) cursor, bufLastEdit = EditOther}
 
 -- | A movement ends the run of edits that undo together.
 moved :: Buffer -> Buffer
@@ -375,7 +392,7 @@ moveLines n extend b =
 moveHome :: Bool -> Buffer -> Buffer
 moveHome extend b =
   let (ln, col) = cursorPosition b
-      indent = T.length (indentOf (lineWindow b ln 0 longLineLimit))
+      indent = firstNonBlank b ln - lineStart b ln
       col' = if col == indent then 0 else indent
    in setCursor extend (lineStart b ln + col') b
 
@@ -487,6 +504,11 @@ deleteSelection b =
   let (i, j) = selectionRange b
    in edit EditOther i j T.empty b
 
+-- | Replace the text from one offset up to another, whatever is selected,
+-- and leave the caret after it: one step of the history.
+replace :: Int -> Int -> Text -> Buffer -> Buffer
+replace = edit EditOther
+
 -- | Delete the selection, or the character before the caret. Within
 -- indentation made of spaces that is back to the previous tab stop.
 backspace :: Buffer -> Buffer
@@ -516,6 +538,7 @@ deleteWordForward b
   | hasSelection b = deleteSelection b
   | otherwise = edit EditOther (bufCursor b) (wordRightOf b (bufCursor b)) T.empty b
 
+-- | What Tab types: a tab, or spaces to the next tab stop's width.
 indentUnit :: Buffer -> Text
 indentUnit b = if bufTabs b then "\t" else T.replicate tabWidth " "
 

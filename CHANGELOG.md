@@ -79,3 +79,14 @@
   over typed text only then, and puts the candidate window at the caret.
   The application's chords go through `shortcut`, so a menu row bound to
   the same chord does not act on a press a second time.
+* Vim keys, on by default and turned off from the View menu: normal, insert,
+  visual and visual line modes, the common motions and operators with counts,
+  text objects, a command line for `:w`, `:q` and a line number, and a leader
+  on Space for the finder (`SPC f f`), the grep (`SPC f g`) and the tree
+  (`SPC d`). Normal and visual mode draw a block caret, the status bar names
+  the mode, and a selection made with the pointer is visual mode. With vim's
+  keys a find puts the caret on the match rather than selecting it.
+* With vim's keys the caret does not blink, `j` and `k` (and the up and down
+  arrows) go further with each repeat while held, as accelerated-jk has them,
+  and Ctrl+H, Ctrl+J, Ctrl+K and Ctrl+L move the keyboard between the file
+  tree, the text and the find bar.

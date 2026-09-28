@@ -22,6 +22,8 @@ cabal run ned -- path/to/file.hs [more files...]
 - Keyboard and mouse selection, clipboard, undo/redo and auto-indent.
 - Incremental find, go to line, zoom and indentation guides.
 - UTF-8 editing with line endings and byte order marks preserved.
+- Vim keys: normal, insert, visual and visual line modes, on by default and
+  turned off from the View menu.
 
 ## Building
 
@@ -65,6 +67,26 @@ Keep `C:\msys64\ucrt64\bin` on `PATH` when running `ned.exe`.
 | Page Up / Page Down, Alt+Up / Alt+Down | Page up / down |
 | Ctrl+= / Ctrl+- / Ctrl+0 | Zoom in / out / reset |
 | Ctrl+Q | Quit |
+
+## Vim keys
+
+The mode is on the left of the status bar, with a command's keys as they are
+typed. The caret does not blink, and is a block in normal and visual mode; insert mode is the editor's
+own keys, so every shortcut above still works there. Yanks and puts go through
+the system clipboard, and what ends in a line break is put as whole lines.
+
+| Keys | |
+| --- | --- |
+| Motions | `h j k l`, `w b e`, `0 ^ $`, `gg G`, `{ }`, `f F t T` and `; ,`, `+ -`, Ctrl+D / Ctrl+U, all with counts; `j` and `k` speed up while held |
+| Operators | `d c y > <` with a motion, a text object or doubled (`dd`, `cc`, `yy`, `>>`, `<<`) |
+| Text objects | `iw aw`, `i( a(` (also `b`), `i{ a{` (also `B`), `i[ a[`, `i< a<`, `i" a"`, `i' a'` |
+| Edits | `i a I A o O`, `x X s S D C Y`, `p P`, `J`, `r`, `~`, `u` / Ctrl+R |
+| Visual | `v V`, then motions, text objects, `o`, `d y c > < p J ~ u U` |
+| Search | `/` opens find, `n N` go to the next and previous match |
+| Tabs | `gt gT` |
+| Panes | Ctrl+H / Ctrl+L to the file tree and back, Ctrl+J / Ctrl+K down to the find bar and back |
+| Commands | `:w`, `:q`, `:q!`, `:wq`, `:x`, `:qa`, `:<line>`, `ZZ`, `ZQ` |
+| Leader (Space) | `SPC f f` find a file, `SPC f g` search in files, `SPC d` toggle the file tree |
 
 ## Testing
 

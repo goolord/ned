@@ -22,9 +22,10 @@ import NanoUI.Input (emptyInput, inputKeysFromList)
 import NanoUI.Internal.Context (Context (..))
 import NanoUI.Testing (cursorKindIs, needsRedraw, newPixelContext, uiCursorKind)
 import Ned.App
-import Ned.App.State (Doc (..), appDocs, docName, selectDoc)
+import Ned.App.State (Doc (..), appDocs, docName, everyEditor, selectDoc)
 import qualified Ned.Buffer as B
 import Ned.Editor (Editor (..), cellWidth, defaultFontSize)
+import Ned.Editor.Vim (Mode (..), Vim (..), newVim)
 import qualified Ned.FileTree as FT
 import qualified Ned.Picker as P
 import Ned.View (appView)
@@ -54,7 +55,9 @@ selftestIn dir mfile say = do
   ctx0 <- newPixelContext >>= (`withTheme` tomorrowNightMinDarkTheme)
   blankApp <- newApp
   tLoad0 <- getMonotonicTime
-  app0 <- maybe pure (openPath InNewTab Nothing) mfile blankApp
+  -- The self-test types into the editor as it is without vim's keys, and
+  -- every tab opened takes after the first.
+  app0 <- maybe pure (openPath InNewTab Nothing) mfile blankApp {appEditor = (appEditor blankApp) {edVim = Nothing}}
   tLoad1 <- B.lineCount (edBuffer (appEditor app0)) `seq` getMonotonicTime
   say (printf "loaded %d lines in %.1f ms" (B.lineCount (edBuffer (appEditor app0))) ((tLoad1 - tLoad0) * 1000))
   ref <- newIORef app0
@@ -721,6 +724,39 @@ selftestIn dir mfile say = do
     clickedTab <- frontNow
     when ([clickedTab] /= take 1 (map docKey before)) $ fail "selftest: a click on the first tab did not bring it to the front"
     chord 'b'
+
+    -- Vim's keys, in a tab of their own: insert mode types, Escape steps back
+    -- onto the text, normal mode edits it, and the leader puts the finder up
+    -- a frame later without typing the keys that asked for it into it.
+    chord 'n'
+    modifyIORef' ref (everyEditor (\e -> e {edVim = Just newVim}))
+    idle
+    let vimNow = fmap vimMode . edVim . appEditor <$> readIORef ref
+        caretNow = B.bufCursor . edBuffer . appEditor <$> readIORef ref
+    typed "ihello world"
+    expect "insert mode types" "hello world"
+    key plain KeyEscape
+    (,) <$> vimNow <*> caretNow >>= \case
+      (Just Normal, 10) -> pure ()
+      other -> fail ("selftest: Escape left vim at " <> show other)
+    typed "0dw"
+    expect "dw in normal mode" "world"
+    -- Ctrl+H gives the keyboard to the tree beside the text, Ctrl+L gives it
+    -- back.
+    chord 'h'
+    treeHas <- appTreeFocus <$> readIORef ref
+    chord 'l'
+    textHas <- not . appTreeFocus <$> readIORef ref
+    unless (treeHas && textHas) (fail "selftest: Ctrl+H and Ctrl+L did not move the keyboard to the tree and back")
+    shot "19-vim.bmp"
+    typed " ff"
+    idle
+    pickerNow >>= \case
+      Just pk | T.null (P.pkTyped pk) -> pure ()
+      Just pk -> fail ("selftest: the leader's keys were typed into the finder: " <> show (P.pkTyped pk))
+      Nothing -> fail "selftest: SPC f f did not put the finder up"
+    key plain KeyEscape
+    modifyIORef' ref (everyEditor (\e -> e {edVim = Nothing}))
 
     -- Resize the window a step at a time, as a drag of its border does, and
     -- time the frames; then the same under a view of one label, for what the

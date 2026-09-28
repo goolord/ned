@@ -61,9 +61,14 @@ module Ned.App.Commands
   , zoom
   , toggleTree
   , openPicker
+  , focusToward
+
+    -- * Vim
+  , runVimRequests
   ) where
 
 import Control.Monad (unless, when)
+import Data.Foldable (for_)
 import Data.IORef (IORef, modifyIORef', readIORef, writeIORef)
 import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
@@ -75,6 +80,7 @@ import Ned.App.State
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
 import Ned.Editor
+import qualified Ned.Editor.Vim as V
 import Ned.File
 import Ned.FileTree (FileTree)
 import qualified Ned.FileTree as FT
@@ -309,6 +315,21 @@ zoom ref f = modifyApp ref $ \a ->
 toggleTree :: IORef App -> NanoUI ()
 toggleTree ref = modifyApp ref $ \a -> a {appTreeShown = not (appTreeShown a), appTreeFocus = False}
 
+-- | Give the keyboard to the pane on one side of the one that has it, by
+-- vim's letter for the side: the tree is left of the text, and the bar is
+-- under both. There being nothing that side, the keyboard stays.
+focusToward :: IORef App -> Char -> NanoUI ()
+focusToward ref side = modifyApp ref $ \a ->
+  let toTree = a {appTreeFocus = True, appBarFocus = False}
+      toText = a {appTreeFocus = False, appBarFocus = False}
+      toBar = a {appTreeFocus = False, appBarFocus = True}
+   in case side of
+        'h' | appTreeShown a && not (appBarFocus a) -> toTree
+        'l' | appTreeFocus a -> toText
+        'j' | appBar a /= BarNone -> toBar
+        'k' | appBarFocus a -> toText
+        _ -> a
+
 -- | Put the fuzzy finder up over the folder the tree is on, which is the one
 -- the reader has said they are working in. It sets its own thread gathering
 -- as it is made, so this is back before the first file is found, and asking
@@ -319,3 +340,42 @@ openPicker ref source = do
   when (isNothing (appPicker a)) $ do
     pk <- liftIO (P.openPicker source (FT.ftRoot (appTree a)))
     modifyApp ref (\a' -> a' {appPicker = Just pk})
+
+--------------------------------------------------------------------------------
+-- Vim
+--------------------------------------------------------------------------------
+
+-- | Do what vim's keys asked of the application. They are done a frame after
+-- they were asked for, at its start, so that the keys that put up the finder
+-- or the find bar are not typed into it as well.
+runVimRequests :: IORef App -> NanoUI ()
+runVimRequests ref = do
+  a <- readApp ref
+  for_ (edVim (appEditor a)) $ \v ->
+    unless (null (V.vimRequests v)) $ do
+      onEditor ref (\ed -> ed {edVim = Just v {V.vimRequests = []}})
+      mapM_ (vimRequest ref) (V.vimRequests v)
+
+vimRequest :: IORef App -> V.Request -> NanoUI ()
+vimRequest ref = \case
+  V.FindFile -> openPicker ref P.fileSource
+  V.Grep -> openPicker ref P.grepSource
+  V.ToggleTree -> toggleTree ref
+  V.FindBar -> openBar ref BarFind
+  -- Vim's caret is on the start of the match it went to, not selecting
+  -- it: the character it is on stands for the match, to look past.
+  V.FindAgain forward -> do
+    onBuffer ref (\b -> if B.hasSelection b then b else B.setCursor True (B.bufCursor b + 1) b)
+    findMatch ref forward
+  V.Save -> save ref False
+  V.Quit force -> do
+    a <- readApp ref
+    let action = if manyTabs a then PendingClose (appDocKey a) else PendingQuit
+    -- A save that put up its dialog (:wq on a file with no name) has not
+    -- saved yet, and closing would only ask to throw away what it will.
+    unless (isJust (appSaveDlg a) && not force) (run force action)
+  V.QuitAll force -> run force PendingQuit
+  V.NextTab forward -> stepTab ref forward
+  V.Message msg -> setStatus ref msg
+  where
+    run force = if force then runPending ref else guarded ref

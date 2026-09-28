@@ -12,6 +12,7 @@ import qualified Data.Text.NanoRope.Measured as Rope
 import qualified Data.Vector.Unboxed as U
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
+import Ned.Editor.Vim (Clip (..), Mode (..), Request (..), Vim (..), feedKeys, newVim, vimSettle)
 import Ned.File (Eol (..), FileFormat (..), Loaded (..), loadFile, saveFile)
 import Ned.Highlight
 import Ned.Picker (Item (..), Source (..), fileSource, grepSource, relative)
@@ -122,6 +123,89 @@ main = do
 
   -- The buffer against a model -----------------------------------------------
   modelRun failures 20000
+
+  -- Vim ----------------------------------------------------------------------
+  -- Keys from normal mode, with the caret at an offset: the text they leave,
+  -- the caret, and the mode.
+  clip <- newIORef Nothing
+  let vim t at ks = do
+        (v, b) <- feedKeys (Clip (readIORef clip) (modifyIORef' clip . const . Just)) 20 ks (newVim, B.setCursor False at (B.fromText t))
+        pure (text b, B.bufCursor b, vimMode v)
+      checkVim name t at ks want = vim t at ks >>= check name want
+      src = "foo bar baz\n  qux(a, b)\nend\n"
+  checkVim "w and e" src 0 "we" (src, 6, Normal)
+  checkVim "a count, $ and 0" src 0 "2j$0" (src, 24, Normal)
+  checkVim "$ stops on the last character" src 0 "$" (src, 10, Normal)
+  checkVim "j to a shorter line keeps the column for the next" "abcdef\nab\nabcdef\n" 4 "jj" ("abcdef\nab\nabcdef\n", 14, Normal)
+  checkVim "G goes to the last line, and not the empty one after it" src 5 "G" (src, 24, Normal)
+  checkVim "j stops on the last line" src 24 "j" (src, 24, Normal)
+  checkVim "gg" src 26 "gg" (src, 0, Normal)
+  checkVim "G with a count goes to that line" src 0 "2G" (src, 14, Normal)
+  checkVim "f and ;" src 0 "fa;" (src, 9, Normal)
+  checkVim "t stops short" src 0 "tz" (src, 9, Normal)
+  checkVim "dw takes the word and its space" src 0 "dw" ("bar baz\n  qux(a, b)\nend\n", 0, Normal)
+  checkVim "dw on a line's last word leaves the line break" src 8 "dw" ("foo bar \n  qux(a, b)\nend\n", 7, Normal)
+  checkVim "cw changes the word and not the space" src 0 "cwx\ESC" ("x bar baz\n  qux(a, b)\nend\n", 0, Normal)
+  checkVim "de" src 4 "de" ("foo  baz\n  qux(a, b)\nend\n", 4, Normal)
+  checkVim "a count on an operator and its motion multiplies" src 0 "2d2w" ("\n  qux(a, b)\nend\n", 0, Normal)
+  checkVim "dd, the caret on the next line's text" src 0 "dd" ("  qux(a, b)\nend\n", 2, Normal)
+  checkVim "dj takes both lines" src 0 "dj" ("end\n", 0, Normal)
+  checkVim "D" src 4 "D" ("foo \n  qux(a, b)\nend\n", 3, Normal)
+  checkVim "x with a count" src 0 "3x" (" bar baz\n  qux(a, b)\nend\n", 0, Normal)
+  checkVim "ci( keeps the brackets" src 18 "ci(z\ESC" ("foo bar baz\n  qux(z)\nend\n", 18, Normal)
+  checkVim "da( takes them" src 18 "da(" ("foo bar baz\n  qux\nend\n", 16, Normal)
+  checkVim "diw" src 5 "diw" ("foo  baz\n  qux(a, b)\nend\n", 4, Normal)
+  checkVim "ci\" inside quotes" "say \"hi there\" now" 7 "ci\"yo\ESC" ("say \"yo\" now", 6, Normal)
+  checkVim "yy and p put the line below" src 0 "yyjp" ("foo bar baz\n  qux(a, b)\nfoo bar baz\nend\n", 24, Normal)
+  checkVim "yy and P put it above" src 12 "yyP" ("foo bar baz\n  qux(a, b)\n  qux(a, b)\nend\n", 14, Normal)
+  checkVim "yw and p put after the caret" src 0 "ywP" ("foo foo bar baz\n  qux(a, b)\nend\n", 3, Normal)
+  checkVim "p on the last line with no line break after it" "one\ntwo" 0 "yyjp" ("one\ntwo\none", 8, Normal)
+  checkVim "o opens a line with the indent" src 14 "ox\ESC" ("foo bar baz\n  qux(a, b)\n  x\nend\n", 26, Normal)
+  checkVim "O opens one above" src 14 "Ox\ESC" ("foo bar baz\n  x\n  qux(a, b)\nend\n", 14, Normal)
+  checkVim "A appends and Escape steps back" src 0 "A!\ESC" ("foo bar baz!\n  qux(a, b)\nend\n", 11, Normal)
+  checkVim "i stays in insert mode" src 0 "ix" ("xfoo bar baz\n  qux(a, b)\nend\n", 1, Insert)
+  checkVim "u undoes and ctrl-r redoes" src 0 "xxu\DC2" ("o bar baz\n  qux(a, b)\nend\n", 0, Normal)
+  checkVim "J joins, the indent a space" src 0 "J" ("foo bar baz qux(a, b)\nend\n", 11, Normal)
+  checkVim "r replaces" src 0 "3rx" ("xxx bar baz\n  qux(a, b)\nend\n", 2, Normal)
+  checkVim "~ turns the case" src 0 "2~" ("FOo bar baz\n  qux(a, b)\nend\n", 2, Normal)
+  checkVim ">> indents and << takes it back" src 0 ">>" ("    foo bar baz\n  qux(a, b)\nend\n", 4, Normal)
+  checkVim "<< on an indented line" src 12 "<<" ("foo bar baz\nqux(a, b)\nend\n", 12, Normal)
+  checkVim "v and d take through the caret" src 0 "vld" ("o bar baz\n  qux(a, b)\nend\n", 0, Normal)
+  checkVim "v backwards" src 6 "vhhd" ("foo  baz\n  qux(a, b)\nend\n", 4, Normal)
+  checkVim "V and d take whole lines" src 0 "Vjd" ("end\n", 0, Normal)
+  checkVim "viw selects the word" src 5 "viwc!\ESC" ("foo ! baz\n  qux(a, b)\nend\n", 4, Normal)
+  checkVim "visual y and p" src 0 "vey$p" ("foo bar bazfoo\n  qux(a, b)\nend\n", 13, Normal)
+  checkVim "Escape leaves visual mode" src 0 "vl\ESC" (src, 1, Normal)
+  checkVim "a command line jumps to a line" src 0 ":3\r" (src, 24, Normal)
+  checkVim "Escape drops a command half typed" src 0 "d\ESCx" ("oo bar baz\n  qux(a, b)\nend\n", 0, Normal)
+  checkVim "dj on the last line does nothing" "a\nb\n" 2 "dj" ("a\nb\n", 2, Normal)
+  checkVim "a count past the end goes to the last line" "a\nb\nc\n" 0 "9j" ("a\nb\nc\n", 4, Normal)
+  checkVim "V past the last line keeps the last line break" "a\nb\nc\n" 2 "Vjjjd" ("a\n", 0, Normal)
+  checkVim "d} from a line's start takes the lines whole" "a\nb\n\nc" 0 "d}" ("\nc", 0, Normal)
+  checkVim "d} from within a line stops at its end" "a b\nc\n\nd" 2 "d}" ("a \n\nd", 1, Normal)
+  let settled t anchor at =
+        let (v, b) = vimSettle True newVim (B.setCursor True at (B.setCursor False anchor (B.fromText t)))
+         in (vimMode v, vimAnchor v, vimCursor v, B.bufAnchor b, B.bufCursor b)
+  check "a selection made forwards is visual mode through the caret's character" (Visual, 1, 3, 1, 4) (settled "abcdef" 1 4)
+  check "and backwards, the anchor's character in it" (Visual, 3, 1, 4, 1) (settled "abcdef" 4 1)
+  check "a caret put past a line's end steps back onto it" (Normal, 0, 0, 2, 2) (settled "abc\n" 3 3)
+  check
+    "a selection the pointer did not make, such as a find's match, leaves the caret at its start"
+    (Normal, 2, 2)
+    (let (v, b) = vimSettle False newVim (B.setCursor True 5 (B.setCursor False 2 (B.fromText "abcdef"))) in (vimMode v, B.bufAnchor b, B.bufCursor b))
+  checkVim "} to the next empty line" "a\nb\n\nc\n\nd" 0 "}" ("a\nb\n\nc\n\nd", 4, Normal)
+  checkVim "} twice, then { back" "a\nb\n\nc\n\nd" 0 "}}{" ("a\nb\n\nc\n\nd", 4, Normal)
+  checkVim "} with no empty line after goes to the end" "a\n\nb\ncd" 3 "}" ("a\n\nb\ncd", 6, Normal)
+  checkVim "a last line of one character is not empty" "a\n\nb\nc" 3 "d}" ("a\n\n", 2, Normal)
+  let asked t ks = do
+        (v, _) <- feedKeys (Clip (pure Nothing) (const (pure ()))) 20 ks (newVim, B.fromText t)
+        pure (vimRequests v)
+  asked src " ff" >>= check "the leader finds a file" [FindFile]
+  asked src " fg" >>= check "the leader greps" [Grep]
+  asked src " d" >>= check "the leader shows the tree" [ToggleTree]
+  asked src ":wq\r" >>= check ":wq saves and closes" [Save, Quit False]
+  asked src "ngt" >>= check "n and gt" [FindAgain True, NextTab True]
+  asked src ":nope\r" >>= check "an unknown command says so" [Message "Not an editor command: nope"]
 
   -- Lexing -------------------------------------------------------------------
   let hs = languageFor "Main.hs"

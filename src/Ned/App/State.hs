@@ -41,6 +41,7 @@ import qualified Data.Text as T
 import NanoUI.Backend.Sdl (FileDialogId)
 import qualified Ned.Buffer as B
 import Ned.Editor
+import Ned.Editor.Vim (newVim)
 import Ned.File
 import Ned.FileTree (FileTree)
 import qualified Ned.FileTree as FT
@@ -128,7 +129,9 @@ newApp = do
   cwd <- getCurrentDirectory
   pure
     App
-      { appEditor = newEditor plainText B.empty
+      { -- Vim's keys are on to start with, and every tab takes after the one
+        -- it opens beside.
+        appEditor = (newEditor plainText B.empty) {edVim = Just newVim}
       , appPath = Nothing
       , appFormat = FileFormat LF False
       , appDocKey = 0
@@ -265,7 +268,7 @@ insertDoc replace ed path format app =
   showDoc
     Doc
       { docKey = appNextKey app
-      , docEditor = ed {edFontSize = edFontSize front, edShowWhitespace = edShowWhitespace front}
+      , docEditor = ed {edFontSize = edFontSize front, edShowWhitespace = edShowWhitespace front, edVim = newVim <$ edVim front}
       , docPath = path
       , docFormat = format
       }

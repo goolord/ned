@@ -38,6 +38,7 @@ import Ned.App.Commands
 import Ned.App.Frame
 import Ned.App.State
 import Ned.Editor (Editor (..))
+import Ned.Editor.Vim (Vim (..))
 import Ned.FileTree (FileTree (..), defaultTreeWidth, minTreeWidth, rootName, treeHeaderHeight)
 import Ned.Picker (Item (..))
 import Ned.Theme (paneChrome)
@@ -60,6 +61,9 @@ import Text.Printf (printf)
 -- frame at the end when what it drew is no longer what the state says.
 appView :: IORef App -> NanoUI ()
 appView ref = do
+  -- What vim's keys asked for last frame is done before the frame reads
+  -- the state it runs on.
+  runVimRequests ref
   app0 <- readApp ref
 
   -- A dialog that is up is asked for its answer, a file dropped on the window
@@ -135,6 +139,7 @@ appView ref = do
             let wantFocus = not (appBarFocus app1) && not (appTreeFocus app1) && unblocked
             (resp, ed) <- editorView (appDocKey appNow) wantFocus (findMarks appNow) (appEditor appNow)
             liftIO (writeIORef respRef (Just resp))
+            when (any (not . null . vimRequests) (edVim ed)) requestFrame
             modifyApp ref $ \a ->
               a
                 { appEditor = ed

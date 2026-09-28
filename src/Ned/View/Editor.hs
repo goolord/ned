@@ -16,6 +16,7 @@ module Ned.View.Editor
   ) where
 
 import Control.Monad (when)
+import Data.Maybe (fromMaybe)
 import Data.Primitive.SmallArray (SmallArray, smallArrayFromList)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -88,6 +89,7 @@ editorView textKey wantFocus marks ed0 = do
           , esThumbHot = efThumbHot fr
           , esThumbXHot = efThumbXHot fr
           , esWhitespace = edShowWhitespace ed1
+          , esBlock = efBlock fr
           }
       part which cursor layout =
         defaultCustomWidgetSpec
@@ -126,6 +128,8 @@ data EditorScene = EditorScene
   , esThumbHot :: !Bool
   , esThumbXHot :: !Bool
   , esWhitespace :: !Bool
+  , esBlock :: !(Maybe Int)
+  -- ^ The character a block caret is on, in vim's modes that draw one.
   }
 
 -- | Where the caret is in the window, given the whole editor's rectangle, as
@@ -163,6 +167,7 @@ editorSceneKey which sc =
           , keyPart (esFontSize sc)
           , keyPart (esCaretOn sc)
           , keyPart (esWhitespace sc)
+          , keyPart (fromMaybe (-1) (esBlock sc))
           , keyPart (esFindExact sc)
           , keyPart (esFind sc)
           , keyPart (langName (esLang sc))
@@ -318,15 +323,30 @@ drawEditor which sc own@(Rect ox oy ow oh) =
 
     numbers = [lineNumber textGrid (x + gGutterW g) (lineY ln) (ln == caretLine) ln | ln <- [firstLine .. lastLine]]
 
+    -- A bar before the caret's character, or with vim's keys a block over
+    -- it, the character drawn again on it in the colour of the page.
+    (blockLine, blockCol) = case esBlock sc of
+      Nothing -> (caretLine, caretCol)
+      Just off -> let ln = B.lineOf buf off in (ln, off - B.lineStart buf ln)
     caret =
-      [ FillRect (Rect (cellX cell) (lineY caretLine) 2 lineH) colCaret
-      | esCaretOn sc
-      , vr <- rows
-      , rowLine vr == caretLine
-      , let cell = cellIn vr caretCol
-      , cell >= firstCell
-      , cell <= lastCell
-      ]
+      concat
+        [ case esBlock sc of
+            Nothing -> [FillRect (Rect (cellX cell) (lineY blockLine) 2 lineH) colCaret]
+            Just _ ->
+              FillRect (Rect (cellX cell) (lineY blockLine) (fromIntegral (max 1 (cellIn vr (blockCol + 1) - cell)) * cellW) lineH) colCaret
+                : [ DrawTextStyled (cellX cell) (lineY blockLine) font (T.singleton ch) colBackground
+                  | not (rowLong vr)
+                  , blockCol < T.length (rowText vr)
+                  , let ch = T.index (rowText vr) blockCol
+                  , ch > ' '
+                  ]
+        | esCaretOn sc
+        , vr <- rows
+        , rowLine vr == blockLine
+        , let cell = cellIn vr blockCol
+        , cell >= firstCell
+        , cell <= lastCell
+        ]
 
 -- | A line on screen, as the drawing has it: its number, whether it is one of
 -- the long ones that are never read whole, the text it shows, and what the

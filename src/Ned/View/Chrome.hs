@@ -18,7 +18,7 @@ module Ned.View.Chrome
   , statusBar
   ) where
 
-import Control.Monad (when)
+import Control.Monad (unless, when)
 import Data.Foldable (for_)
 import Data.IORef (IORef)
 import Data.Maybe (isJust)
@@ -35,6 +35,7 @@ import Ned.App.State
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
 import Ned.Editor
+import Ned.Editor.Vim (Vim (..), newVim, vimLabel)
 import Ned.File (Eol (..), FileFormat (..))
 import Ned.FileTree (hasParentRoot)
 import qualified Ned.FileTree as FT
@@ -219,6 +220,10 @@ appMenus ref app = [("File", fileMenu), ("Edit", editMenu), ("View", viewMenu)]
         Nothing
         (modifyApp ref (everyEditor (\e -> e {edShowWhitespace = not (edShowWhitespace (appEditor app))})))
       item
+        (if isJust (edVim (appEditor app)) then "Turn Off Vim Keys" else "Turn On Vim Keys")
+        Nothing
+        (modifyApp ref (everyEditor (\e -> e {edVim = maybe (Just newVim) (const Nothing) (edVim (appEditor app))})))
+      item
         (if B.usesTabs buf0 then "Indent with Spaces" else "Indent with Tabs")
         Nothing
         (onBuffer ref (B.setUsesTabs (not (B.usesTabs buf0))))
@@ -359,6 +364,10 @@ editorBar ref app = case appBar app of
 statusBar :: App -> NanoUI ()
 statusBar app =
   rowWith (padXY 12 5 . tight . gap 12 . fillW) $ do
+    -- Vim's mode, and the keys of a command on their way.
+    for_ (edVim ed) $ \v -> do
+      labelWith (tight . fontSemiBold) (vimLabel v)
+      unless (T.null (vimPending v)) $ labelWith tight (T.replace " " "SPC " (vimPending v))
     labelWith (tight . fontMuted) (appStatus app)
     flex
     -- A file with changes to save carries a dot, the way an editor's tab

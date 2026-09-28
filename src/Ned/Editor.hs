@@ -31,13 +31,15 @@ module Ned.Editor
   ) where
 
 import Control.Monad (when)
-import Data.Maybe (isNothing)
+import Data.Bifunctor (first)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import NanoUI
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
 import Ned.Editor.Geometry
 import Ned.Editor.Keys
 import Ned.Editor.Types
+import Ned.Editor.Vim (vimBlock, vimKeys, vimSettle)
 import Ned.Highlight
 import Ned.Text (clamp)
 import Ned.Widget
@@ -59,6 +61,8 @@ data EditorFrame = EditorFrame
   , efThumbHot :: !Bool
   -- ^ Whether the pointer is over the scrollbar, or holding its thumb.
   , efThumbXHot :: !Bool
+  , efBlock :: !(Maybe Int)
+  -- ^ The character vim's block caret is on, in the modes that draw one.
   -- ^ Whether the pointer is over the sideways bar, or holding its thumb.
   }
 
@@ -72,7 +76,10 @@ editorFrame focused rect cellW fm ed0 = do
   now <- uiTime
 
   let buf0 = edBuffer ed0
-  buf1 <- if focused then applyKeys inp (edViewLines ed0) buf0 else pure buf0
+  (vim1, buf1) <- case edVim ed0 of
+    _ | not focused -> pure (edVim ed0, buf0)
+    Nothing -> (Nothing,) <$> applyKeys inp (edViewLines ed0) buf0
+    Just vim -> first Just <$> vimKeys inp (edViewLines ed0) vim buf0
 
   let g = geometry cellW fm buf1
       -- The editor less its sideways bar, which is the rectangle the text has
@@ -98,7 +105,7 @@ editorFrame focused rect cellW fm ed0 = do
 
   -- The pointer: a press starts a selection or takes a thumb, and a held
   -- button carries on with whichever it started.
-  let (drag1, buf2, scrollY1)
+  let (drag1, bufPointed, scrollY1)
         | inputMousePressed inp && overBar =
             let grab = thumbGrab bar (edScrollY ed0) localY
              in (DragThumb grab, buf1, thumbScroll bar grab localY)
@@ -141,6 +148,13 @@ editorFrame focused rect cellW fm ed0 = do
             DragWords i j -> (DragWords i j, B.selectWordsFrom (i, j) (pointed edgeScrolled) buf1, edgeScrolled)
             DragLines from -> (DragLines from, B.selectLines from (pointedLine edgeScrolled) buf1, edgeScrolled)
             held -> (held, buf1, edScrollY ed0)
+      -- Vim settles what was done to the text while it had the keyboard: what
+      -- the pointer selected is its visual mode, and where it put the
+      -- caret is on a character.
+      (vim2, buf2) = case vim1 of
+        Just vim | focused -> first Just (vimSettle (drag1 /= DragNone) vim bufPointed)
+        _ -> (vim1, bufPointed)
+      block = vim2 >>= (`vimBlock` buf2)
       -- Past the top or bottom edge the view follows the pointer.
       edgeScrolled =
         let over
@@ -162,11 +176,16 @@ editorFrame focused rect cellW fm ed0 = do
         _ -> edScrollX ed0 + (wheelX + (if shift then wheelY else 0)) * 3 * gCellW g
 
       -- Follow the caret when it moved, and then keep the scroll within bounds.
+      -- The caret the view follows is vim's block, where it draws one: in
+      -- visual mode the buffer's own is past it, or on the line after.
+      caretAt = fromMaybe (B.bufCursor buf2) block
       caretMoved =
         B.bufCursor buf2 /= B.bufCursor buf0
           || B.bufVersion buf2 /= B.bufVersion buf0
+          || block /= (edVim ed0 >>= (`vimBlock` buf0))
           || edReveal ed0
-      (cLine, cCol) = B.cursorPosition buf2
+      cLine = B.lineOf buf2 caretAt
+      cCol = caretAt - B.lineStart buf2 cLine
       cCell = B.colToVisual buf2 cLine cCol
       viewL = viewLinesOf g rowRect
       followY y
@@ -191,17 +210,20 @@ editorFrame focused rect cellW fm ed0 = do
       (_, _, lexStart) = lexCache
 
   -- The caret shows for half a second after it moved and blinks from then on,
-  -- a frame for each blink and none in between.
+  -- a frame for each blink and none in between. With vim's keys it holds
+  -- steady, and asks for no frames at all.
   let epoch = if caretMoved || drag1 /= DragNone then now else edBlinkEpoch ed0
       phase = floor ((now - epoch) / blinkPeriod) :: Int
-      caretOn = focused && even phase
-  when focused $ wakeAfter (epoch + fromIntegral (phase + 1) * blinkPeriod - now + 0.005)
+      steady = isJust vim2
+      caretOn = focused && (steady || even phase)
+  when (focused && not steady) $ wakeAfter (epoch + fromIntegral (phase + 1) * blinkPeriod - now + 0.005)
 
   pure
     EditorFrame
       { efEditor =
           ed0
             { edBuffer = buf2
+            , edVim = vim2
             , edScrollY = scrollY3
             , edScrollX = scrollX3
             , edDrag = drag1
@@ -216,6 +238,7 @@ editorFrame focused rect cellW fm ed0 = do
       , efCaretOn = caretOn
       , efThumbHot = overBar || isThumb drag1
       , efThumbXHot = overHBar || isThumbX drag1
+      , efBlock = block
       }
   where
     blinkPeriod = 0.53 :: Double

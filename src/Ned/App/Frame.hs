@@ -65,7 +65,7 @@ appChords ref app = do
   inp <- askInput
   -- A frame with no key down, which is most of them, has no chord in it.
   unless (modalUp app || null (inputKeys inp)) $
-    forM_ (appBindings ref) $ \(chord, action) ->
+    forM_ (appBindings ref <> (if isJust (edVim (appEditor app)) then vimBindings ref else [])) $ \(chord, action) ->
       whenM (shortcut chord) action
   when (inputKeysElem KeyEscape (inputKeys inp) && appBar app /= BarNone && not (modalUp app)) (closeBar ref)
 
@@ -96,6 +96,11 @@ appBindings ref =
   , (chordZoomOut, zoom ref (/ 1.1))
   , (chordZoomReset, zoom ref (const defaultFontSize))
   ]
+
+-- | With vim's keys, Ctrl and a direction moves the keyboard between the
+-- tree, the text and the bar, as Ctrl+W and a direction does in vim.
+vimBindings :: IORef App -> [(K.Shortcut, NanoUI ())]
+vimBindings ref = [(K.ctrl <> K.key c, focusToward ref c) | c <- "hjkl"]
 
 -- | Put the file's name on the window when it is not there already. The title
 -- as last set is kept in the state, so this is one comparison a frame and a

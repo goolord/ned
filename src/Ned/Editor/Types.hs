@@ -14,6 +14,7 @@ module Ned.Editor.Types
   ) where
 
 import Ned.Buffer (Buffer)
+import Ned.Editor.Vim (Vim)
 import Ned.Highlight (Lang, LexState (..))
 
 data Drag
@@ -54,6 +55,8 @@ data Editor = Editor
   -- ^ Whether the pointer went down on the editor this frame.
   , edShowWhitespace :: !Bool
   -- ^ Whether the indentation of a line is drawn: a dot a space, a rule a tab.
+  , edVim :: !(Maybe Vim)
+  -- ^ Vim's modes, while the keys are vim's.
   }
 
 defaultFontSize :: Float
@@ -75,6 +78,7 @@ newEditor lang buf =
     , edViewLines = 1
     , edPressed = False
     , edShowWhitespace = True
+    , edVim = Nothing
     }
 
 -- | Have the next frame scroll the caret into view.

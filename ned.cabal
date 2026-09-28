@@ -60,6 +60,7 @@ library
         Ned.Editor.Types
         Ned.Editor.Geometry
         Ned.Editor.Keys
+        Ned.Editor.Vim
 
         -- The file tree beside it.
         Ned.FileTree

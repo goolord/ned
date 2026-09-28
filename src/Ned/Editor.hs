@@ -22,6 +22,7 @@ module Ned.Editor
   , newEditor
   , revealCaret
   , defaultFontSize
+  , clampFontSize
 
     -- * For the application around it
   , cellWidth

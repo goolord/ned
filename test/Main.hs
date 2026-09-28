@@ -3,15 +3,19 @@
 -- walk the finder looks through them with.
 module Main (main) where
 
+import Control.Concurrent (forkIO, killThread, newEmptyMVar, putMVar, takeMVar, threadDelay, tryTakeMVar)
 import Control.Monad (unless)
 import qualified Data.ByteString as BS
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
 import qualified Data.Text.NanoRope.Measured as Rope
 import qualified Data.Vector.Unboxed as U
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
+import Ned.Config (Config (..), Font (..), defaultConfig, defaultConfigText, readConfig, watchConfig)
 import Ned.Editor.Vim (Clip (..), Mode (..), Request (..), Vim (..), feedKeys, newVim, vimSettle)
 import Ned.File (Eol (..), FileFormat (..), Loaded (..), loadFile, saveFile)
 import Ned.Highlight
@@ -20,6 +24,7 @@ import Ned.Picker.Grep (grepHit)
 import System.Directory (createDirectoryIfMissing, findExecutable, getTemporaryDirectory, removeFile, removePathForcibly)
 import System.Exit (exitFailure)
 import System.FilePath ((</>))
+import System.Timeout (timeout)
 
 main :: IO ()
 main = do
@@ -356,6 +361,39 @@ main = do
       srcGather grepSource root "" (\items -> True <$ modifyIORef' none (<> items))
       readIORef none >>= check "an empty query greps for nothing" 0 . length
   removePathForcibly root
+
+  -- Settings -----------------------------------------------------------------
+  let cfgDir = tmp </> "ned-test-config"
+      cfgFile = cfgDir </> "config.dhall"
+      readWith t = TIO.writeFile cfgFile t >> readConfig cfgFile
+      failed = either (const True) (isJust . snd)
+  removePathForcibly cfgDir
+  createDirectoryIfMissing True cfgDir
+  readConfig cfgFile >>= check "no file is the defaults" (Right (defaultConfig, Nothing))
+  readWith defaultConfigText >>= check "the defaults as written read back as the defaults" (Right (defaultConfig, Nothing))
+  readWith "{ bufferFontSize = 18.0, vimKeys = False, bufferFont = Some \"Iosevka\" }"
+    >>= check "a file holds only what it changes" (Right (defaultConfig {cfgBufferFontSize = 18, cfgVimKeys = False, cfgBufferFont = Just (FontFamily "Iosevka")}, Nothing))
+  TIO.writeFile (cfgDir </> "size.dhall") "20.0"
+  readWith "{ uiFontSize = ./size.dhall }" >>= check "imports are found beside the file" (Right (defaultConfig {cfgUiFontSize = 20}, Nothing))
+  readWith "{ bufferFontSize = 200.0, scale = -1.0 }" >>= check "sizes are bounded" (Right (defaultConfig {cfgBufferFontSize = 48, cfgScale = 0}, Nothing))
+  misspelt <- readWith "{ vimKey = False }"
+  check "a misspelt field is an error" True (failed misspelt)
+  readWith "{ bufferFontSize = 18 }" >>= check "a field of the wrong type is an error" True . failed
+  readWith "{ bufferFontSize = " >>= check "a file that does not parse is an error" True . failed
+  noFont <- readWith "{ uiFont = Some \"/no/such/font.ttf\", bufferFontSize = 18.0 }"
+  check "a missing font file is dropped, and the rest kept" (Right (defaultConfig {cfgBufferFontSize = 18})) (fst <$> noFont)
+  check "a missing font file is said" True (failed noFont)
+  -- The watcher hands over a reading once the file changes, and not before.
+  readings <- newEmptyMVar
+  watcher <- forkIO (watchConfig cfgFile (putMVar readings))
+  threadDelay 700000
+  quiet <- tryTakeMVar readings
+  check "an unchanged file is not read again" True (isNothing quiet)
+  TIO.writeFile cfgFile "{ scale = 1.5 }"
+  changed <- timeout 3000000 (takeMVar readings)
+  check "a changed file is read again" (Just (Right (defaultConfig {cfgScale = 1.5}, Nothing))) changed
+  killThread watcher
+  removePathForcibly cfgDir
 
   n <- readIORef failures
   if n == 0

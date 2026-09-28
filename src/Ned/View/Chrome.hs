@@ -34,6 +34,7 @@ import Ned.App.Commands
 import Ned.App.State
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
+import Ned.Config (Config (..))
 import Ned.Editor
 import Ned.Editor.Vim (Vim (..), newVim, vimLabel)
 import Ned.File (Eol (..), FileFormat (..))
@@ -213,7 +214,7 @@ appMenus ref app = [("File", fileMenu), ("Edit", editMenu), ("View", viewMenu)]
       menuSeparator
       item "Zoom In" (Just chordZoomIn) (zoom ref (* 1.1))
       item "Zoom Out" (Just chordZoomOut) (zoom ref (/ 1.1))
-      item "Reset Zoom" (Just chordZoomReset) (zoom ref (const defaultFontSize))
+      item "Reset Zoom" (Just chordZoomReset) (resetZoom ref)
       menuSeparator
       item
         (if edShowWhitespace (appEditor app) then "Hide Indentation Marks" else "Show Indentation Marks")
@@ -384,7 +385,7 @@ statusBar app =
     ed = appEditor app
     buf = edBuffer ed
     doc = activeDoc app
-    zoomed = round (edFontSize ed / defaultFontSize * 100) :: Int
+    zoomed = round (edFontSize ed / cfgBufferFontSize (appConfig app) * 100) :: Int
     (ln, col) = B.cursorPosition buf
     showT :: Show a => a -> Text
     showT = T.pack . show

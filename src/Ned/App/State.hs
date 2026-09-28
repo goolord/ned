@@ -40,6 +40,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import NanoUI.Backend.Sdl (FileDialogId)
 import qualified Ned.Buffer as B
+import Ned.Config (Config (..))
 import Ned.Editor
 import Ned.Editor.Vim (newVim)
 import Ned.File
@@ -120,18 +121,29 @@ data App = App
   , appPicker :: !(Maybe Picker)
   -- ^ The fuzzy finder, while it is up. It is a modal over the window, so
   -- while it is there nothing else reads a key.
+  , appConfig :: !Config
+  -- ^ The settings, as last read.
+  , appConfigPath :: !(Maybe FilePath)
+  -- ^ The file they were read from, which is watched for changes.
+  , appConfigSeen :: !Int
+  -- ^ How many times the file has been read again since the window opened.
   }
 
--- | A fresh application, with its tree on the directory the program was
--- started in.
-newApp :: IO App
-newApp = do
+-- | A fresh application on some settings, with its tree on the directory the
+-- program was started in.
+newApp :: Config -> IO App
+newApp cfg = do
   cwd <- getCurrentDirectory
   pure
     App
-      { -- Vim's keys are on to start with, and every tab takes after the one
-        -- it opens beside.
-        appEditor = (newEditor plainText B.empty) {edVim = Just newVim}
+      { -- The first tab is set up as the settings say, and every tab after it
+        -- takes after the one it opens beside.
+        appEditor =
+          (newEditor plainText B.empty)
+            { edFontSize = cfgBufferFontSize cfg
+            , edShowWhitespace = cfgShowIndentation cfg
+            , edVim = if cfgVimKeys cfg then Just newVim else Nothing
+            }
       , appPath = Nothing
       , appFormat = FileFormat LF False
       , appDocKey = 0
@@ -150,9 +162,12 @@ newApp = do
       , appPending = Nothing
       , appTitle = ""
       , appTree = FT.newFileTree cwd
-      , appTreeShown = True
+      , appTreeShown = cfgShowFileTree cfg
       , appTreeFocus = False
       , appPicker = Nothing
+      , appConfig = cfg
+      , appConfigPath = Nothing
+      , appConfigSeen = 0
       }
 
 --------------------------------------------------------------------------------

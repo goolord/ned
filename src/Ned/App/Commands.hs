@@ -59,6 +59,11 @@ module Ned.App.Commands
   , closeBar
   , findMatch
   , zoom
+  , resetZoom
+
+    -- * Settings
+  , takeReading
+  , fontFor
   , toggleTree
   , openPicker
   , focusToward
@@ -78,6 +83,7 @@ import NanoUI.Backend.Sdl
 import qualified NanoUI.Shortcut as K
 import Ned.App.State
 import Ned.Buffer (Buffer)
+import Ned.Config (Config (..), Font (..), Reading)
 import qualified Ned.Buffer as B
 import Ned.Editor
 import qualified Ned.Editor.Vim as V
@@ -86,10 +92,10 @@ import Ned.FileTree (FileTree)
 import qualified Ned.FileTree as FT
 import Ned.Highlight (LexState (..), languageFor)
 import qualified Ned.Picker as P
-import Ned.Text (clamp)
 import System.Exit (exitSuccess)
 import System.Directory (makeAbsolute)
 import System.FilePath (takeDirectory, takeFileName)
+import System.IO (hPutStrLn, stderr)
 
 --------------------------------------------------------------------------------
 -- The state
@@ -307,8 +313,62 @@ findMatch ref forward = do
 
 zoom :: IORef App -> (Float -> Float) -> NanoUI ()
 zoom ref f = modifyApp ref $ \a ->
-  let size = clamp 8 48 (f (edFontSize (appEditor a)))
+  let size = clampFontSize (f (edFontSize (appEditor a)))
    in everyEditor (\ed -> ed {edFontSize = size}) a
+
+-- | Put the text back at the size the settings start it at.
+resetZoom :: IORef App -> NanoUI ()
+resetZoom ref = readApp ref >>= zoom ref . const . cfgBufferFontSize . appConfig
+
+--------------------------------------------------------------------------------
+-- Settings
+--------------------------------------------------------------------------------
+
+-- | Take up the settings read again while the window is open. A setting the
+-- file changed is applied; one it left alone stays as it has been set since,
+-- from the View menu or the zoom. A file that would not read changes nothing.
+-- What went wrong is written to the terminal in full, as it is when the
+-- window opens.
+takeReading :: IORef App -> Reading -> NanoUI ()
+takeReading ref = \case
+  Left err -> do
+    liftIO (hPutStrLn stderr err)
+    setStatus ref "The settings were not reloaded; see the terminal"
+  Right (new, problem) -> do
+    old <- appConfig <$> readApp ref
+    liftIO (mapM_ (hPutStrLn stderr) problem)
+    let changed f = f old /= f new
+        follow f cur = if changed f then f new else cur
+        editor ed =
+          ed
+            { edFontSize = follow cfgBufferFontSize (edFontSize ed)
+            , edShowWhitespace = follow cfgShowIndentation (edShowWhitespace ed)
+            , edVim = if changed cfgVimKeys then (if cfgVimKeys new then Just V.newVim else Nothing) else edVim ed
+            }
+        -- The chrome's text size and the text's font are set when the
+        -- window opens and cannot be changed under it.
+        later = [name | (name, True) <- [("uiFontSize", changed cfgUiFontSize), ("bufferFont", changed cfgBufferFont)]]
+        status
+          | Just _ <- problem = "Some reloaded settings were not used; see the terminal"
+          | null later = "Settings reloaded"
+          | otherwise = "Settings reloaded; " <> T.intercalate " and " later <> " take effect on restart"
+    when (changed cfgScale) (setSdlUiScale (cfgScale new))
+    when (changed cfgUiFont) (setSdlUiFont (fontFor (sdlAppFont defaultSdlOptions) (cfgUiFont new)))
+    modifyApp ref $ \a ->
+      let shown = follow cfgShowFileTree (appTreeShown a)
+       in everyEditor editor a {appConfig = new, appTreeShown = shown, appTreeFocus = appTreeFocus a && shown, appStatus = status}
+    requestFrame
+
+-- | A font from the settings: a file is loaded as it is, and a family is
+-- looked for ahead of the ones nano-ui looks for, which are still there to
+-- fall back on when it is not installed.
+fontFor :: NanoUIFont -> Maybe Font -> NanoUIFont
+fontFor fallback = \case
+  Nothing -> fallback
+  Just (FontFile path) -> FontFilePath path
+  Just (FontFamily name)
+    | FontSearch names <- fallback -> FontSearch (name : names)
+    | otherwise -> FontSearch [name]
 
 -- | Put the tree away or bring it back. Putting it away hands the keyboard
 -- back to the editor.

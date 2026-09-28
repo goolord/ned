@@ -24,7 +24,7 @@ import qualified Data.Vector.Unboxed as U
 import NanoUI
 import qualified NanoUI.Adornment as A
 import qualified NanoUI.Shortcut as K
-import Ned.Editor (cellWidth, defaultFontSize)
+import Ned.Editor (cellWidth)
 import Ned.Highlight (TokenKind (..), langName, languageFor)
 import Ned.Picker
 import Ned.Text (clamp)
@@ -40,9 +40,10 @@ import System.FilePath (takeFileName)
 -- | The finder over the window, as a modal: what is behind it keeps its place
 -- and takes nothing, and nothing else in the frame moves when it comes and
 -- goes. 'Nothing' back puts the finder away; the item is one that was picked,
--- which puts it away as well.
-pickerOverlay :: Maybe Picker -> NanoUI (Maybe Picker, Maybe Item)
-pickerOverlay mpk = do
+-- which puts it away as well. It is set in the editor's font at @size@, the
+-- size the editor starts at.
+pickerOverlay :: Float -> Maybe Picker -> NanoUI (Maybe Picker, Maybe Item)
+pickerOverlay size mpk = do
   winW <- windowWidth
   winH <- windowHeight
   -- As much of the window as a modal is given, in whole pixels so that the
@@ -53,7 +54,7 @@ pickerOverlay mpk = do
       panelH = whole (max 320 (winH - 28))
   (closeResp, out) <-
     modalWith (fixedWH panelW panelH . gap 0 . padLRTB 10 10 0 10) (isJust mpk) (maybe "" (srcTitle . pkSource) mpk) $
-      maybe (pure (Nothing, Nothing)) (pickerBody (panelW - 20)) mpk
+      maybe (pure (Nothing, Nothing)) (pickerBody size (panelW - 20)) mpk
   let (kept, chosen) = fromMaybe (Nothing, Nothing) out
       left = if respClicked closeResp then Nothing else kept
   -- Whatever put it away, the gathering thread is told to stop.
@@ -62,11 +63,10 @@ pickerOverlay mpk = do
 
 -- | The panel, @bodyW@ wide: the prompt over the rows down the left, and the
 -- heading of the file the keyboard is on over its preview down the right,
--- the two halves of it the same height so one rule runs under both. It is
--- set in the editor's font, at the size the editor starts at.
-pickerBody :: Float -> Picker -> NanoUI (Maybe Picker, Maybe Item)
-pickerBody bodyW pk0 = do
-  fm <- resolveFontUi defaultFontSize WeightNormal FontStyleNormal FontMono
+-- the two halves of it the same height so one rule runs under both.
+pickerBody :: Float -> Float -> Picker -> NanoUI (Maybe Picker, Maybe Item)
+pickerBody size bodyW pk0 = do
+  fm <- resolveFontUi size WeightNormal FontStyleNormal FontMono
   cellW <- cellWidth (lineWidthUi fm)
   let rowsW = fromIntegral (round (min (bodyW * 0.42) (60 * cellW)) :: Int)
       headH = fromIntegral (round (lineHeight fm + 10) :: Int)
@@ -76,12 +76,12 @@ pickerBody bodyW pk0 = do
       -- up. A live source is asked again once typing into it has paused, and
       -- Enter asks at once: the rows from before the pause are for something
       -- else, and Enter does not open one of them.
-      (resp, typed) <- prompt headH pk0
+      (resp, typed) <- prompt size headH pk0
       holdFocus (respId resp)
       pk1 <- liftIO (restock pk0 typed (respSubmitted resp))
       liftIO (untilSettled pk1) >>= mapM_ wakeAfter
       separator
-      rowsPane fm cellW rowsW pk1
+      rowsPane size fm cellW rowsW pk1
     separator
     -- The preview: a heading that says what the file is, over the head of it
     -- in the colours the editor would open it in.
@@ -89,15 +89,15 @@ pickerBody bodyW pk0 = do
       columnWith (tight . gap 0 . grow . fillH) $ do
         previewHeading headH pkp
         separator
-        previewBody fm cellW pkp
+        previewBody size fm cellW pkp
     pure (if closed || isJust chosen then Nothing else Just pk3, chosen)
 
 -- | The prompt, @h@ tall: a bare field on the panel's own colour, with a
 -- magnifier before what is typed, and after it the count of what answered
 -- and, while there is something to clear, a button that clears it. A press
 -- on that button is its own: the field keeps the keyboard and its caret.
-prompt :: Float -> Picker -> NanoUI (Response, Text)
-prompt h pk = do
+prompt :: Float -> Float -> Picker -> NanoUI (Response, Text)
+prompt size h pk = do
   cleared <- liftIO (newIORef False)
   -- A small button with no fill of its own, muted like the rest of what the
   -- field draws beside its text.
@@ -109,7 +109,7 @@ prompt h pk = do
       textInputConfigured'
         defaultTextInputConfig
           { ticPlaceholder = srcPrompt (pkSource pk)
-          , ticLayout = (fillW . fixedH h . fontSize defaultFontSize) defaultLayout
+          , ticLayout = (fillW . fixedH h . fontSize size) defaultLayout
           , ticAdornments =
               A.leading (A.iconSized 14 searchIcon)
                 <> A.trailing (A.affix counted)
@@ -165,8 +165,8 @@ chorded inp c = K.shortcutIn (K.ctrl <> K.key c) inp
 -- above and below them. This is where the finder's keys are read; what comes
 -- back is the finder as the frame leaves it, an item that was picked, and
 -- whether the finder was put away.
-rowsPane :: FontMetrics -> Float -> Float -> Picker -> NanoUI (Picker, Maybe Item, Bool)
-rowsPane fm cellW rowsW pk0 = do
+rowsPane :: Float -> FontMetrics -> Float -> Float -> Picker -> NanoUI (Picker, Maybe Item, Bool)
+rowsPane size fm cellW rowsW pk0 = do
   inp <- askInput
   sid <- currentId
   -- Escape puts the finder away, unless it is the Escape that closes the
@@ -227,6 +227,7 @@ rowsPane fm cellW rowsW pk0 = do
         RowScene
           { rsRows = shown
           , rsFirst = first
+          , rsFontSize = size
           , rsLineH = lineH
           , rsTextH = fmLineHeight fm
           , rsCellW = cellW
@@ -284,6 +285,7 @@ data RowScene = RowScene
   { rsRows :: !(SmallArray PickRow)
   , rsFirst :: !Int
   -- ^ The hit the first of the rows is.
+  , rsFontSize :: !Float
   , rsLineH :: !Float
   , rsTextH :: !Float
   -- ^ A line of the font the rows are set in.
@@ -313,7 +315,7 @@ drawRows cdc sc rect@(Rect x y w _) =
     -- reach the scrollbar beside it. The panel behind them still fills the
     -- widget, or its edge would be a seam down the lane.
     roomW = min w (rsMaxW sc)
-    rowFont = codeFont defaultFontSize TokPlain
+    rowFont = codeFont (rsFontSize sc) TokPlain
 
     rowOps j =
       let PickRow item pos = indexSmallArray (rsRows sc) j
@@ -417,8 +419,8 @@ previewHeading h pk =
 -- Ctrl+U move it. A preview that has just been read opens on what it is
 -- about: the top of a file, or the line a grep found, far enough along that
 -- line to show what was found. What stands in for the lines wraps.
-previewBody :: FontMetrics -> Float -> Picker -> NanoUI Picker
-previewBody fm cellW pk0
+previewBody :: Float -> FontMetrics -> Float -> Picker -> NanoUI Picker
+previewBody size fm cellW pk0
   | not (T.null (pvNote pv)) = scope $ do
       columnWith (padXY rowPad 6 . tight . grow . fillH) $
         void (richTextWith (fillW . fontMuted) [inlineText (pvNote pv)])
@@ -456,6 +458,7 @@ previewBody fm cellW pk0
       let scene =
             CodeScene
               { csPreview = pv
+              , csFontSize = size
               , csLineH = lineH
               , csCellW = cellW
               , csGutterW = gutterW
@@ -479,6 +482,7 @@ previewBody fm cellW pk0
 -- | Everything the preview's drawing reads.
 data CodeScene = CodeScene
   { csPreview :: !Preview
+  , csFontSize :: !Float
   , csLineH :: !Float
   , csCellW :: !Float
   , csGutterW :: !Float
@@ -501,7 +505,7 @@ drawCode sc rect@(Rect x y w h) =
     lineY i = y + fromIntegral i * lineH
     gx = x + csScrollX sc
     firstCell = max 0 (floor (csScrollX sc / csCellW sc) - 1)
-    textGrid = Grid (x + csGutterW sc) (csCellW sc) defaultFontSize firstCell (firstCell + ceiling (csViewW sc / csCellW sc) + 2)
+    textGrid = Grid (x + csGutterW sc) (csCellW sc) (csFontSize sc) firstCell (firstCell + ceiling (csViewW sc / csCellW sc) + 2)
     isHit i = pvHit pv == Just (pvFirst pv + i)
 
     -- A line, over the band of the grep's line and what the grep found on it,

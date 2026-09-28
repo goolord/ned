@@ -74,6 +74,7 @@ library
 
         -- The application around both.
         Ned.File
+        Ned.Config
         Ned.App
         Ned.App.State
         Ned.App.Commands
@@ -91,9 +92,11 @@ library
         base ^>=4.22.0.0,
         bytestring ^>=0.12,
         containers ^>=0.8,
+        dhall ^>=1.42,
         directory ^>=1.3,
         dir-traverse ^>=0.2.3,
         filepath ^>=1.5,
+        microlens ^>=0.4.14,
         microaeson ^>=0.1.0.3,
         nano-rope ^>=0.1,
         nano-ui ^>=0.2,
@@ -112,7 +115,8 @@ executable ned
     main-is:          Main.hs
     build-depends:
         base,
-        ned
+        ned,
+        text
     hs-source-dirs:   app
 
 test-suite ned-test

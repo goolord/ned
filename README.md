@@ -88,6 +88,46 @@ the system clipboard, and what ends in a line break is put as whole lines.
 | Commands | `:w`, `:q`, `:q!`, `:wq`, `:x`, `:qa`, `:<line>`, `ZZ`, `ZQ` |
 | Leader (Space) | `SPC f f` find a file, `SPC f g` search in files, `SPC d` toggle the file tree |
 
+## Configuration
+
+Settings are read from `config.dhall` in `~/.config/ned` (`%APPDATA%\ned` on
+Windows). The file is [Dhall](https://dhall-lang.org), laid over the defaults,
+so it only needs the fields it changes:
+
+```dhall
+{ uiFontSize = 17.0
+, bufferFontSize = 16.0
+, bufferFont = Some "JetBrains Mono"
+, vimKeys = False
+}
+```
+
+Print every setting, with its default and what it does:
+
+```sh
+cabal run ned -- --default-config > ~/.config/ned/config.dhall
+```
+
+| Setting | Default | |
+| --- | --- | --- |
+| `uiFontSize` | `16.0` | Menus, bars, file tree and status bar, in points |
+| `bufferFontSize` | `15.0` | The text and the finder, in points; Ctrl+0 resets the zoom to it |
+| `scale` | `1.0` | Zoom of the whole window over the display's pixel density; `0.0` follows the display's scale |
+| `uiFont`, `bufferFont` | `None Text` | A font family (`Some "Inter"`) or a path to a `.ttf`/`.otf` file |
+| `windowWidth`, `windowHeight` | `1100`, `760` | Size of the window when it opens |
+| `vimKeys` | `True` | Start with vim keys on |
+| `showFileTree` | `True` | Start with the file tree shown |
+| `showIndentation` | `True` | Mark indentation with dots and rules |
+
+A misspelled field or a value of the wrong type is an error: ned prints it and
+starts with the defaults. Sizes are Doubles, so write `18.0`, not `18`.
+
+The file is reloaded when it is saved while ned is open. Only the settings
+the edit changed are applied, so a toggle from the View menu stays unless the
+file changes that setting. `uiFontSize` and `bufferFont` take effect on
+restart, and the window size only applies when the window opens. A file that
+does not read while ned is open leaves the current settings in place.
+
 ## Testing
 
 ```sh

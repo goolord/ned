@@ -17,6 +17,18 @@ source-repository-package
   location: git@github.com:goolord/nano-rope.git
   tag: 6a437b10a37e70123a6b3e65263ff251ef1d4333
 
+-- dhall and the CBOR packages under it cap base, containers and
+-- template-haskell below GHC 9.14's, and build against them as they are.
+-- dhall is built without HTTP, so a config can import files but not URLs.
+allow-newer:
+  dhall:template-haskell,
+  cborg:base, cborg:containers,
+  cborg-json:base,
+  serialise:base, serialise:containers
+
+package dhall
+  flags: -with-http
+
 -- The SDL backend needs SDL3, SDL3_ttf and pkg-config. On Windows install
 -- them through MSYS2 UCRT64 and point PKG_CONFIG_PATH at
 -- C:\msys64\ucrt64\lib\pkgconfig (see README.md).

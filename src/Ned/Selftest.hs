@@ -24,6 +24,7 @@ import NanoUI.Testing (cursorKindIs, needsRedraw, newPixelContext, uiCursorKind)
 import Ned.App
 import Ned.App.State (Doc (..), appDocs, docName, everyEditor, selectDoc)
 import qualified Ned.Buffer as B
+import Ned.Config (defaultConfig)
 import Ned.Editor (Editor (..), cellWidth, defaultFontSize)
 import Ned.Editor.Vim (Mode (..), Vim (..), newVim)
 import qualified Ned.FileTree as FT
@@ -53,7 +54,7 @@ selftest dir mfile = do
 selftestIn :: FilePath -> Maybe FilePath -> (String -> IO ()) -> IO ()
 selftestIn dir mfile say = do
   ctx0 <- newPixelContext >>= (`withTheme` tomorrowNightMinDarkTheme)
-  blankApp <- newApp
+  blankApp <- newApp defaultConfig
   tLoad0 <- getMonotonicTime
   -- The self-test types into the editor as it is without vim's keys, and
   -- every tab opened takes after the first.
@@ -757,6 +758,33 @@ selftestIn dir mfile say = do
       Nothing -> fail "selftest: SPC f f did not put the finder up"
     key plain KeyEscape
     modifyIORef' ref (everyEditor (\e -> e {edVim = Nothing}))
+
+    -- The settings file under the window is watched: what an edit to it
+    -- changes is taken up by a frame soon after, and a file that will not
+    -- read changes nothing.
+    let cfgFile = dir </> "config.dhall"
+        readings = appConfigSeen <$> readIORef ref
+        -- Frames until the watcher has read the file this many times.
+        awaitReading n = go (30 :: Int)
+          where
+            go 0 = fail ("selftest: the settings were not read again " <> show n <> " times")
+            go k = idle >> readings >>= \seen -> unless (seen >= n) (threadDelay 100000 >> go (k - 1))
+    writeFile cfgFile "{=}"
+    modifyIORef' ref (\a -> everyEditor (\e -> e {edShowWhitespace = True}) a {appConfigPath = Just cfgFile})
+    idle
+    threadDelay 700000
+    writeFile cfgFile "{ bufferFontSize = 20.0, showIndentation = False }"
+    awaitReading 1
+    reloaded <- (\a -> (edFontSize (appEditor a), edShowWhitespace (appEditor a))) <$> readIORef ref
+    unless (reloaded == (20, False)) (fail ("selftest: the reloaded settings left the text at " <> show reloaded))
+    shot "20-reloaded.bmp"
+    say "  a settings error follows, on purpose:"
+    writeFile cfgFile "{ bufferFontSize = 30 }"
+    awaitReading 2
+    kept <- edFontSize . appEditor <$> readIORef ref
+    unless (kept == 20) (fail ("selftest: a settings file that does not read changed the text size to " <> show kept))
+    modifyIORef' ref (\a -> a {appConfigPath = Nothing})
+    idle
 
     -- Resize the window a step at a time, as a drag of its border does, and
     -- time the frames; then the same under a view of one label, for what the

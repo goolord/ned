@@ -94,7 +94,7 @@ appBindings ref =
     (K.ctrl <> K.shift <> K.key '=', zoom ref (* 1.1))
   , (K.ctrl <> K.key '+', zoom ref (* 1.1))
   , (chordZoomOut, zoom ref (/ 1.1))
-  , (chordZoomReset, zoom ref (const defaultFontSize))
+  , (chordZoomReset, resetZoom ref)
   ]
 
 -- | With vim's keys, Ctrl and a direction moves the keyboard between the

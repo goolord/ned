@@ -9,5 +9,17 @@ source-repository-package
   location: git@github.com:goolord/nano-rope.git
   tag: 6a437b10a37e70123a6b3e65263ff251ef1d4333
 
+-- dhall and the CBOR packages under it cap base, containers and
+-- template-haskell below GHC 9.14's, and build against them as they are.
+-- dhall is built without HTTP, so a config can import files but not URLs.
+allow-newer:
+  dhall:template-haskell,
+  cborg:base, cborg:containers,
+  cborg-json:base,
+  serialise:base, serialise:containers
+
+package dhall
+  flags: -with-http
+
 package nano-ui-sdl
   flags: +sdl +simd

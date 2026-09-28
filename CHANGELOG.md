@@ -90,3 +90,15 @@
   arrows) go further with each repeat while held, as accelerated-jk has them,
   and Ctrl+H, Ctrl+J, Ctrl+K and Ctrl+L move the keyboard between the file
   tree, the text and the find bar.
+* Settings in `~/.config/ned/config.dhall`, a Dhall record laid over the
+  defaults: the size of the chrome's font and of the text's, the scale of the
+  whole window, both fonts by family or by file, the window's size, and
+  whether vim's keys, the file tree and the indentation marks start on. Ctrl+0
+  resets the zoom to the text size set there. A misspelt field or one of the
+  wrong type is printed and the defaults are used; `ned --default-config`
+  prints every setting with what it does.
+* The settings file is watched while the window is open, and a save takes
+  effect without a restart: what the edit changed is applied, and what it
+  left alone stays as the View menu or the zoom left it. The chrome's text
+  size and the text's font still wait for a restart, which the status bar
+  says. A file that does not read changes nothing and says why.

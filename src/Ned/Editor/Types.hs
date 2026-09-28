@@ -11,6 +11,7 @@ module Ned.Editor.Types
   , newEditor
   , revealCaret
   , defaultFontSize
+  , clampFontSize
   ) where
 
 import Ned.Buffer (Buffer)
@@ -61,6 +62,10 @@ data Editor = Editor
 
 defaultFontSize :: Float
 defaultFontSize = 15
+
+-- | A text size kept to what the zoom goes between.
+clampFontSize :: Float -> Float
+clampFontSize = max 8 . min 48
 
 newEditor :: Lang -> Buffer -> Editor
 newEditor lang buf =

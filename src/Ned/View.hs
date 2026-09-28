@@ -37,6 +37,7 @@ import NanoUI
 import Ned.App.Commands
 import Ned.App.Frame
 import Ned.App.State
+import Ned.Config (Config (..), watchConfig)
 import Ned.Editor (Editor (..))
 import Ned.Editor.Vim (Vim (..))
 import Ned.FileTree (FileTree (..), defaultTreeWidth, minTreeWidth, rootName, treeHeaderHeight)
@@ -64,6 +65,7 @@ appView ref = do
   -- What vim's keys asked for last frame is done before the frame reads
   -- the state it runs on.
   runVimRequests ref
+  reloadConfig ref
   app0 <- readApp ref
 
   -- A dialog that is up is asked for its answer, a file dropped on the window
@@ -168,7 +170,8 @@ appView ref = do
   -- The finder is declared whether or not it is up, so that nothing after it
   -- moves when it comes and goes, and under the question about unsaved
   -- changes, which a file it picks may put up over it.
-  (picker, picked) <- pickerOverlay . appPicker =<< readApp ref
+  appP <- readApp ref
+  (picker, picked) <- pickerOverlay (cfgBufferFontSize (appConfig appP)) (appPicker appP)
   modifyApp ref (\a -> a {appPicker = picker})
   -- A grep hit opens its file on the line it was found on.
   for_ picked $ \item ->
@@ -208,6 +211,20 @@ tracedView file body = do
   t1 <- liftIO getMonotonicTime
   let Size w h = inputWindowSize inp
   liftIO (appendFile file (printf "%.4f %.0f %.0f %.3f\n" t0 w h ((t1 - t0) * 1000)))
+
+
+-- | Take up the settings each time their file changes. The file is watched
+-- on a thread the frame owns, which counts its readings and wakes the window
+-- with each; a frame takes up the latest reading it has not taken up yet.
+reloadConfig :: IORef App -> NanoUI ()
+reloadConfig ref = do
+  app <- readApp ref
+  for_ (appConfigPath app) $ \path -> do
+    (seen, reading) <- useStream path (0 :: Int, Nothing) $ \update ->
+      watchConfig path (\r -> update (\(n, _) -> (n + 1, Just r)))
+    when (seen /= appConfigSeen app) $ do
+      modifyApp ref (\a -> a {appConfigSeen = seen})
+      for_ reading (takeReading ref)
 
 --------------------------------------------------------------------------------
 -- The row the tree and the editor share

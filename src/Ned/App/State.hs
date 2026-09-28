@@ -11,6 +11,7 @@ module Ned.App.State
   , Bar (..)
   , Pending (..)
   , Placement (..)
+  , Tip (..)
   , newApp
   , openPath
 
@@ -156,10 +157,16 @@ data App = App
   -- ^ The file in front and its version, as last handed to that thread.
   , appDiagnostics :: !(Map FilePath [Diagnostic])
   -- ^ What the servers last said is wrong in each file.
-  , appHover :: !(Maybe ((Int, Int, Int), MarkdownDoc))
-  -- ^ What a server said of what is under the caret, shown by it for as
-  -- long as the caret and the text are where they were asked from ('hoverAt').
+  , appHover :: !(Maybe ((Int, Int, Int), Tip))
+  -- ^ What is shown by the caret, for as long as the caret and the text are
+  -- where they were when it was put up ('hoverAt').
   }
+
+-- | What is shown by the caret: what a server said of what is under it, or
+-- what it found wrong where a jump put the caret.
+data Tip
+  = TipDoc MarkdownDoc
+  | TipDiagnostics [Diagnostic]
 
 -- | A fresh application on some settings, with its tree on the directory the
 -- program was started in.

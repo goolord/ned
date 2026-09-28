@@ -24,13 +24,14 @@ import NanoUI.Internal.Context (Context (..))
 import NanoUI.Markdown (parseMarkdown)
 import NanoUI.Testing (cursorKindIs, needsRedraw, newPixelContext, uiCursorKind)
 import Ned.App
-import Ned.App.State (Bar (..), Doc (..), appDocs, docName, everyEditor, hoverAt, selectDoc)
+import Ned.App.State (Bar (..), Doc (..), Tip (..), appDocs, docName, everyEditor, hoverAt, selectDoc)
 import qualified Ned.Buffer as B
 import Ned.Complete (Candidate (..), Completion (..))
 import Ned.Config (Config (..), FileSettings (..), defaultConfig)
 import Ned.Editor (Editor (..), cellWidth, defaultFontSize)
 import Ned.Editor.Vim (Mode (..), Vim (..), newVim)
 import qualified Ned.FileTree as FT
+import Ned.Lsp (Diagnostic (..))
 import qualified Ned.Picker as P
 import Ned.View (appView)
 import System.Directory (createDirectoryIfMissing, doesFileExist, findExecutable, listDirectory, makeAbsolute, removeFile)
@@ -900,9 +901,26 @@ selftestIn dir mfile say = do
     -- in a fence that names its language, and in one that names none, which
     -- takes the file's.
     modifyIORef' ref $ \a ->
-      a {appHover = Just (hoverAt a, parseMarkdown "```haskell\ngreeting :: Text -> IO ()\n```\n\nSays hello, `greeting \"you\"`.\n\n```\nmain = greeting \"world\" -- plain text\n```")}
+      a {appHover = Just (hoverAt a, TipDoc $ parseMarkdown "```haskell\ngreeting :: Text -> IO ()\n```\n\nSays hello, `greeting \"you\"`.\n\n```\nmain = greeting \"world\" -- plain text\n```")}
     idle
     shot "19b-hover.bmp"
+    modifyIORef' ref (\a -> a {appHover = Nothing})
+
+    -- What a server found wrong, as a jump to it puts it up: an error whose
+    -- message quotes code, and a warning at the same place.
+    modifyIORef' ref $ \a ->
+      a
+        { appHover =
+            Just
+              ( hoverAt a
+              , TipDiagnostics
+                  [ Diagnostic (0, 0) (0, 4) 1 "\8226 Couldn't match expected type \8216Int\8217 with actual type \8216Text\8217\n\8226 In the first argument of \8216show\8217\n  |\n3 | main = print (show greeting)\n  |                     ^^^^^^^^"
+                  , Diagnostic (0, 0) (0, 4) 2 "Defined but not used: \8216greeting\8217"
+                  ]
+              )
+        }
+    idle
+    shot "19c-diagnostic.bmp"
     modifyIORef' ref (\a -> a {appHover = Nothing})
 
     -- The settings file under the window is watched: what an edit to it

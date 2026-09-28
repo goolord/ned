@@ -145,6 +145,11 @@
   again on each key, only when asked something outright.
 * `K` shows the server's hover in a popup under the caret, drawn as markdown
   by nano-ui-markdown, until the caret or the text moves.
+* A jump to a diagnostic puts the whole of its message in a popup under the
+  caret, in the code's font so that the columns of quoted code line up, with
+  how bad it is in the colour it is underlined in. Every diagnostic that
+  starts at that place is shown, worst first, since the jump passes over the
+  rest. It goes when the caret or the text moves.
 * Projects are general: `projects` is a record of projects, each a `root`
   and any of the settings that are a file's rather than the window's (for
   now `languageServerShell` and `languageServers`). A project is laid over

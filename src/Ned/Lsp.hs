@@ -20,6 +20,7 @@ module Ned.Lsp
   , serverFor
   , didNotStart
   , Diagnostic (..)
+  , severityName
   , syncDoc
   , definition
   , hover
@@ -82,6 +83,15 @@ data Diagnostic = Diagnostic
   , diagMessage :: !Text
   }
   deriving (Eq, Show)
+
+-- | What a diagnostic's severity is called.
+severityName :: Int -> Text
+severityName = \case
+  1 -> "error"
+  2 -> "warning"
+  3 -> "info"
+  4 -> "hint"
+  _ -> "note"
 
 -- | The server for a command line in a folder: the one running already, or
 -- one started and initialized now, which hands what it finds wrong in a file

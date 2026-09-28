@@ -473,7 +473,7 @@ showHover ref = do
   askServer ref $ \s path pos ->
     Lsp.hover s path pos <&> \r a -> pure $ case r of
       Nothing -> a {appStatus = "Nothing to show here"}
-      Just md -> a {appStatus = "", appHover = Just (at, parseMarkdown md)}
+      Just md -> a {appStatus = "", appHover = Just (at, TipDoc (parseMarkdown md))}
 
 -- | Ask the language server for the file in front about the place of its
 -- caret, on a thread of its own: the server may take a while, starting the
@@ -540,7 +540,9 @@ jumpDiagnostic ref forward = do
     Nothing -> setStatus ref "No diagnostics"
     Just (at, d) -> do
       onBuffer ref (B.setCursor False at)
-      let kind = fromMaybe "note" (lookup (Lsp.diagSeverity d) [(1, "error"), (2, "warning"), (3, "info"), (4, "hint")])
+      let there = sortOn Lsp.diagSeverity [d' | (i, d') <- found, i == at]
+      modifyApp ref (\a' -> a' {appHover = Just (hoverAt a', TipDiagnostics there)})
+      let kind = Lsp.severityName (Lsp.diagSeverity d)
           msg = fromMaybe "" (find (not . T.null) (map T.strip (T.lines (Lsp.diagMessage d))))
       setStatus ref (kind <> ": " <> msg)
 

@@ -48,8 +48,9 @@ import Ned.Editor (Editor (..))
 import Ned.Editor.Vim (Vim (..))
 import Ned.FileTree (FileTree (..), defaultTreeWidth, minTreeWidth, rootName, treeHeaderHeight)
 import Ned.Highlight (Lang, LexState (LexNormal), Span (..), TokenKind (TokPlain), languageNamed, lexLine, plainText)
+import Ned.Lsp (Diagnostic (..), severityName)
 import Ned.Picker (Item (..))
-import Ned.Theme (paneChrome, tokenColor, tokenWeight)
+import Ned.Theme (colDiagnostic, paneChrome, tokenColor, tokenWeight)
 import Ned.View.Chrome
 import Ned.View.Editor (editorView)
 import Ned.View.Picker (pickerOverlay)
@@ -206,17 +207,30 @@ appView ref = do
   appEnd <- readApp ref
   when (chromeSig appEnd /= chromeSig app0 || editorSig appEnd /= drawn) requestFrame
 
--- | What the language server said of what is under the caret, under it, for
--- as long as the caret and the text stay as they were. Escape or a click
--- elsewhere puts it away.
+-- | What the language server said of what is under the caret, or found
+-- wrong where it is, under it, for as long as the caret and the text stay as
+-- they were. Escape or a click elsewhere puts it away.
 hoverPopup :: IORef App -> Rect -> NanoUI ()
 hoverPopup ref caret = do
   a <- readApp ref
-  let shown = [doc | Just (at, doc) <- [appHover a], at == hoverAt a]
+  let shown = [tip | Just (at, tip) <- [appHover a], at == hoverAt a]
   (resp, _) <-
     popupWith (not (null shown)) (defaultPopupConfig (AnchorRect caret)) {cfgPlacement = PlacementBelow} (fixedW 560 . maxH 420) $
-      scrollWith fillW (mapM_ (markdownConfigured (codeColoured (edLang (appEditor a)))) shown)
+      for_ shown $ \case
+        TipDoc doc -> scrollWith fillW (void (markdownConfigured (codeColoured (edLang (appEditor a))) doc))
+        -- Not in a scroll area, which takes the height of a line that wraps
+        -- in it for the height it has unwrapped, and so cuts the end off.
+        TipDiagnostics ds -> columnWith (tight . gap 10 . fillW) (mapM_ diagnosticTip ds)
   when (respClicked resp || (isJust (appHover a) && null shown)) (modifyApp ref (\a' -> a' {appHover = Nothing}))
+
+-- | A diagnostic as the popup by the caret shows it: how bad it is, in the
+-- colour it is underlined in, over the whole of what the server said, in
+-- the code's font, which keeps the columns of a message that quotes code.
+diagnosticTip :: Diagnostic -> NanoUI ()
+diagnosticTip d =
+  columnWith (tight . gap 2 . fillW) $ do
+    labelWith (tight . fontColor (colDiagnostic (diagSeverity d))) (severityName (diagSeverity d))
+    void (richTextWith (tight . fillW . fontMono) [inlineText (T.replace "\t" "    " (T.stripEnd (diagMessage d)))])
 
 -- | Markdown with its code blocks coloured as the editor colours code: in the
 -- language the fence names, or in @lang@, the file's, where it names none. A

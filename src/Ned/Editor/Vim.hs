@@ -1,5 +1,6 @@
 -- | Vim's modes over the editor: normal and visual mode, the operators and
--- motions their commands are made of, and the command line.
+-- motions their commands are made of, and the command line with its ranges
+-- and @:s@.
 --
 -- It is a layer over "Ned.Editor.Keys" rather than beside it. Insert mode is
 -- the editor as it is without vim, and every other mode turns keys into what
@@ -25,7 +26,8 @@ module Ned.Editor.Vim
 
 import Control.Applicative ((<|>))
 import Control.Monad (foldM, void)
-import Data.Char (isDigit, isSpace, isUpper, toLower, toUpper)
+import Data.Char (isAlpha, isDigit, isSpace, isUpper, toLower, toUpper)
+import Data.Foldable (toList)
 import Data.List (isPrefixOf)
 import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Text (Text)
@@ -37,6 +39,8 @@ import qualified Ned.Buffer as B
 import Ned.Editor.Keys (applyKeys)
 import Ned.Text (clamp, classOf, indentOf, longLineLimit)
 import Text.Read (readMaybe)
+import Text.Regex.TDFA (CompOption (..), ExecOption (..), Regex, defaultCompOpt, defaultExecOpt, matchAllText)
+import Text.Regex.TDFA.Text (compile)
 
 --------------------------------------------------------------------------------
 -- The state
@@ -64,6 +68,9 @@ data Vim = Vim
   , vimHeld :: !Int
   -- ^ The frames in a row that j or k has come round again in while held,
   -- which is how much faster it goes.
+  , vimMarks :: !(Maybe (Int, Int))
+  -- ^ The ends of the last visual selection, which @'<@ and @'>@ name on the
+  -- command line.
   }
 
 -- | What the keys ask of the application.
@@ -80,6 +87,18 @@ data Request
     Quit !Bool
   | QuitAll !Bool
   | NextTab !Bool
+  | -- | Open a file in the tab in front, in place of what it holds; with the
+    -- flag, whatever would be lost.
+    Edit !FilePath !Bool
+  | -- | Read the file in front from disk again, throwing its changes away.
+    Revert
+  | -- | An untitled file in the tab in front; with the flag, whatever would
+    -- be lost.
+    NewFile !Bool
+  | -- | A new tab, on a file or untitled.
+    NewTab !(Maybe FilePath)
+  | -- | Stop marking what the find bar found.
+    ClearFind
   | Message !Text
   deriving (Eq, Show)
 
@@ -91,7 +110,7 @@ data Clip m = Clip
   }
 
 newVim :: Vim
-newVim = Vim Normal 0 0 T.empty Nothing [] 0
+newVim = Vim Normal 0 0 T.empty Nothing [] 0 Nothing
 
 -- | What the status bar calls the mode.
 vimLabel :: Vim -> Text
@@ -185,7 +204,16 @@ feedKeys :: Monad m => Clip m -> Int -> String -> (Vim, Buffer) -> m (Vim, Buffe
 feedKeys clip page ks st = foldM (flip (key clip page)) st ks
 
 key :: Monad m => Clip m -> Int -> Char -> (Vim, Buffer) -> m (Vim, Buffer)
-key clip page c (v, b) = case vimMode v of
+key clip page c (v, b) = marked <$> key' clip page c (v, b)
+  where
+    -- Leaving a visual mode leaves its selection to @'<@ and @'>@.
+    marked (v', b')
+      | visual v && not (visual v') = (v' {vimMarks = Just (vimAnchor v, vimCursor v)}, b')
+      | otherwise = (v', b')
+    visual x = vimMode x == Visual || vimMode x == VisualLine
+
+key' :: Monad m => Clip m -> Int -> Char -> (Vim, Buffer) -> m (Vim, Buffer)
+key' clip page c (v, b) = case vimMode v of
   Insert -> pure $ case c of
     '\ESC' -> (v {vimMode = Normal}, stepBack b)
     '\r' -> (v, B.newline b)
@@ -194,12 +222,13 @@ key clip page c (v, b) = case vimMode v of
     '\ETB' -> (v, B.deleteWordBack b)
     _ | c >= ' ' -> (v, B.insertText (T.singleton c) b)
     _ -> (v, b)
-  _ | Just (':', typed) <- T.uncons pending -> pure $ case c of
-    '\ESC' -> (done, b)
-    '\r' -> tidy (ex typed done b)
-    '\b' -> (v {vimPending = T.dropEnd 1 pending}, b)
-    _ | c >= ' ' -> (v {vimPending = T.snoc pending c}, b)
-    _ -> (v, b)
+  _ | Just (':', typed) <- T.uncons pending -> case c of
+    '\ESC' -> pure (done, b)
+    '\r' -> tidy <$> ex clip typed done b
+    _ -> pure $ case c of
+      '\b' -> (v {vimPending = T.dropEnd 1 pending}, b)
+      _ | c >= ' ' -> (v {vimPending = T.snoc pending c}, b)
+      _ -> (v, b)
   _ | c == '\ESC' -> pure . tidy $ case vimMode v of
     _ | not (T.null pending) -> (done, b)
     Normal -> (v, b)
@@ -360,6 +389,8 @@ command clip page v s0 = case vimMode v of
       "~" -> recase (T.map swapCase)
       "u" -> recase T.toLower
       "U" -> recase T.toUpper
+      -- The command line, over the lines selected.
+      ":" -> pureStep (\v' b -> let (v'', b') = leaveVisual v' b in (v'' {vimPending = ":'<,'>"}, b'))
       _ -> Bad
 
     visualOps =
@@ -455,22 +486,208 @@ counted s = case span isDigit s of
 position :: Vim -> Buffer -> Int
 position v b = if vimMode v == Normal then B.bufCursor b else vimCursor v
 
--- | A command line after its @:@.
-ex :: Text -> Vim -> Buffer -> (Vim, Buffer)
-ex cmd v b = case T.unpack (T.strip cmd) of
-  "" -> (v, b)
-  "w" -> ask [Save]
-  "q" -> ask [Quit False]
-  "q!" -> ask [Quit True]
-  "wq" -> ask [Save, Quit False]
-  "x" -> ask [Save, Quit False]
-  "qa" -> ask [QuitAll False]
-  "qa!" -> ask [QuitAll True]
-  other
-    | Just ln <- readMaybe other -> (v, B.setCursor False (B.firstNonBlank b (clampLine b (ln - 1))) b)
-    | otherwise -> ask [Message ("Not an editor command: " <> T.pack other)]
+--------------------------------------------------------------------------------
+-- The command line
+--------------------------------------------------------------------------------
+
+-- | A command line after its @:@: a range of lines, as vim counts them from
+-- one, and a command, which may be cut short as far as vim lets it be. A
+-- range with no command goes to its last line.
+ex :: Monad m => Clip m -> Text -> Vim -> Buffer -> m (Vim, Buffer)
+ex clip typed v b = case range v b (T.unpack (T.strip typed)) of
+  Left err -> say err
+  Right (lns, rest) -> case (lns, dropSpaces rest) of
+    ([], "") -> pure (v, b)
+    (_ : _, "") -> pure (v, B.setCursor False (B.firstNonBlank b (clampLine b (last lns - 1))) b)
+    (_, s) -> run lns (commandName s)
   where
-    ask rs = (request rs v, b)
+    say msg = pure (request [Message msg] v, b)
+    ask rs = pure (request rs v, b)
+    dirty = B.isDirty b
+    run lns (name, bang, arg)
+      | name `is` ("write", 1) = ask [Save]
+      | name `is` ("wq", 2) = ask [Save, Quit bang]
+      | name `is` ("xit", 1) = ask ([Save | dirty] ++ [Quit bang])
+      | name `is` ("quit", 1) = ask [Quit bang]
+      | name `is` ("qall", 2) || name `is` ("quitall", 5) = ask [QuitAll bang]
+      | name `is` ("edit", 1) = case arg of
+          "" | bang -> ask [Revert]
+             | dirty -> say "No write since last change (add ! to override)"
+             | otherwise -> ask [Revert]
+          path -> ask [Edit path bang]
+      | name `is` ("enew", 3) = ask [NewFile bang]
+      | name `is` ("tabnext", 4) = ask [NextTab True]
+      | name `is` ("tabprevious", 4) || name `is` ("tabNext", 4) = ask [NextTab False]
+      | name `is` ("tabnew", 6) || name `is` ("tabedit", 4) = ask [NewTab (if null arg then Nothing else Just arg)]
+      | name `is` ("nohlsearch", 3) = ask [ClearFind]
+      | name `is` ("substitute", 1) = within lns (\l1 l2 -> substitute l1 l2 arg v b)
+      | name `is` ("delete", 1) = within lns (\l1 l2 -> operate clip 'd' (Lines l1 l2) (B.bufCursor b) v b)
+      | name `is` ("yank", 1) = within lns (\l1 l2 -> operate clip 'y' (Lines l1 l2) (B.bufCursor b) v b)
+      | otherwise = say ("Not an editor command: " <> T.strip typed)
+    -- The lines a command works on, from zero: the current one when none
+    -- are given. Line 0 is taken as the first.
+    within lns f = case lns of
+      _ | any (\n -> n < 0 || n > lastLine b + 1) lns -> say "Invalid range"
+      [] -> f (line b) (line b)
+      _ ->
+        let (a, z) = case reverse lns of
+              [n] -> (n, n)
+              n2 : n1 : _ -> (min n1 n2, max n1 n2)
+              [] -> (0, 0)
+         in f (max 0 (a - 1)) (max 0 (z - 1))
+
+-- | Whether a command's name is it, or it cut short to no fewer than a count
+-- of letters.
+is :: String -> (String, Int) -> Bool
+is name (full, least) = length name >= least && name `isPrefixOf` full
+
+-- | A command's name, whether a @!@ follows it, and what comes after that.
+-- @:s@ takes what follows it as it is, spaces and all.
+commandName :: String -> (String, Bool, String)
+commandName s = case span isAlpha s of
+  (name, '!' : rest) -> (name, True, strip rest)
+  (name, rest)
+    | name `is` ("substitute", 1) -> (name, False, rest)
+    | otherwise -> (name, False, strip rest)
+  where
+    strip = dropSpaces . reverse . dropSpaces . reverse
+
+dropSpaces :: String -> String
+dropSpaces = dropWhile isSpace
+
+-- | The line numbers a command line starts with, and the rest of it. @%@ is
+-- every line; an address is a number, @.@, @$@, @'<@ or @'>@, and each
+-- may have a @+n@ or @-n@ after it, which on its own is from the current
+-- line. Addresses are between commas.
+range :: Vim -> Buffer -> String -> Either Text ([Int], String)
+range v b s0 = case dropSpaces s0 of
+  '%' : rest -> Right ([1, lastLine b + 1], rest)
+  s -> addresses [] s
+  where
+    current = line b + 1
+    addresses acc s = do
+      (at, rest) <- address s
+      case (at, dropSpaces rest) of
+        (Nothing, ',' : _) | null acc -> addresses acc (show current ++ rest)
+        (Nothing, _) -> Right (reverse acc, rest)
+        (Just n, ',' : rest') -> addresses (n : acc) rest'
+        (Just n, rest') -> Right (reverse (n : acc), rest')
+    address s = do
+      (base, rest) <- case dropSpaces s of
+        '.' : r -> Right (Just current, r)
+        '$' : r -> Right (Just (lastLine b + 1), r)
+        '\'' : m : r
+          | m == '<' || m == '>' -> case vimMarks v of
+              Just (i, j) ->
+                let pick = if m == '<' then min else max
+                 in Right (Just (B.lineOf b (min (B.size b) (pick i j)) + 1), r)
+              Nothing -> Left "Mark not set"
+          | otherwise -> Left ("Unknown mark: '" <> T.singleton m)
+        r@(d : _) | isDigit d -> let (ds, r') = span isDigit r in Right (Just (number ds), r')
+        r -> Right (Nothing, r)
+      Right (offsets base rest)
+    offsets base = \case
+      c : r
+        | c == '+' || c == '-' ->
+            let (ds, r') = span isDigit r
+                n = if null ds then 1 else number ds
+             in offsets (Just (fromMaybe current base + (if c == '+' then n else negate n))) r'
+      r -> (base, r)
+    number = fromMaybe maxBound . readMaybe . take 9
+
+-- | :s/pattern/replacement/flags, over lines from one to another, as one
+-- step of the history. The pattern is a POSIX extended regular expression,
+-- as regex-tdfa reads it, which is vim's @\\v@ more than its default, with
+-- @\\s@, @\\d@ and @\\w@ besides. In the replacement @&@ is the match,
+-- @\\1@ to @\\9@ what its groups matched, and @\\r@ or @\\n@ a line break.
+-- The flag @g@ replaces every match on a line and not only the first, and
+-- @i@ ignores case.
+substitute :: Monad m => Int -> Int -> String -> Vim -> Buffer -> m (Vim, Buffer)
+substitute l1 l2 arg v b = pure $ case arg of
+  d : rest | not (isAlpha d || isDigit d || isSpace d || d == '\\') -> case splitOn d rest of
+    (pat, rep, flags)
+      | any (`notElem` ("gi" :: String)) flags -> say ("Unknown flags: " <> T.pack flags)
+      | otherwise -> case compile (defaultCompOpt {caseSensitive = 'i' `notElem` flags}) (defaultExecOpt {captureGroups = True}) (T.pack (posix pat)) of
+          Left _ -> say ("Bad pattern: " <> T.pack pat)
+          Right re -> apply re (replacement rep) ('g' `elem` flags) pat
+  _ -> say "Usage: :s/pattern/replacement/[gi]"
+  where
+    say msg = (request [Message msg] v, b)
+    apply :: Regex -> [Either Text Int] -> Bool -> String -> (Vim, Buffer)
+    apply re rep global pat =
+      let done = [(l, t, subLine re rep global t) | l <- [l1 .. l2], let t = B.lineText b l]
+          changed = [l | (l, _, Just _) <- done]
+       in case changed of
+            [] -> say ("Pattern not found: " <> T.pack pat)
+            first : _ ->
+              let final = last changed
+                  news = [fromMaybe t t' | (l, t, t') <- done, l >= first, l <= final]
+                  new = T.intercalate "\n" news
+                  st = B.lineStart b first
+                  b' = B.replace st (lineEnd b final) new b
+                  -- The caret goes to the last line of what was replaced.
+               in (v, B.setCursor False (B.firstNonBlank b' (B.lineOf b' (st + T.length new))) b')
+
+-- | A line with the pattern's matches replaced, or 'Nothing' if it has none.
+subLine :: Regex -> [Either Text Int] -> Bool -> Text -> Maybe Text
+subLine re rep global t = case (if global then id else take 1) (map toList (matchAllText re t)) of
+  [] -> Nothing
+  ms -> Just (T.concat (go 0 ms))
+  where
+    go at = \case
+      [] -> [T.drop at t]
+      m@((_, (o, len)) : _) : rest -> slice' at o : concatMap (piece m) rep ++ go (o + len) rest
+      [] : rest -> go at rest
+    slice' i j = T.take (j - i) (T.drop i t)
+    piece m = \case
+      Left lit -> [lit]
+      Right g -> [maybe T.empty fst (lookup g (zip [0 ..] m))]
+
+-- | What goes in place of a match: text, and the groups of the match by
+-- number, the whole of it being 0.
+replacement :: String -> [Either Text Int]
+replacement = \case
+  [] -> []
+  '&' : rest -> Right 0 : replacement rest
+  '\\' : c : rest
+    | isDigit c -> Right (fromEnum c - fromEnum '0') : replacement rest
+    | c == 'r' || c == 'n' -> Left "\n" : replacement rest
+    | c == 't' -> Left "\t" : replacement rest
+    | otherwise -> Left (T.singleton c) : replacement rest
+  c : rest -> Left (T.singleton c) : replacement rest
+
+-- | Vim's and Perl's shorthand classes, which POSIX has no letters for.
+posix :: String -> String
+posix = \case
+  '\\' : c : rest
+    | Just cls <- lookup c classes -> cls ++ posix rest
+    | otherwise -> '\\' : c : posix rest
+  c : rest -> c : posix rest
+  [] -> []
+  where
+    classes =
+      [ ('s', "[[:space:]]"), ('S', "[^[:space:]]")
+      , ('d', "[0-9]"), ('D', "[^0-9]")
+      , ('w', "[[:alnum:]_]"), ('W', "[^[:alnum:]_]")
+      ]
+
+-- | The pattern, the replacement and the flags of :s, after its delimiter.
+-- The delimiter escaped is itself; any other escape is left for the pattern
+-- or the replacement to read.
+splitOn :: Char -> String -> (String, String, String)
+splitOn d s0 =
+  let (pat, r1) = part s0
+      (rep, r2) = part r1
+   in (pat, rep, dropSpaces r2)
+  where
+    part = \case
+      [] -> ([], [])
+      '\\' : c : rest | c == d -> first' (c :) (part rest)
+      '\\' : c : rest -> first' (\x -> '\\' : c : x) (part rest)
+      c : rest
+        | c == d -> ([], rest)
+        | otherwise -> first' (c :) (part rest)
+    first' f (x, y) = (f x, y)
 
 --------------------------------------------------------------------------------
 -- Motions

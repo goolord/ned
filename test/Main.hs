@@ -216,6 +216,31 @@ main = do
   asked src ":wq\r" >>= check ":wq saves and closes" [Save, Quit False]
   asked src "ngt" >>= check "n and gt" [FindAgain True, NextTab True]
   asked src ":nope\r" >>= check "an unknown command says so" [Message "Not an editor command: nope"]
+  asked src ":e other.txt\r" >>= check ":e opens a file in the tab" [Edit "other.txt" False]
+  asked src ":e\r" >>= check ":e with no changes reads the file again" [Revert]
+  asked src "x:e\r" >>= check ":e with changes says so" [Message "No write since last change (add ! to override)"]
+  asked src "x:e!\r" >>= check ":e! throws them away" [Revert]
+  asked src ":enew\r" >>= check ":enew" [NewFile False]
+  asked src ":tabnew\r:tabnew a.hs\r:tabe b.hs\r" >>= check ":tabnew and :tabe" [NewTab Nothing, NewTab (Just "a.hs"), NewTab (Just "b.hs")]
+  asked src ":tabn\r:tabp\r" >>= check ":tabn and :tabp" [NextTab True, NextTab False]
+  asked src ":s/zzz/y/\r" >>= check ":s with no match says so" [Message "Pattern not found: zzz"]
+  asked src ":s/(/y/\r" >>= check "a pattern that does not read says so" [Message "Bad pattern: ("]
+  asked src ":'<d\r" >>= check "a mark not set" [Message "Mark not set"]
+  asked src ":9d\r" >>= check "a line past the end is no range" [Message "Invalid range"]
+  checkVim ":s replaces the first match on the line" src 0 ":s/a/A/\r" ("foo bAr baz\n  qux(a, b)\nend\n", 0, Normal)
+  checkVim ":s with g replaces them all" src 0 ":s/a/A/g\r" ("foo bAr bAz\n  qux(a, b)\nend\n", 0, Normal)
+  checkVim ":%s over every line, as one undo" src 0 ":%s/a/_/g\ru" (src, 0, Normal)
+  checkVim ":%s over every line" src 0 ":%s/a/_/g\r" ("foo b_r b_z\n  qux(_, b)\nend\n", 14, Normal)
+  checkVim ":s with groups, & and \\s" src 0 ":s/(\\w+)\\s(bar)/\\2-&/\r" ("bar-foo bar baz\n  qux(a, b)\nend\n", 0, Normal)
+  checkVim ":s with i and another delimiter" "Foo foo\n" 0 ":s#FOO#x#gi\r" ("x x\n", 0, Normal)
+  checkVim ":s with \\r breaks the line" "a,b\n" 0 ":s/,/\\r/\r" ("a\nb\n", 2, Normal)
+  checkVim ":s over a range of lines" "a\na\na\na\n" 0 ":2,3s/a/b/\r" ("a\nb\nb\na\n", 4, Normal)
+  checkVim ":s over lines from the current one" "a\na\na\na\n" 2 ":.,+1s/a/b/\r" ("a\nb\nb\na\n", 4, Normal)
+  checkVim ":s over what was selected" "a\na\na\na\n" 2 "Vj:s/a/b/\r" ("a\nb\nb\na\n", 4, Normal)
+  let pendingAfter t ks = vimPending . fst <$> feedKeys (Clip (pure Nothing) (const (pure ()))) 20 ks (newVim, B.fromText t)
+  pendingAfter src "Vj:" >>= check ": in visual mode fills in its lines" ":'<,'>"
+  checkVim ":$ goes to the last line" src 0 ":$\r" (src, 24, Normal)
+  checkVim ":d over a range" "a\nb\nc\nd\n" 0 ":2,3d\r" ("a\nd\n", 2, Normal)
 
   -- Lexing -------------------------------------------------------------------
   let hs = languageFor "Main.hs"

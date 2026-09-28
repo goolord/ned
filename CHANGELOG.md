@@ -117,3 +117,15 @@
   caret; in normal and visual mode Ctrl+N and Ctrl+P move down and up a line.
   New tab, find file and close tab stay on the File menu, which shows no chord
   for them while vim's keys are on.
+* Vim's command line takes a range and more commands: `:e file` opens a file
+  in the tab in front, asking about its changes (or not, with `:e!`), and
+  `:e` and `:e!` read the file in front again, as a step undo takes back;
+  `:enew` puts an untitled file in the tab and `:tabnew`, with or without a
+  file, and `:tabe` open one in a new tab; `:tabn` and `:tabp` go through the
+  tabs; `:noh` stops marking what find found. `:s/pattern/replacement/gi`,
+  `:d` and `:y` work on the lines a range names: `%`, a number, `.`, `$`,
+  `'<` and `'>`, each with `+n` or `-n`, and two of them apart by a comma.
+  `:` in visual mode starts a command over the lines selected. The pattern
+  is a POSIX extended regular expression, read by regex-tdfa, with vim's
+  `\s`, `\d` and `\w`; in the replacement `&` and `\1` to `\9` are what
+  matched and `\r` breaks the line. A substitution undoes in one step.

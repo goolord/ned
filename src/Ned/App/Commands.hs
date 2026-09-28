@@ -79,6 +79,7 @@ import Data.IORef (IORef, modifyIORef', readIORef, writeIORef)
 import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.NanoRope.Measured as Rope
 import NanoUI
 import NanoUI.Backend.Sdl
 import qualified NanoUI.Shortcut as K
@@ -94,8 +95,8 @@ import qualified Ned.FileTree as FT
 import Ned.Highlight (LexState (..), languageFor)
 import qualified Ned.Picker as P
 import System.Exit (exitSuccess)
-import System.Directory (makeAbsolute)
-import System.FilePath (takeDirectory, takeFileName)
+import System.Directory (getHomeDirectory, makeAbsolute)
+import System.FilePath (takeDirectory, takeFileName, (</>))
 import System.IO (hPutStrLn, stderr)
 
 --------------------------------------------------------------------------------
@@ -171,6 +172,7 @@ runPending :: IORef App -> Pending -> NanoUI ()
 runPending ref = \case
   PendingClose key -> modifyApp ref (closeDoc key)
   PendingReplace path -> openIn ref InFrontTab Nothing path
+  PendingNew -> modifyApp ref (\a -> (blankDoc a) {appStatus = "New file"})
   PendingQuit -> liftIO exitSuccess
 
 -- | The tabs whose changes something would throw away.
@@ -181,6 +183,7 @@ losing a = \case
   PendingReplace path
     | isJust (findTab path a) -> []
     | otherwise -> filter docDirty [activeDoc a]
+  PendingNew -> filter docDirty [activeDoc a]
   PendingQuit -> filter docDirty (appDocs a)
 
 -- | Ask first when there are changes to lose, and otherwise get on with it.
@@ -199,6 +202,7 @@ pendingQuestion a action =
   case (action, losing a action) of
     (PendingClose _, doc : _) -> (docName doc <> " has changes that are not saved.", "Discard them and close it?")
     (PendingReplace path, doc : _) -> (docName doc <> " has changes that are not saved.", "Discard them and open " <> T.pack (takeFileName path) <> " in its place?")
+    (PendingNew, doc : _) -> (docName doc <> " has changes that are not saved.", "Discard them and start an untitled file in its place?")
     (PendingQuit, [doc]) -> (docName doc <> " has changes that are not saved.", "Discard them and quit?")
     (PendingQuit, lost) -> (T.pack (show (length lost)) <> " files have changes that are not saved.", "Discard them and quit?")
     _ -> ("", "")
@@ -444,6 +448,45 @@ vimRequest ref = \case
     unless (isJust (appSaveDlg a) && not force) (run force action)
   V.QuitAll force -> run force PendingQuit
   V.NextTab forward -> stepTab ref forward
+  V.Edit path force -> liftIO (expandPath path) >>= run force . PendingReplace
+  V.Revert -> revert ref
+  V.NewFile force -> run force PendingNew
+  V.NewTab Nothing -> newFile ref
+  V.NewTab (Just path) -> liftIO (expandPath path) >>= openFile ref Nothing
+  V.ClearFind -> do
+    a <- readApp ref
+    when (appBar a == BarFind) (closeBar ref)
   V.Message msg -> setStatus ref msg
   where
     run force = if force then runPending ref else guarded ref
+
+-- | A file named on the command line, from the folder ned was started in,
+-- with a @~@ at its start for the home folder.
+expandPath :: FilePath -> IO FilePath
+expandPath = \case
+  "~" -> getHomeDirectory
+  '~' : '/' : rest -> (</> rest) <$> getHomeDirectory
+  path -> makeAbsolute path
+
+-- | Read the file in front from disk again, in place of what the tab holds.
+-- It is one step of the history, so what it threw away is an undo away.
+revert :: IORef App -> NanoUI ()
+revert ref = do
+  a <- readApp ref
+  case appPath a of
+    Nothing -> setStatus ref "No file name"
+    Just path ->
+      liftIO (loadFile path) >>= \case
+        Left err -> setStatus ref ("Could not open " <> T.pack path <> ": " <> err)
+        Right loaded -> modifyApp ref $ \a' ->
+          let ed = appEditor a'
+              b = edBuffer ed
+              disk = Rope.toText (B.bufRope (loadedBuffer loaded))
+              b'
+                | Rope.toText (B.bufRope b) == disk = b
+                | otherwise = B.setCursor False (min (B.bufCursor b) (T.length disk)) (B.replace 0 (B.size b) disk b)
+           in a'
+                { appEditor = revealCaret ed {edBuffer = B.markSaved b', edCompletion = Nothing}
+                , appFormat = loadedFormat loaded
+                , appStatus = "Read " <> T.pack (takeFileName path)
+                }

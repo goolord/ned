@@ -373,7 +373,9 @@ statusBar app =
     -- Vim's mode, and the keys of a command on their way.
     for_ (edVim ed) $ \v -> do
       labelWith (tight . fontSemiBold) (vimLabel v)
-      unless (T.null (vimPending v)) $ labelWith tight (T.replace " " "SPC " (vimPending v))
+      -- A space is the leader, save on the command line, where it is typed.
+      let pending = vimPending v
+      unless (T.null pending) $ labelWith tight (if ":" `T.isPrefixOf` pending then pending else T.replace " " "SPC " pending)
     labelWith (tight . fontMuted) (appStatus app)
     flex
     -- A file with changes to save carries a dot, the way an editor's tab

@@ -836,6 +836,33 @@ selftestIn dir mfile say = do
       Just pk -> fail ("selftest: the leader's keys were typed into the finder: " <> show (P.pkTyped pk))
       Nothing -> fail "selftest: SPC f f did not put the finder up"
     key plain KeyEscape
+
+    -- The command line: :tabnew opens a tab, :enew empties it, :e opens a
+    -- file in it and :e! reads it again, and :%s replaces over every line.
+    let command t = typed (":" <> t) >> key plain KeyEnter
+        pathNow = appPath <$> readIORef ref
+    exFile <- makeAbsolute (dir </> "ex.txt")
+    writeFile exFile "from disk\nand disk\n"
+    tabsAtCommand <- tabsNow
+    command "tabnew"
+    tabsNow >>= \n -> unless (n == tabsAtCommand + 1) (fail "selftest: :tabnew did not open a tab")
+    typed "ichanged"
+    key plain KeyEscape
+    command "enew"
+    isJust . appPending <$> readIORef ref >>= \up -> unless up (fail "selftest: :enew did not ask about the changes")
+    modifyIORef' ref (\a -> a {appPending = Nothing})
+    command "enew!"
+    expect ":enew! throws the changes away" ""
+    command ("e " <> T.pack exFile)
+    expect ":e opens a file" "from disk\nand disk\n"
+    pathNow >>= \p -> unless (fmap (equalFilePath exFile) p == Just True) (fail ("selftest: :e left the tab on " <> show p))
+    command "%s/disk/memory/"
+    expect ":%s replaces on every line" "from memory\nand memory\n"
+    command "e!"
+    expect ":e! reads the file again" "from disk\nand disk\n"
+    command "q"
+    tabsNow >>= \n -> unless (n == tabsAtCommand) (fail "selftest: :q did not close the tab")
+    removeFile exFile
     modifyIORef' ref (everyEditor (\e -> e {edVim = Nothing}))
 
     -- The settings file under the window is watched: what an edit to it

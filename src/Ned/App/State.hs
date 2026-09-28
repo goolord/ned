@@ -23,6 +23,7 @@ module Ned.App.State
   , selectDoc
   , stepDoc
   , newDoc
+  , blankDoc
   , closeDoc
   , everyEditor
   , docName
@@ -69,6 +70,8 @@ data Pending
   | -- | Open a file, by its absolute path, in the tab in front, in place of
     -- what it holds.
     PendingReplace FilePath
+  | -- | An untitled file in the tab in front, in place of what it holds.
+    PendingNew
   | PendingQuit
 
 -- | Where a file that is not open yet opens.
@@ -278,6 +281,10 @@ stepDoc forward app
 -- | A new tab, untitled and empty, after the one in front and in front now.
 newDoc :: App -> App
 newDoc = insertDoc False (newEditor plainText B.empty) Nothing (FileFormat LF False)
+
+-- | An untitled, empty file in place of the tab in front, whatever it held.
+blankDoc :: App -> App
+blankDoc = insertDoc True (newEditor plainText B.empty) Nothing (FileFormat LF False)
 
 -- | A tab under a key of its own and in front, shown as the one that was in
 -- front is: after it, or in its place when that is to go.

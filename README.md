@@ -77,7 +77,7 @@ The mode is on the left of the status bar, with a command's keys as they are
 typed. The caret does not blink, and is a block in normal and visual mode; insert mode is the editor's
 own keys, so the shortcuts above work there too, except Ctrl+N, Ctrl+P and
 Ctrl+W, which are vim's (below). New tab, find file and close tab are still
-on the File menu, and on `SPC f f` and `:q`. Yanks and puts go through
+on the File menu, and on `SPC f f`, `:tabnew` and `:q`. Yanks and puts go through
 the system clipboard, and what ends in a line break is put as whole lines.
 
 | Keys | |
@@ -87,12 +87,25 @@ the system clipboard, and what ends in a line break is put as whole lines.
 | Text objects | `iw aw`, `i( a(` (also `b`), `i{ a{` (also `B`), `i[ a[`, `i< a<`, `i" a"`, `i' a'` |
 | Edits | `i a I A o O`, `x X s S D C Y`, `p P`, `J`, `r`, `~`, `u` / Ctrl+R |
 | Insert mode | Tab, Ctrl+N and Ctrl+P complete the word before the caret; Ctrl+W deletes the word before it |
-| Visual | `v V`, then motions, text objects, `o`, `d y c > < p J ~ u U` |
+| Visual | `v V`, then motions, text objects, `o`, `d y c > < p J ~ u U`, and `:` for a command over the lines selected |
 | Search | `/` opens find, `n N` go to the next and previous match |
-| Tabs | `gt gT` |
+| Tabs | `gt gT`, `:tabn`, `:tabp` |
 | Panes | Ctrl+H / Ctrl+L to the file tree and back, Ctrl+J / Ctrl+K down to the find bar and back |
 | Commands | `:w`, `:q`, `:q!`, `:wq`, `:x`, `:qa`, `:<line>`, `ZZ`, `ZQ` |
+| Files | `:e file` in this tab, `:e` / `:e!` read this file again, `:enew` an untitled file in this tab, `:tabnew [file]` / `:tabe file` in a new tab |
+| Lines | `:s`, `:d`, `:y` over a range: `%`, `5`, `.`, `$`, `'<`, `'>`, `+n`, `-n`, two of them between a comma |
+| Other | `:noh` stops marking what find found |
 | Leader (Space) | `SPC f f` find a file, `SPC f g` search in files, `SPC d` toggle the file tree |
+
+`:s/pattern/replacement/flags` (as `:%s/.../.../g` for the whole file) reads
+its pattern as a POSIX extended regular expression, through
+[regex-tdfa](https://hackage.haskell.org/package/regex-tdfa): groups are
+`( )` and alternatives `|` without a backslash, as in vim's `\v` mode, and
+`\s`, `\d`, `\w` and their capitals work as in vim. In the replacement `&`
+is the match, `\1` to `\9` its groups and `\r` a line break. The flags are
+`g`, every match on a line, and `i`, any case. Any character but a letter, a
+digit or a backslash can stand in for `/`. The whole substitution undoes in
+one step.
 
 ## Completion
 

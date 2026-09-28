@@ -26,6 +26,7 @@ module Ned.View
   , tracedView
   ) where
 
+import Control.Applicative ((<|>))
 import Control.Monad (unless, void, when)
 import Data.Char (isSpace)
 import Data.Foldable (for_, traverse_)
@@ -46,7 +47,7 @@ import Ned.Complete.Tags (Tags, noTags, watchTags)
 import Ned.Config (Config (..), watchConfig)
 import Ned.Editor (Editor (..))
 import Ned.Editor.Vim (Vim (..))
-import Ned.FileTree (FileTree (..), defaultTreeWidth, minTreeWidth, rootName)
+import Ned.FileTree (FileTree (..), minTreeWidth, rootName)
 import Ned.Highlight (Lang, LexState (LexNormal), Span (..), TokenKind (TokPlain), languageNamed, lexLine, plainText)
 import Ned.Lsp (Diagnostic (..), severityName)
 import Ned.Picker (Item (..))
@@ -77,6 +78,7 @@ appView ref = do
   syncServer ref
   tags <- watchedTags ref
   reloadConfig ref
+  trackWindow ref
   app0 <- readApp ref
 
   -- A dialog that is up is asked for its answer, a file dropped on the window
@@ -111,9 +113,12 @@ appView ref = do
               (appPath app1)
               (appTree app1)
           liftIO (writeIORef respRef (Just resp))
+          -- Its width last frame, which is zero before it has been laid out.
+          let Rect _ _ treeW _ = pgcRect pctx
           modifyApp ref $ \a ->
             a
               { appTree = ft
+              , appLayout = if treeW > 0 then (appLayout a) {layoutTreeWidth = treeW} else appLayout a
               , appTreeFocus = appTreeFocus a || ftPressed ft
               , appBarFocus = appBarFocus a && not (ftPressed ft)
               }
@@ -163,7 +168,7 @@ appView ref = do
     -- not carry out of it.
     treeResp <- liftIO (newIORef Nothing)
     edResp <- liftIO (newIORef Nothing)
-    _ <- treeEditorGrid (treePane treeResp) (editorPane edResp)
+    _ <- treeEditorGrid (layoutTreeWidth (appLayout app1)) (treePane treeResp) (editorPane edResp)
     app2 <- readApp ref
 
     -- Scoped so that the editor's own menu below keeps its ids whether or not
@@ -292,6 +297,30 @@ watchedTags ref = do
   root <- ftRoot . appTree <$> readApp ref
   useStream root noTags (watchTags root)
 
+-- | Keep the window's size and whether it fills the screen, for the layout
+-- saved when it closes. A window that fills the screen, or is put away,
+-- keeps the size it had before. The first frame maximizes a window that was
+-- closed maximized, which the desktop is only asked for once there is one.
+trackWindow :: IORef App -> NanoUI ()
+trackWindow ref = do
+  (started, setStarted) <- useState False
+  win <- askWindow
+  app <- readApp ref
+  let layout = appLayout app
+  if not started
+    then do
+      setStarted True
+      when (layoutMaximized layout) maximizeWindowUi
+    else unless (winMinimized win) $
+      modifyApp ref $ \a ->
+        a
+          { appLayout =
+              (appLayout a)
+                { layoutMaximized = winMaximized win
+                , layoutSize = if winMaximized win || winFullscreen win then layoutSize (appLayout a) else winSize win
+                }
+          }
+
 -- | Take up the settings each time their file changes. The file is watched
 -- on a thread the frame owns, which counts its readings and wakes the window
 -- with each; a frame takes up the latest reading it has not taken up yet.
@@ -313,7 +342,7 @@ reloadConfig ref = do
 -- toolkit's to draw, drag and remember.
 --
 -- The grid starts from the split it is given: the tree is the left pane, the
--- editor the right, and the tree starts at the width it always has. A grid
+-- editor the right, and the tree starts at the width it was left at. A grid
 -- left to split itself would put the new pane on the B side and at a half,
 -- which is the wrong side for the editor and the wrong width for the tree.
 
@@ -346,17 +375,22 @@ paneLeeway = 2
 -- The grid is no Tab stop: its own keys act on its panes, and ned's widgets
 -- own the keyboard this side of it.
 treeEditorGrid ::
+  Float ->
   (PaneGridCtx -> NanoUI PaneView) ->
   (PaneGridCtx -> NanoUI PaneView) ->
   NanoUI PaneGridResponse
-treeEditorGrid treePane editorPane = do
+treeEditorGrid treeW treePane editorPane = do
   winW <- windowWidth
+  border <- windowBorderFor <$> askWindow
   -- The grid's own tree, handed back each frame. The first frame starts it
   -- from the window's width; after that a resize changes the editor's width
   -- and not the split, which the grid would take again if it were passed a
-  -- new one.
-  (arrangement, setArrangement) <-
-    useState (Just (Split treeEditorSplit AxisV (treeShare winW) (Pane treePaneId) (Pane editorPaneId)))
+  -- new one. The state starts empty rather than on that first tree: a state
+  -- is not stored while it is still what it started as, so the first tree
+  -- would be worked out again each frame from the tree's width as it was
+  -- last drawn, and the tree would creep narrower.
+  (arrangement, setArrangement) <- useState Nothing
+  let start = Split treeEditorSplit AxisV (treeShare (winW - 2 * border)) (Pane treePaneId) (Pane editorPaneId)
   resp <-
     styled paneChrome $
       paneGrid
@@ -368,18 +402,18 @@ treeEditorGrid treePane editorPane = do
           , -- The window's width is the editor's to take or give up: the tree
             -- is as wide as it was left, whatever the window does.
             pgFixedPanes = (== treePaneId)
-          , pgTree = arrangement
+          , pgTree = arrangement <|> Just start
           , pgFocusable = False
           , pgViewPane = \pid pctx -> if pid == treePaneId then treePane pctx else editorPane pctx
           }
   setArrangement (pgrTree resp)
   pure resp
   where
-    -- The tree's share of the row: the width the tree has always started at,
-    -- of what the panes share out. The row spans the window and the grid has
-    -- not been laid out yet, so the window's width stands in for the grid's.
-    treeShare winW
+    -- The tree's share of the row: the width it was left at, of what the
+    -- panes share out. The grid has not been laid out yet, so the window's
+    -- width inside its border stands in for the grid's.
+    treeShare gridW
       | usable <= 0 = 0.5
-      | otherwise = defaultTreeWidth / usable
+      | otherwise = treeW / usable
       where
-        usable = winW - dividerW
+        usable = gridW - dividerW

@@ -12,6 +12,7 @@ module Ned.App.State
   , Pending (..)
   , Placement (..)
   , Tip (..)
+  , WindowLayout (..)
   , newApp
   , openPath
 
@@ -46,6 +47,7 @@ import Data.List (find)
 import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
+import NanoUI (Size (..))
 import NanoUI.Backend.Sdl (FileDialogId)
 import NanoUI.Markdown (MarkdownDoc)
 import qualified Ned.Buffer as B
@@ -134,6 +136,9 @@ data App = App
   -- ^ The window's title as last set.
   , appTree :: !FileTree
   , appTreeShown :: !Bool
+  , appLayout :: !WindowLayout
+  -- ^ The window's size, whether it fills the screen, and the tree's width,
+  -- as last drawn: what is saved when the window closes.
   , appTreeFocus :: !Bool
   -- ^ Whether the tree has the keyboard, and not the editor.
   , appPicker :: !(Maybe Picker)
@@ -161,6 +166,18 @@ data App = App
   -- ^ What is shown by the caret, for as long as the caret and the text are
   -- where they were when it was put up ('hoverAt').
   }
+
+-- | How the window was left: its size, whether it filled the screen, and how
+-- wide the tree was. Whether the tree was shown is 'appTreeShown'.
+data WindowLayout = WindowLayout
+  { layoutSize :: !Size
+  -- ^ In layout units, as the window opens at. A window that fills the
+  -- screen keeps the size it had before, which is the one it goes back to.
+  , layoutMaximized :: !Bool
+  , layoutTreeWidth :: !Float
+  -- ^ As it was last drawn, which a tree put away keeps.
+  }
+  deriving (Eq, Show)
 
 -- | What is shown by the caret: what a server said of what is under it, or
 -- what it found wrong where a jump put the caret.
@@ -206,6 +223,12 @@ newApp cfg = do
       , appTitle = ""
       , appTree = FT.newFileTree cwd
       , appTreeShown = cfgShowFileTree cfg
+      , appLayout =
+          WindowLayout
+            { layoutSize = Size (fromIntegral (cfgWindowWidth cfg)) (fromIntegral (cfgWindowHeight cfg))
+            , layoutMaximized = False
+            , layoutTreeWidth = FT.defaultTreeWidth
+            }
       , appTreeFocus = False
       , appPicker = Nothing
       , appConfig = cfg

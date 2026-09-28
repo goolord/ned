@@ -170,3 +170,9 @@
   or steps into it; `l` and `o` open a file, and `O` opens it in a tab of its
   own; `gg` and `G` go to the first row and the last, or to the row a count
   names; and `-` puts the tree on the folder above.
+* The window opens as it was closed: its size, whether it was maximized,
+  and whether the file tree was shown and how wide. The layout is kept in
+  `layout.json` in ned's state folder (`~/.local/state/ned` on Linux,
+  `%LOCALAPPDATA%\ned` on Windows) and written when the window closes, by
+  its close button or by quitting. `windowWidth`, `windowHeight` and
+  `showFileTree` are what the first run opens with.

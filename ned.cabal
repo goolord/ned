@@ -80,6 +80,7 @@ library
         Ned.Config
         Ned.App
         Ned.App.State
+        Ned.App.Layout
         Ned.App.Commands
         Ned.App.Frame
 

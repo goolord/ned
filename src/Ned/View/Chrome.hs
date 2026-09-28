@@ -9,6 +9,7 @@ module Ned.View.Chrome
   ( -- * The window's own chrome
     titleBar
   , windowBorder
+  , windowBorderFor
   , editorMenu
   , treeMenu
 
@@ -79,14 +80,18 @@ windowBorder :: NanoUI a -> NanoUI a
 windowBorder body = do
   theme <- uiTheme
   win <- askWindow
-  let maximized = winMaximized win || winFullscreen win
   windowFrame
     WindowFrame
-      { frameWidth = if maximized then 0 else windowBorderWidth
+      { frameWidth = windowBorderFor win
       , frameRadius = 0
       , frameColor = windowEdge theme
       }
     body
+
+-- | How thick the line around the window is drawn, as 'windowBorder' says:
+-- none for a window that fills the screen.
+windowBorderFor :: WindowState -> Float
+windowBorderFor win = if winMaximized win || winFullscreen win then 0 else windowBorderWidth
 
 -- | The window's title bar, which is also its menu bar: the menus at the
 -- left, the file's name in the middle, and the buttons that put the window

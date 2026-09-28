@@ -7,12 +7,22 @@
 -- > { bufferFontSize = 17.0, vimKeys = False }
 --
 -- A field the defaults do not have, or one of the wrong type, is an error,
--- so a misspelt setting is not passed over in silence. A file that does not
+-- so a misspelt setting is not passed over in silence.
+--
+-- Most settings are the window's. The rest, in 'FileSettings', are how a
+-- file is worked on, and a project can set those for the files under its
+-- root: a project is a record of them laid over the settings as the file is
+-- laid over the defaults, and a project inside another is laid over the
+-- outer one's. Whatever is added to 'FileSettings' can be set per project
+-- with nothing more said. A file that does not
 -- read is said so, and what is done then is the caller's: the window that is
 -- opening starts on the defaults, and the window that is open keeps what it
 -- has. 'watchConfig' reads the file again each time it changes.
 module Ned.Config
   ( Config (..)
+  , FileSettings (..)
+  , Project (..)
+  , settingsFor
   , Font (..)
   , defaultConfig
   , defaultConfigText
@@ -24,22 +34,29 @@ module Ned.Config
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (IOException, SomeException, displayException, try)
-import Control.Monad (when)
+import Control.Monad (unless, when)
+import Data.Either.Validation (Validation (..))
+import Data.List (isPrefixOf, sortOn)
+import qualified Data.Set as Set
+import Data.Ord (Down (..))
+import Data.Traversable (for)
+import qualified Dhall.Map as DM
+import Dhall.Src (Src)
 import qualified Data.ByteString as BS
 import Data.Char (toLower)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
-import Data.Void (absurd)
+import Data.Void (Void, absurd)
 import Dhall (Decoder)
 import qualified Dhall as D
-import Dhall.Core (Expr (Prefer), PreferAnnotation (..))
+import Dhall.Core (Chunks (..), Expr (Prefer, Record, RecordLit, TextLit), PreferAnnotation (..), RecordField (..), normalize)
 import Lens.Micro (set)
 import Ned.Editor.Types (clampFontSize, defaultFontSize)
 import Ned.Text (clamp)
 import Numeric.Natural (Natural)
-import System.Directory (XdgDirectory (..), doesFileExist, getModificationTime, getXdgDirectory)
-import System.FilePath (takeDirectory, takeExtension, (</>))
+import System.Directory (XdgDirectory (..), doesFileExist, getHomeDirectory, getModificationTime, getXdgDirectory)
+import System.FilePath (normalise, splitDirectories, takeDirectory, takeExtension, (</>))
 import System.Info (os)
 
 data Config = Config
@@ -59,15 +76,48 @@ data Config = Config
   , cfgVimKeys :: !Bool
   , cfgShowFileTree :: !Bool
   , cfgShowIndentation :: !Bool
-  , cfgShell :: ![Text]
-  -- ^ The program a language server's command is run by, and the arguments
-  -- that come before the command.
-  , cfgLanguageServers :: ![(Text, Text)]
-  -- ^ A language's name, as the status bar has it, and its server's command.
-  , cfgProjects :: ![(FilePath, [(Text, Text)])]
-  -- ^ Servers for the files under a folder, over the ones above.
+  , cfgFiles :: !FileSettings
+  -- ^ How a file is worked on, where no project says otherwise.
+  , cfgProjects :: ![Project]
   }
   deriving (Eq, Show)
+
+-- | The settings that are a file's rather than the window's.
+data FileSettings = FileSettings
+  { fsShell :: ![Text]
+  -- ^ The program a language server's command is run by, and the arguments
+  -- that come before the command.
+  , fsLanguageServers :: ![(Text, Text)]
+  -- ^ A language's name, as the status bar has it, and its server's command.
+  }
+  deriving (Eq, Show)
+
+-- | A folder whose files have settings of their own.
+data Project = Project
+  { projName :: !Text
+  -- ^ Its field in @projects@.
+  , projRoot :: !FilePath
+  -- ^ Absolute.
+  , projFiles :: !FileSettings
+  -- ^ Its settings as they come out: the file's, then those of each project
+  -- around this one, outermost first, then its own.
+  }
+  deriving (Eq, Show)
+
+-- | The settings for a file, and the project it is in: the deepest of those
+-- whose root holds it.
+settingsFor :: Config -> FilePath -> (FileSettings, Maybe Project)
+settingsFor cfg path =
+  case sortOn (Down . depth . projRoot) [p | p <- cfgProjects cfg, projRoot p `holds` path] of
+    p : _ -> (projFiles p, Just p)
+    [] -> (cfgFiles cfg, Nothing)
+
+-- | Whether a folder is, or is inside, another.
+holds :: FilePath -> FilePath -> Bool
+holds root path = splitDirectories root `isPrefixOf` splitDirectories path
+
+depth :: FilePath -> Int
+depth = length . splitDirectories
 
 -- | A font as the settings name it: by the file it is in, when the name ends
 -- in a font file's extension, and otherwise by its family.
@@ -111,9 +161,12 @@ defaultConfigText =
     , "  -- the next diagnostic and the one before."
     , ", languageServers ="
     , "  [ { language = \"Haskell\", command = \"haskell-language-server-wrapper --lsp\" } ]"
-    , "  -- Servers for the files under a folder, in place of the ones above:"
-    , "  -- [ { root = \"~/src/app\", languageServers = [ { language = \"Haskell\", command = \"nix develop -c haskell-language-server-wrapper --lsp\" } ] } ]"
-    , ", projects = [] : List { root : Text, languageServers : List { language : Text, command : Text } }"
+    , "  -- Settings for the files under a folder: shell and languageServers, laid"
+    , "  -- over the ones above as this file is laid over these defaults. A root is"
+    , "  -- absolute, under ~, or from this file's folder. A project inside another"
+    , "  -- is laid over the outer one's settings, and its servers run in its root."
+    , "  -- { app = { root = \"~/src/app\", shell = [ \"nix\", \"develop\", \"-c\", \"sh\", \"-c\" ] } }"
+    , ", projects = {=}"
     , "}"
     ]
 
@@ -131,8 +184,11 @@ defaultConfig =
     , cfgVimKeys = True
     , cfgShowFileTree = True
     , cfgShowIndentation = True
-    , cfgShell = if isWindows then ["cmd", "/c"] else ["sh", "-c"]
-    , cfgLanguageServers = [("Haskell", "haskell-language-server-wrapper --lsp")]
+    , cfgFiles =
+        FileSettings
+          { fsShell = if isWindows then ["cmd", "/c"] else ["sh", "-c"]
+          , fsLanguageServers = [("Haskell", "haskell-language-server-wrapper --lsp")]
+          }
     , cfgProjects = []
     }
 
@@ -150,14 +206,27 @@ configDecoder =
       <*> D.field "vimKeys" D.bool
       <*> D.field "showFileTree" D.bool
       <*> D.field "showIndentation" D.bool
-      <*> D.field "shell" (D.list D.strictText)
-      <*> D.field "languageServers" servers
-      <*> D.field "projects" (D.list (D.record ((,) <$> D.field "root" D.string <*> D.field "languageServers" servers)))
+      <*> fileFields
+      -- Read on their own, by 'readProjects'.
+      <*> pure []
   where
-    servers = D.list (D.record ((,) <$> D.field "language" D.strictText <*> D.field "command" D.strictText))
     float = realToFrac <$> D.double
     font = (\name -> if isFontFile name then FontFile name else FontFamily name) . T.unpack <$> D.strictText
     int = fromIntegral . min 100000 <$> (D.natural :: Decoder Natural)
+
+-- | The fields of 'FileSettings', which sit among the window's at the top
+-- of the file and make up the whole of a project.
+fileFields :: D.RecordDecoder FileSettings
+fileFields =
+  FileSettings
+    <$> D.field "shell" (D.list D.strictText)
+    <*> D.field "languageServers" (D.list (D.record ((,) <$> D.field "language" D.strictText <*> D.field "command" D.strictText)))
+
+-- | Their names.
+fileKeys :: [Text]
+fileKeys = case D.expected (D.record fileFields) of
+  Success (Record m) -> DM.keys m
+  _ -> []
 
 -- | Where the settings are read from.
 configPath :: IO FilePath
@@ -187,7 +256,46 @@ readConfig path =
       let settings = set D.rootDirectory (takeDirectory path) (set D.sourceName path D.defaultInputSettings)
       user <- D.inputExprWithSettings settings . T.decodeUtf8Lenient =<< BS.readFile path
       defaults <- D.inputExpr defaultConfigText
-      D.fromExpr configDecoder (absurd <$> Prefer Nothing PreferFromSource defaults user)
+      -- The projects are a record whose fields differ in type from one to
+      -- the next, which no decoder is written for: they are taken out, and
+      -- each read on its own over what the rest comes to.
+      case normalize (Prefer Nothing PreferFromSource defaults user) of
+        RecordLit top -> do
+          let rest = DM.delete "projects" top
+          cfg <- D.fromExpr configDecoder (absurd <$> RecordLit rest)
+          projects <- readProjects (takeDirectory path) rest (recordFieldValue <$> DM.lookup "projects" top)
+          pure cfg {cfgProjects = projects}
+        _ -> ioError (userError "The settings are not a record")
+
+-- | Each project laid over the file settings at the top of the file, and
+-- over the projects around it, outermost first. A project's fields are
+-- checked against the file settings' own names first, so that one that
+-- belongs to the window is said to be so rather than misspelt.
+readProjects :: FilePath -> DM.Map Text (RecordField Src Void) -> Maybe (Expr Src Void) -> IO [Project]
+readProjects dir top = \case
+  Nothing -> pure []
+  Just (RecordLit ps) -> do
+    raw <- for (DM.toList ps) $ \(name, field) -> case recordFieldValue field of
+      RecordLit m | Just (TextLit (Chunks [] root)) <- recordFieldValue <$> DM.lookup "root" m -> do
+        let own = DM.delete "root" m
+            stray = filter (`notElem` fileKeys) (DM.keys own)
+        unless (null stray) . ioError . userError $
+          "projects." <> T.unpack name <> ": " <> T.unpack (T.intercalate ", " stray) <> " cannot be set for a project; "
+            <> T.unpack (T.intercalate " and " fileKeys) <> " can"
+        (name,,own) <$> rootPath (T.unpack root)
+      _ -> ioError (userError ("projects." <> T.unpack name <> " needs a root, as in { root = \"~/src/app\", shell = [ \"sh\", \"-c\" ] }"))
+    for raw $ \(name, root, _) -> do
+      let around = [own | (_, r, own) <- sortOn (\(n, r, _) -> (depth r, n)) raw, r `holds` root]
+          laid = foldl (\acc own -> Prefer Nothing PreferFromSource acc (RecordLit own)) (RecordLit (DM.restrictKeys top (Set.fromList fileKeys))) around
+      try (D.fromExpr (D.record fileFields) (absurd <$> laid)) >>= \case
+        Left (e :: SomeException) -> ioError (userError ("projects." <> T.unpack name <> ":\n" <> displayException e))
+        Right fs -> pure (Project name root fs)
+  Just _ -> ioError (userError "projects is a record of projects, as in { app = { root = \"~/src/app\", shell = [ \"sh\", \"-c\" ] } }")
+  where
+    rootPath = \case
+      "~" -> getHomeDirectory
+      '~' : '/' : rest -> (</> rest) <$> getHomeDirectory
+      p -> pure (normalise (dir </> p))
 
 -- | Read the file again each time it changes, and hand over each reading;
 -- this never returns. The file's time is looked at twice a second, which is

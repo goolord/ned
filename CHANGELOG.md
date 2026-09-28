@@ -145,3 +145,11 @@
   again on each key, only when asked something outright.
 * `K` shows the server's hover in a popup under the caret, drawn as markdown
   by nano-ui-markdown, until the caret or the text moves.
+* Projects are general: `projects` is a record of projects, each a `root`
+  and any of the settings that are a file's rather than the window's (for
+  now `shell` and `languageServers`). A project is laid over the settings as
+  the file is laid over the defaults, and a project inside another over the
+  outer one's. A file takes the deepest project that holds it, and its
+  servers run in that project's root. A root is absolute, under `~`, or from
+  the settings file's folder. A window setting in a project is an error that
+  says so.

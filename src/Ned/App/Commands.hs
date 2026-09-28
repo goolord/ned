@@ -88,10 +88,9 @@ import Data.Foldable (for_)
 import Data.Function ((&))
 import Data.Functor ((<&>))
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', readIORef, writeIORef)
-import Data.List (find, isPrefixOf, sortOn)
+import Data.List (find, sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
-import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.NanoRope.Measured as Rope
@@ -101,7 +100,7 @@ import NanoUI.Markdown (parseMarkdown)
 import qualified NanoUI.Shortcut as K
 import Ned.App.State
 import Ned.Buffer (Buffer)
-import Ned.Config (Config (..), Font (..), Reading)
+import Ned.Config (Config (..), FileSettings (..), Font (..), Project (..), Reading, settingsFor)
 import qualified Ned.Buffer as B
 import Ned.Editor
 import qualified Ned.Editor.Vim as V
@@ -113,7 +112,7 @@ import qualified Ned.Lsp as Lsp
 import qualified Ned.Picker as P
 import System.Exit (exitSuccess)
 import System.Directory (getHomeDirectory, makeAbsolute)
-import System.FilePath (splitDirectories, takeDirectory, takeFileName, (</>))
+import System.FilePath (takeDirectory, takeFileName, (</>))
 import System.IO (hPutStrLn, stderr)
 
 --------------------------------------------------------------------------------
@@ -474,7 +473,7 @@ askServer ref ask = do
   case appPath a of
     Nothing -> setStatus ref "Save the file before asking its language server"
     Just path ->
-      liftIO (serverCommand (appConfig a) (FT.ftRoot (appTree a)) lang path) >>= \case
+      case serverCommand (appConfig a) (FT.ftRoot (appTree a)) lang path of
         Nothing -> setStatus ref ("No language server for " <> lang)
         Just (cmd, root) -> do
           setStatus ref "Asking the language server..."
@@ -500,7 +499,7 @@ syncServer ref = do
   for_ (appPath a) $ \path -> when (appSynced a /= (path, B.bufVersion b)) $ do
     modifyApp ref (\a' -> a' {appSynced = (path, B.bufVersion b)})
     post <- answerer ref
-    liftIO (serverCommand (appConfig a) (FT.ftRoot (appTree a)) lang path) >>= mapM_ (\(cmd, root) ->
+    for_ (serverCommand (appConfig a) (FT.ftRoot (appTree a)) lang path) (\(cmd, root) ->
       liftIO . Lsp.handLatest (appSync a) $ do
         gone <- Lsp.didNotStart (appServers a) cmd root
         unless gone $
@@ -543,16 +542,15 @@ answerer ref = do
   wake <- askWake
   pure (\f -> atomicModifyIORef' answers (\fs -> (fs ++ [f], ())) >> wake)
 
--- | The command line a file's language server is run by, and the folder it
--- is run in: a project's own, for the deepest project the file is under
--- that has one, and otherwise the settings' own, in the tree's folder.
-serverCommand :: Config -> FilePath -> Text -> FilePath -> IO (Maybe ([String], FilePath))
-serverCommand cfg treeRoot lang path = do
-  projects <- traverse (\(root, servers) -> (,servers) <$> expandPath root) (cfgProjects cfg)
-  let under = sortOn (Down . length . splitDirectories . fst) [p | p@(root, _) <- projects, splitDirectories root `isPrefixOf` splitDirectories path]
-      pick servers = lookup (T.toLower lang) [(T.toLower name, c) | (name, c) <- servers]
-      found = [(c, root) | (root, servers) <- under, Just c <- [pick servers]] <> [(c, treeRoot) | Just c <- [pick (cfgLanguageServers cfg)]]
-  pure (listToMaybe [(map T.unpack (cfgShell cfg) <> [T.unpack c], root) | (c, root) <- found])
+-- | The command line a file's language server is run by, as the file's
+-- settings have it, and the folder it is run in: the root of the project
+-- the file is in, or the tree's folder when it is in none.
+serverCommand :: Config -> FilePath -> Text -> FilePath -> Maybe ([String], FilePath)
+serverCommand cfg treeRoot lang path =
+  lookup (T.toLower lang) [(T.toLower name, c) | (name, c) <- fsLanguageServers fs] <&> \c ->
+    (map T.unpack (fsShell fs) <> [T.unpack c], maybe treeRoot projRoot project)
+  where
+    (fs, project) = settingsFor cfg path
 
 -- | Do what the language servers' answers ask, in the order they came.
 takeAnswers :: IORef App -> NanoUI ()

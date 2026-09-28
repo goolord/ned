@@ -4,7 +4,8 @@
 module Main (main) where
 
 import Control.Concurrent (forkIO, killThread, newEmptyMVar, putMVar, takeMVar, threadDelay, tryTakeMVar)
-import Control.Monad (unless)
+import Control.Monad (forM_, unless)
+import Data.List (sortOn)
 import qualified Data.ByteString as BS
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Maybe (isJust, isNothing)
@@ -18,7 +19,7 @@ import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
 import Ned.Complete
 import Ned.Complete.Tags (findTagsFile, parseTags, tagCount, tagSource)
-import Ned.Config (Config (..), Font (..), defaultConfig, defaultConfigText, readConfig, watchConfig)
+import Ned.Config (Config (..), FileSettings (..), Font (..), Project (..), defaultConfig, defaultConfigText, readConfig, settingsFor, watchConfig)
 import Ned.Editor.Vim (Clip (..), Mode (..), Request (..), Vim (..), feedKeys, newVim, vimSettle)
 import Ned.File (Eol (..), FileFormat (..), Loaded (..), loadFile, saveFile)
 import Ned.Highlight
@@ -413,6 +414,30 @@ main = do
   noFont <- readWith "{ uiFont = Some \"/no/such/font.ttf\", bufferFontSize = 18.0 }"
   check "a missing font file is dropped, and the rest kept" (Right (defaultConfig {cfgBufferFontSize = 18})) (fst <$> noFont)
   check "a missing font file is said" True (failed noFont)
+  -- A project is the file settings laid over the ones around it: the file's,
+  -- then an outer project's, then its own. Its root is from the file's folder
+  -- when it is relative, and a file takes the deepest project that holds it.
+  let files = cfgFiles defaultConfig
+      hls = [("Haskell", "hls")]
+  nested <-
+    readWith
+      "{ languageServers = [ { language = \"C\", command = \"clangd\" } ]\n\
+      \, projects =\n\
+      \  { outer = { root = \"src\", languageServers = [ { language = \"Haskell\", command = \"hls\" } ] }\n\
+      \  , inner = { root = \"src/app\", shell = [ \"nix-shell\", \"--run\" ] }\n\
+      \  }\n\
+      \}"
+  let src = cfgDir </> "src"
+      app = cfgDir </> "src" </> "app"
+      outer = files {fsLanguageServers = hls}
+      inner = outer {fsShell = ["nix-shell", "--run"]}
+  check "projects are laid over the settings and over each other" (Right [Project "inner" app inner, Project "outer" src outer]) (sortOn projName . cfgProjects . fst <$> nested)
+  forM_ [(app </> "Main.hs", (inner, Just "inner")), (src </> "Lib.hs", (outer, Just "outer")), (cfgDir </> "x.c", (files {fsLanguageServers = [("C", "clangd")]}, Nothing))] $ \(file, want) ->
+    check ("the settings for " <> file) want (fmap projName <$> settingsFor (either (const defaultConfig) fst nested) file)
+  readWith "{ projects = { app = { root = \"src\", vimKeys = False } } }" >>= check "a window setting in a project is an error" True . failed
+  readWith "{ projects = { app = { shell = [ \"sh\" ] } } }" >>= check "a project without a root is an error" True . failed
+  readWith "{ projects = { app = { root = \"src\", shell = \"sh\" } } }" >>= check "a project setting of the wrong type is an error" True . failed
+
   -- The watcher hands over a reading once the file changes, and not before.
   readings <- newEmptyMVar
   watcher <- forkIO (watchConfig cfgFile (putMVar readings))

@@ -168,7 +168,7 @@ cabal run ned -- --default-config > ~/.config/ned/config.dhall
 | `showIndentation` | `True` | Mark indentation with dots and rules |
 | `shell` | `["sh", "-c"]` (`["cmd", "/c"]` on Windows) | The program a language server's command runs in, and its arguments before the command |
 | `languageServers` | Haskell: `haskell-language-server-wrapper --lsp` | A language server command per language |
-| `projects` | `[]` | Language servers for the files under a folder, in place of `languageServers` |
+| `projects` | `{=}` | Settings for the files under a folder (see [Projects](#projects)) |
 
 A misspelled field or a value of the wrong type is an error: ned prints it and
 starts with the defaults. Sizes are Doubles, so write `18.0`, not `18`.
@@ -196,20 +196,45 @@ case. The command runs through `shell`, in the folder the file tree is on:
   [ { language = "Haskell", command = "haskell-language-server-wrapper --lsp" }
   , { language = "C", command = "clangd" }
   ]
-, projects =
-  [ { root = "~/src/app"
-    , languageServers =
-      [ { language = "Haskell", command = "nix develop -c haskell-language-server-wrapper --lsp" } ]
-    }
-  ]
 }
 ```
 
-A file under a project's `root` uses that project's server for its language,
-run in `root`. When several projects hold the file, the deepest one wins, and
-a language the project does not list falls back to `languageServers`. The
-server's stderr goes to the terminal ned was started from. A server that fails
+The server's stderr goes to the terminal ned was started from. A server that fails
 to start is not tried again while you type; Ctrl+], `gd` or `K` tries it again.
+
+### Projects
+
+Some settings belong to a file rather than to the window: `shell` and
+`languageServers`. A project sets them for the files under its `root`:
+
+```dhall
+{ projects =
+  { app =
+    { root = "~/src/app"
+    , shell = [ "nix", "develop", "-c", "sh", "-c" ]
+    }
+  , web =
+    { root = "~/src/app/web"
+    , languageServers =
+      [ { language = "TypeScript", command = "typescript-language-server --stdio" } ]
+    }
+  }
+}
+```
+
+A project is laid over the settings the way `config.dhall` is laid over the
+defaults: the fields it sets replace the ones above it, and the fields it
+leaves out keep their values. A list is replaced whole, so a project's
+`languageServers` takes the place of the top-level list rather than adding to
+it. A project inside another is laid over the outer project's settings, so
+files under `~/src/app/web` above get both the `nix develop` shell and the
+TypeScript server. A file belongs to the deepest project whose root holds it,
+and that project's language servers run in its root. Files in no project use
+the top-level settings, and their servers run in the folder the file tree is on.
+
+A root is absolute, starts with `~`, or is relative to the folder
+`config.dhall` is in. The field names (`app`, `web`) are only labels, used in
+error messages. A window setting such as `vimKeys` in a project is an error.
 
 ## Testing
 

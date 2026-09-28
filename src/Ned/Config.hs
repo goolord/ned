@@ -104,12 +104,13 @@ defaultConfigText =
     , "  -- What a language server's command is run in: the program, and the"
     , "  -- arguments before the command."
     , ", shell = " <> (if isWindows then "[ \"cmd\", \"/c\" ]" else "[ \"sh\", \"-c\" ]")
-    , "  -- A server for a language, named as the status bar names it:"
-    , "  -- [ { language = \"Haskell\", command = \"haskell-language-server-wrapper --lsp\" } ]"
+    , "  -- A server for a language, named as the status bar names it, as in"
+    , "  -- { language = \"C\", command = \"clangd\" }."
     , "  -- Its diagnostics are underlined. Ctrl+] goes to a definition; with vim's"
     , "  -- keys, gd does too, K shows what is under the caret, and g] and g[ go to"
     , "  -- the next diagnostic and the one before."
-    , ", languageServers = [] : List { language : Text, command : Text }"
+    , ", languageServers ="
+    , "  [ { language = \"Haskell\", command = \"haskell-language-server-wrapper --lsp\" } ]"
     , "  -- Servers for the files under a folder, in place of the ones above:"
     , "  -- [ { root = \"~/src/app\", languageServers = [ { language = \"Haskell\", command = \"nix develop -c haskell-language-server-wrapper --lsp\" } ] } ]"
     , ", projects = [] : List { root : Text, languageServers : List { language : Text, command : Text } }"
@@ -131,7 +132,7 @@ defaultConfig =
     , cfgShowFileTree = True
     , cfgShowIndentation = True
     , cfgShell = if isWindows then ["cmd", "/c"] else ["sh", "-c"]
-    , cfgLanguageServers = []
+    , cfgLanguageServers = [("Haskell", "haskell-language-server-wrapper --lsp")]
     , cfgProjects = []
     }
 

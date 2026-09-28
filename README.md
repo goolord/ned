@@ -167,7 +167,7 @@ cabal run ned -- --default-config > ~/.config/ned/config.dhall
 | `showFileTree` | `True` | Start with the file tree shown |
 | `showIndentation` | `True` | Mark indentation with dots and rules |
 | `shell` | `["sh", "-c"]` (`["cmd", "/c"]` on Windows) | The program a language server's command runs in, and its arguments before the command |
-| `languageServers` | `[]` | A language server command per language |
+| `languageServers` | Haskell: `haskell-language-server-wrapper --lsp` | A language server command per language |
 | `projects` | `[]` | Language servers for the files under a folder, in place of `languageServers` |
 
 A misspelled field or a value of the wrong type is an error: ned prints it and

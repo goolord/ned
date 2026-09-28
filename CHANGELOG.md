@@ -129,3 +129,10 @@
   is a POSIX extended regular expression, read by regex-tdfa, with vim's
   `\s`, `\d` and `\w`; in the replacement `&` and `\1` to `\9` are what
   matched and `\r` breaks the line. A substitution undoes in one step.
+* Language servers: Ctrl+] (and `gd` with vim's keys) goes to where what is
+  under the caret is defined, and `K` puts what the server says of it on the
+  status bar. A server is a command per language in `languageServers`, run
+  through `shell` in the tree's folder, and started the first time a file of
+  its language asks. `projects` gives the files under a folder servers of
+  their own, run in that folder. The server is told the whole file each time
+  it is asked, and waited for on a thread of its own.

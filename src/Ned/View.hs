@@ -66,6 +66,7 @@ appView ref = do
   -- What vim's keys asked for last frame is done before the frame reads
   -- the state it runs on.
   runVimRequests ref
+  takeAnswers ref
   tags <- watchedTags ref
   reloadConfig ref
   app0 <- readApp ref

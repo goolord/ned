@@ -66,6 +66,7 @@ Keep `C:\msys64\ucrt64\bin` on `PATH` when running `ned.exe`.
 | Ctrl+Shift+F | Search in files; the same keys as the file finder, and Enter opens the file at the line |
 | Ctrl+F | Find; Enter / Shift+Enter for next / previous match |
 | Ctrl+G | Go to line |
+| Ctrl+] | Go to definition, with a language server (see [Language servers](#language-servers)) |
 | Tab / Shift+Tab | Complete the word before the caret; indent / unindent where there is none |
 | Page Up / Page Down, Alt+Up / Alt+Down | Page up / down |
 | Ctrl+= / Ctrl+- / Ctrl+0 | Zoom in / out / reset |
@@ -90,6 +91,7 @@ the system clipboard, and what ends in a line break is put as whole lines.
 | Visual | `v V`, then motions, text objects, `o`, `d y c > < p J ~ u U`, and `:` for a command over the lines selected |
 | Search | `/` opens find, `n N` go to the next and previous match |
 | Tabs | `gt gT`, `:tabn`, `:tabp` |
+| Language server | `gd` / Ctrl+] go to definition, `K` shows what is under the caret on the status bar |
 | Panes | Ctrl+H / Ctrl+L to the file tree and back, Ctrl+J / Ctrl+K down to the find bar and back |
 | Commands | `:w`, `:q`, `:q!`, `:wq`, `:x`, `:qa`, `:<line>`, `ZZ`, `ZQ` |
 | Files | `:e file` in this tab, `:e` / `:e!` read this file again, `:enew` an untitled file in this tab, `:tabnew [file]` / `:tabe file` in a new tab |
@@ -164,6 +166,9 @@ cabal run ned -- --default-config > ~/.config/ned/config.dhall
 | `vimKeys` | `True` | Start with vim keys on |
 | `showFileTree` | `True` | Start with the file tree shown |
 | `showIndentation` | `True` | Mark indentation with dots and rules |
+| `shell` | `["sh", "-c"]` (`["cmd", "/c"]` on Windows) | The program a language server's command runs in, and its arguments before the command |
+| `languageServers` | `[]` | A language server command per language |
+| `projects` | `[]` | Language servers for the files under a folder, in place of `languageServers` |
 
 A misspelled field or a value of the wrong type is an error: ned prints it and
 starts with the defaults. Sizes are Doubles, so write `18.0`, not `18`.
@@ -173,6 +178,33 @@ the edit changed are applied, so a toggle from the View menu stays unless the
 file changes that setting. `uiFontSize` and `bufferFont` take effect on
 restart, and the window size only applies when the window opens. A file that
 does not read while ned is open leaves the current settings in place.
+
+### Language servers
+
+A language server is started the first time you ask it something about a file
+of its language: Ctrl+] (or `gd` with vim keys) goes to a definition, and `K`
+puts the hover text on the status bar. The language is the name the status bar
+shows for the file, compared without case. The command runs through `shell`,
+in the folder the file tree is on:
+
+```dhall
+{ languageServers =
+  [ { language = "Haskell", command = "haskell-language-server-wrapper --lsp" }
+  , { language = "C", command = "clangd" }
+  ]
+, projects =
+  [ { root = "~/src/app"
+    , languageServers =
+      [ { language = "Haskell", command = "nix develop -c haskell-language-server-wrapper --lsp" } ]
+    }
+  ]
+}
+```
+
+A file under a project's `root` uses that project's server for its language,
+run in `root`. When several projects hold the file, the deepest one wins, and
+a language the project does not list falls back to `languageServers`. The
+server's stderr goes to the terminal ned was started from.
 
 ## Testing
 

@@ -95,6 +95,7 @@ appBindings ref =
   , (chordGoto, openBar ref BarGoto)
   , (chordTree, toggleTree ref)
   , (chordFindFile, openPicker ref fileSource)
+  , (chordDefinition, gotoDefinition ref)
   , (chordZoomIn, zoom ref (* 1.1))
   , -- Ctrl and the key that has + on it, with and without the Shift that
     -- types the +, and the keypad's.

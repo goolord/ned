@@ -99,6 +99,10 @@ data Request
     NewTab !(Maybe FilePath)
   | -- | Stop marking what the find bar found.
     ClearFind
+  | -- | Ask the language server where what is under the caret is defined.
+    Definition
+  | -- | Ask the language server what is under the caret.
+    Hover
   | Message !Text
   deriving (Eq, Show)
 
@@ -414,6 +418,8 @@ command clip page v s0 = case vimMode v of
       "g" -> More
       "gt" -> ask [NextTab True]
       "gT" -> ask [NextTab False]
+      "gd" -> ask [Definition]
+      "K" -> ask [Hover]
       "Z" -> More
       "ZZ" -> ask [Save, Quit False]
       "ZQ" -> ask [Quit True]

@@ -53,6 +53,7 @@ module Ned.App.Commands
   , chordZoomIn
   , chordZoomOut
   , chordZoomReset
+  , chordDefinition
   , vimChords
 
     -- * The bar, the tree and the finder
@@ -69,14 +70,25 @@ module Ned.App.Commands
   , openPicker
   , focusToward
 
+    -- * Language servers
+  , gotoDefinition
+  , showHover
+  , takeAnswers
+
     -- * Vim
   , runVimRequests
   ) where
 
-import Control.Monad (unless, when)
+import Control.Concurrent (forkIO)
+import Control.Exception (SomeException, displayException, try)
+import Control.Monad (foldM, unless, void, when)
 import Data.Foldable (for_)
-import Data.IORef (IORef, modifyIORef', readIORef, writeIORef)
-import Data.Maybe (isJust, isNothing)
+import Data.Function ((&))
+import Data.Functor ((<&>))
+import Data.IORef (IORef, atomicModifyIORef', modifyIORef', readIORef, writeIORef)
+import Data.List (isPrefixOf, sortOn)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
+import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.NanoRope.Measured as Rope
@@ -92,11 +104,12 @@ import qualified Ned.Editor.Vim as V
 import Ned.File
 import Ned.FileTree (FileTree)
 import qualified Ned.FileTree as FT
-import Ned.Highlight (LexState (..), languageFor)
+import Ned.Highlight (LexState (..), langName, languageFor)
+import qualified Ned.Lsp as Lsp
 import qualified Ned.Picker as P
 import System.Exit (exitSuccess)
 import System.Directory (getHomeDirectory, makeAbsolute)
-import System.FilePath (takeDirectory, takeFileName, (</>))
+import System.FilePath (splitDirectories, takeDirectory, takeFileName, (</>))
 import System.IO (hPutStrLn, stderr)
 
 --------------------------------------------------------------------------------
@@ -283,6 +296,9 @@ chordZoomIn = K.ctrl <> K.key '='
 chordZoomOut = K.ctrl <> K.key '-'
 chordZoomReset = K.ctrl <> K.key '0'
 
+chordDefinition :: K.Shortcut
+chordDefinition = K.ctrl <> K.key ']'
+
 -- | The chords that are vim's with vim's keys on, and not the application's:
 -- Ctrl+N and Ctrl+P complete a word in insert mode and move down and up in
 -- normal mode, and Ctrl+W deletes the word before the caret. What they did
@@ -414,6 +430,76 @@ openPicker ref source = do
     modifyApp ref (\a' -> a' {appPicker = Just pk})
 
 --------------------------------------------------------------------------------
+-- Language servers
+--------------------------------------------------------------------------------
+
+-- | Open where what is under the caret is defined, with the caret on it.
+gotoDefinition :: IORef App -> NanoUI ()
+gotoDefinition ref = askServer ref $ \s path pos ->
+  Lsp.definition s path pos <&> \case
+    Nothing -> \a -> pure a {appStatus = "No definition found"}
+    Just (file, (l, c)) -> \a -> do
+      a' <- openPath InNewTab (Just l) file a
+      let ed = appEditor a'
+          b = edBuffer ed
+          col = Lsp.fromUtf16 (B.lineText b l) c
+      pure a' {appEditor = revealCaret ed {edBuffer = B.setCursor False (B.lineStart b l + col) b}}
+
+-- | Put what the language server says of what is under the caret on the
+-- status bar.
+showHover :: IORef App -> NanoUI ()
+showHover ref = askServer ref $ \s path pos ->
+  Lsp.hover s path pos <&> \r a -> pure a {appStatus = fromMaybe "Nothing to show here" r}
+
+-- | Ask the language server for the file in front about the place of its
+-- caret, on a thread of its own: the server may take a while, starting the
+-- first time especially. What the answer does to the application is left
+-- for the next frame, which the thread wakes, to do.
+askServer :: IORef App -> (Lsp.Server -> FilePath -> (Int, Int) -> IO (App -> IO App)) -> NanoUI ()
+askServer ref ask = do
+  a <- readApp ref
+  let ed = appEditor a
+      b = edBuffer ed
+      lang = langName (edLang ed)
+      l = B.lineOf b (B.bufCursor b)
+      col = Lsp.toUtf16 (B.lineText b l) (B.bufCursor b - B.lineStart b l)
+  case appPath a of
+    Nothing -> setStatus ref "Save the file before asking its language server"
+    Just path ->
+      liftIO (serverCommand (appConfig a) (FT.ftRoot (appTree a)) lang path) >>= \case
+        Nothing -> setStatus ref ("No language server for " <> lang)
+        Just (cmd, root) -> do
+          setStatus ref "Asking the language server..."
+          wake <- askWake
+          let text = Rope.toText (B.bufRope b)
+          void . liftIO . forkIO $ do
+            r <- try $ do
+              s <- Lsp.serverFor (appServers a) cmd root
+              Lsp.syncDoc s path (Lsp.languageId lang) text
+              ask s path (l, col)
+            let failed e a' = pure a' {appStatus = "Language server: " <> T.pack (displayException (e :: SomeException))}
+            atomicModifyIORef' (appAnswers a) (\fs -> (fs ++ [either failed id r], ()))
+            wake
+
+-- | The command line a file's language server is run by, and the folder it
+-- is run in: a project's own, for the deepest project the file is under
+-- that has one, and otherwise the settings' own, in the tree's folder.
+serverCommand :: Config -> FilePath -> Text -> FilePath -> IO (Maybe ([String], FilePath))
+serverCommand cfg treeRoot lang path = do
+  projects <- traverse (\(root, servers) -> (,servers) <$> expandPath root) (cfgProjects cfg)
+  let under = sortOn (Down . length . splitDirectories . fst) [p | p@(root, _) <- projects, splitDirectories root `isPrefixOf` splitDirectories path]
+      pick servers = lookup (T.toLower lang) [(T.toLower name, c) | (name, c) <- servers]
+      found = [(c, root) | (root, servers) <- under, Just c <- [pick servers]] <> [(c, treeRoot) | Just c <- [pick (cfgLanguageServers cfg)]]
+  pure (listToMaybe [(map T.unpack (cfgShell cfg) <> [T.unpack c], root) | (c, root) <- found])
+
+-- | Do what the language servers' answers ask, in the order they came.
+takeAnswers :: IORef App -> NanoUI ()
+takeAnswers ref = liftIO $ do
+  a <- readIORef ref
+  fs <- atomicModifyIORef' (appAnswers a) ([],)
+  unless (null fs) (foldM (&) a fs >>= writeIORef ref)
+
+--------------------------------------------------------------------------------
 -- Vim
 --------------------------------------------------------------------------------
 
@@ -456,6 +542,8 @@ vimRequest ref = \case
   V.ClearFind -> do
     a <- readApp ref
     when (appBar a == BarFind) (closeBar ref)
+  V.Definition -> gotoDefinition ref
+  V.Hover -> showHover ref
   V.Message msg -> setStatus ref msg
   where
     run force = if force then runPending ref else guarded ref

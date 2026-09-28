@@ -76,6 +76,7 @@ library
 
         -- The application around both.
         Ned.File
+        Ned.Lsp
         Ned.Config
         Ned.App
         Ned.App.State

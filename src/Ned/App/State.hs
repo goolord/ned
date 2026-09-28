@@ -36,6 +36,7 @@ module Ned.App.State
   , titleFor
   ) where
 
+import Data.IORef (IORef, newIORef)
 import Data.List (find)
 import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
@@ -51,6 +52,7 @@ import Ned.File
 import Ned.FileTree (FileTree)
 import qualified Ned.FileTree as FT
 import Ned.Highlight (languageFor, plainText)
+import Ned.Lsp (Servers, newServers)
 import Ned.Picker (Picker)
 import System.Directory (doesFileExist, getCurrentDirectory, makeAbsolute)
 import System.FilePath (equalFilePath, takeFileName)
@@ -133,6 +135,12 @@ data App = App
   -- ^ The file they were read from, which is watched for changes.
   , appConfigSeen :: !Int
   -- ^ How many times the file has been read again since the window opened.
+  , appServers :: !Servers
+  -- ^ The language servers started so far.
+  , appAnswers :: !(IORef [App -> IO App])
+  -- ^ What the language servers' answers do to the application, oldest
+  -- first, put here by the threads that waited for them for the next frame
+  -- to do.
   }
 
 -- | A fresh application on some settings, with its tree on the directory the
@@ -140,6 +148,8 @@ data App = App
 newApp :: Config -> IO App
 newApp cfg = do
   cwd <- getCurrentDirectory
+  servers <- newServers
+  answers <- newIORef []
   pure
     App
       { -- The first tab is set up as the settings say, and every tab after it
@@ -174,6 +184,8 @@ newApp cfg = do
       , appConfig = cfg
       , appConfigPath = Nothing
       , appConfigSeen = 0
+      , appServers = servers
+      , appAnswers = answers
       }
 
 --------------------------------------------------------------------------------

@@ -40,6 +40,7 @@ import Ned.Text (clamp)
 import Numeric.Natural (Natural)
 import System.Directory (XdgDirectory (..), doesFileExist, getModificationTime, getXdgDirectory)
 import System.FilePath (takeDirectory, takeExtension, (</>))
+import System.Info (os)
 
 data Config = Config
   { cfgUiFontSize :: !Float
@@ -58,6 +59,13 @@ data Config = Config
   , cfgVimKeys :: !Bool
   , cfgShowFileTree :: !Bool
   , cfgShowIndentation :: !Bool
+  , cfgShell :: ![Text]
+  -- ^ The program a language server's command is run by, and the arguments
+  -- that come before the command.
+  , cfgLanguageServers :: ![(Text, Text)]
+  -- ^ A language's name, as the status bar has it, and its server's command.
+  , cfgProjects :: ![(FilePath, [(Text, Text)])]
+  -- ^ Servers for the files under a folder, over the ones above.
   }
   deriving (Eq, Show)
 
@@ -93,6 +101,17 @@ defaultConfigText =
     , ", showFileTree = True"
     , "  -- A dot for each space and a rule for each tab of a line's indentation."
     , ", showIndentation = True"
+    , "  -- What a language server's command is run in: the program, and the"
+    , "  -- arguments before the command."
+    , ", shell = " <> (if isWindows then "[ \"cmd\", \"/c\" ]" else "[ \"sh\", \"-c\" ]")
+    , "  -- A server for a language, named as the status bar names it:"
+    , "  -- [ { language = \"Haskell\", command = \"haskell-language-server-wrapper --lsp\" } ]"
+    , "  -- Ctrl+] goes to a definition; with vim's keys, gd does too, and K shows"
+    , "  -- what is under the caret."
+    , ", languageServers = [] : List { language : Text, command : Text }"
+    , "  -- Servers for the files under a folder, in place of the ones above:"
+    , "  -- [ { root = \"~/src/app\", languageServers = [ { language = \"Haskell\", command = \"nix develop -c haskell-language-server-wrapper --lsp\" } ] } ]"
+    , ", projects = [] : List { root : Text, languageServers : List { language : Text, command : Text } }"
     , "}"
     ]
 
@@ -110,6 +129,9 @@ defaultConfig =
     , cfgVimKeys = True
     , cfgShowFileTree = True
     , cfgShowIndentation = True
+    , cfgShell = if isWindows then ["cmd", "/c"] else ["sh", "-c"]
+    , cfgLanguageServers = []
+    , cfgProjects = []
     }
 
 configDecoder :: Decoder Config
@@ -126,7 +148,11 @@ configDecoder =
       <*> D.field "vimKeys" D.bool
       <*> D.field "showFileTree" D.bool
       <*> D.field "showIndentation" D.bool
+      <*> D.field "shell" (D.list D.strictText)
+      <*> D.field "languageServers" servers
+      <*> D.field "projects" (D.list (D.record ((,) <$> D.field "root" D.string <*> D.field "languageServers" servers)))
   where
+    servers = D.list (D.record ((,) <$> D.field "language" D.strictText <*> D.field "command" D.strictText))
     float = realToFrac <$> D.double
     font = (\name -> if isFontFile name then FontFile name else FontFamily name) . T.unpack <$> D.strictText
     int = fromIntegral . min 100000 <$> (D.natural :: Decoder Natural)
@@ -203,6 +229,9 @@ checkFonts cfg = do
           True -> pure (Just (FontFile path), Nothing)
           False -> pure (Nothing, Just ("No font file at " <> path <> "; using the default"))
       font -> pure (font, Nothing)
+
+isWindows :: Bool
+isWindows = os == "mingw32"
 
 -- | Whether a font is named by its file rather than by its family.
 isFontFile :: FilePath -> Bool

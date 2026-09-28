@@ -164,3 +164,9 @@
   and `N` go on from there. With vim's keys, Enter in the find bar ends the
   search: the caret stays on the match and the keyboard goes back to the
   text. The find bar has a Whole word box, which `/` clears.
+* With vim's keys the file tree answers to them while it has the keyboard:
+  `j` and `k` walk the rows, with a count, and `Ctrl+D` and `Ctrl+U` half a
+  view; `h` closes a folder or steps out to the one above and `l` opens one
+  or steps into it; `l` and `o` open a file, and `O` opens it in a tab of its
+  own; `gg` and `G` go to the first row and the last, or to the row a count
+  names; and `-` puts the tree on the folder above.

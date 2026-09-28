@@ -37,7 +37,10 @@ module Ned.FileTree
   , treeScroller
   ) where
 
+import Data.Char (isDigit)
+import Data.Maybe (fromMaybe)
 import Data.Primitive.SmallArray (indexSmallArray, sizeofSmallArray)
+import qualified Data.Text as T
 -- 'Row' here is a row of the tree, not nano-ui's layout direction.
 import NanoUI hiding (Row)
 import Ned.FileTree.Model
@@ -64,11 +67,12 @@ data TreeFrame = TreeFrame
   }
 
 -- | Run one frame of the tree over the rectangle its rows are laid out in.
+-- @vim@ says vim's keys are on, which walk the tree as well as the arrows do;
 -- @wantFocus@ says the tree has the keyboard, which the application gives it
 -- while the tree is the thing last clicked on; @lineH@ is the height of a row,
 -- which whoever lays it out has worked out from the font already.
-treeFrame :: Bool -> Rect -> Float -> FileTree -> NanoUI TreeFrame
-treeFrame wantFocus rect lineH ft0 = do
+treeFrame :: Bool -> Bool -> Rect -> Float -> FileTree -> NanoUI TreeFrame
+treeFrame vim wantFocus rect lineH ft0 = do
   inp <- askInput
   let viewRows = realToFrac (rectH rect / lineH) :: Double
       mouse = inputMousePos inp
@@ -108,10 +112,14 @@ treeFrame wantFocus rect lineH ft0 = do
   -- A directory opened by this frame's click is read before the frame draws it.
   ftLoaded <- liftIO (loadPending ftMouse)
 
-  -- The keyboard, when the tree has it.
-  let (ftKeys, openedByKey)
+  -- The keyboard, when the tree has it. With vim's keys, what was typed
+  -- goes after the named keys.
+  let named = foldInputKeys applyKey (ftLoaded, Nothing) (inputKeys inp)
+      halfView = max 1 (floor (viewRows / 2))
+      (ftKeys, openedByKey)
         | not wantFocus = (ftLoaded, Nothing)
-        | otherwise = foldInputKeys applyKey (ftLoaded, Nothing) (inputKeys inp)
+        | vim = foldl' (vimKey halfView) named (vimTyped inp)
+        | otherwise = named
 
       -- The wheel, three rows a notch.
       V2 _ wheelY = if inside then inputScroll inp else V2 0 0
@@ -172,7 +180,62 @@ treeFrame wantFocus rect lineH ft0 = do
               Just r | rowDir r -> (toggle (rowPath r) ft, op)
               Just r -> (ft, Just (rowPath r))
               Nothing -> (ft, op)
+            KeyEscape -> (ft {ftVimPending = ""}, op)
             _ -> (ft, op)
+
+    -- What vim's keys typed: the characters, or with Ctrl held the half-view
+    -- steps, which type nothing.
+    vimTyped inp
+      | modCtrl mods && not (modAlt mods) = [c' | KeyChar c <- keys, Just c' <- [control c]]
+      | otherwise = T.unpack (inputChars inp)
+      where
+        mods = inputModifiers inp
+        keys = reverse (foldInputKeys (flip (:)) [] (inputKeys inp))
+        control = \case
+          'd' -> Just '\EOT'
+          'u' -> Just '\NAK'
+          _ -> Nothing
+
+    -- Vim's keys: j and k walk the rows, and Ctrl+D and Ctrl+U half a view;
+    -- h and l are Left and Right, save that l on a file opens it; o opens a
+    -- file or a folder as Enter does, and O the same, whose Shift opens a file
+    -- in a tab of its own as a Shift+click does; gg and G go to the first row
+    -- and the last, or with a count to that row; and - puts the root on the
+    -- folder above, on the folder it was. A count before j, k and the half
+    -- views goes that many times as far.
+    vimKey half (ft0', op) c
+      | isDigit c && (c /= '0' || not (null digits)) && null prefix =
+          (ft0' {ftVimPending = take 6 (pending ++ [c])}, op)
+      | otherwise = case (prefix, c) of
+          ("g", 'g') -> (goRow (maybe 0 (subtract 1) counted), op)
+          ("", 'g') -> (ft {ftVimPending = pending ++ "g"}, op)
+          ("", 'G') -> (goRow (maybe (n - 1) (subtract 1) counted), op)
+          ("", 'j') -> (walk count, op)
+          ("", 'k') -> (walk (negate count), op)
+          ("", '\EOT') -> (walk (count * half), op)
+          ("", '\NAK') -> (walk (negate (count * half)), op)
+          ("", 'h') -> applyKey (ft, op) KeyLeft
+          ("", 'l') -> case rowAt rows here of
+            Just r | not (rowDir r) -> (ft, Just (rowPath r))
+            _ -> applyKey (ft, op) KeyRight
+          ("", 'o') -> applyKey (ft, op) KeyEnter
+          ("", 'O') -> applyKey (ft, op) KeyEnter
+          ("", '-') | hasParentRoot ft -> ((parentRoot ft) {ftSelected = Just (ftRoot ft), ftReveal = True}, op)
+          _ -> (ft, op)
+      where
+        pending = ftVimPending ft0'
+        ft = ft0' {ftVimPending = ""}
+        (digits, prefix) = span isDigit pending
+        counted = if null digits then Nothing else Just (read digits :: Int)
+        count = fromMaybe 1 counted
+        rows = ftRows ft
+        n = sizeofSmallArray rows
+        here = selectedRow ft
+        goRow i = selectRow (clamp 0 (n - 1) i) ft
+        -- From no row at all, down starts at the first and up at the last.
+        walk by
+          | here < 0 = goRow (if by > 0 then by - 1 else n + by)
+          | otherwise = goRow (here + by)
 
     -- The row the one at @i@ sits under: the first one above it that is a
     -- step shallower.

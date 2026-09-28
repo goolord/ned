@@ -97,6 +97,9 @@ data FileTree = FileTree
   , ftDrag :: !Drag
   , ftPressed :: !Bool
   -- ^ Whether the pointer went down on the tree this frame.
+  , ftVimPending :: !String
+  -- ^ With vim's keys, what of a command has been typed and not finished: a
+  -- count, and a @g@ waiting for the second one.
   }
 
 -- | The width the tree's pane starts at, and the narrowest the pane grid may
@@ -120,6 +123,7 @@ newFileTree root =
     , ftReveal = False
     , ftDrag = DragNone
     , ftPressed = False
+    , ftVimPending = ""
     }
 
 -- | The name the header shows: the root's own, or the whole path when it is a

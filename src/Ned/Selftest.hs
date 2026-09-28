@@ -36,7 +36,7 @@ import qualified Ned.Picker as P
 import Ned.View (appView)
 import System.Directory (createDirectoryIfMissing, doesFileExist, findExecutable, listDirectory, makeAbsolute, removeFile)
 import System.Exit (exitFailure)
-import System.FilePath (equalFilePath, (</>))
+import System.FilePath (equalFilePath, takeDirectory, takeFileName, (</>))
 import System.IO (hPutStrLn, stderr)
 import Text.Printf (printf)
 
@@ -828,6 +828,39 @@ selftestIn dir mfile say = do
     -- back.
     chord 'h'
     treeHas <- appTreeFocus <$> readIORef ref
+    -- There vim's keys walk the tree: G and gg to the ends, l into a folder
+    -- and h back out of it and closed, j and k with a count, and - up to the
+    -- folder above, on the one it was.
+    modifyIORef' ref (\a -> a {appTree = FT.collapseAll (appTree a)})
+    let selectedName = fmap takeFileName . FT.ftSelected <$> treeNow
+        expectSelected what want = do
+          got <- selectedName
+          when (got /= Just want) $
+            fail ("selftest: vim's " <> what <> " in the tree selected " <> show got <> ", not " <> show want)
+    typed "G"
+    expectSelected "G" "outer.txt"
+    typed "gg"
+    expectSelected "gg" "sub"
+    -- The folder holds the files the finder's test left in it as well.
+    let expectFirstRows what want = do
+          got <- take (length want) <$> names
+          when (got /= want) $
+            fail ("selftest: " <> what <> ": expected rows starting " <> show want <> ", got " <> show got)
+    typed "l"
+    expectFirstRows "vim's l on a folder" ["sub", "inner.txt", "file-01.txt"]
+    typed "2j"
+    expectSelected "2j" "file-01.txt"
+    typed "k"
+    expectSelected "k" "inner.txt"
+    typed "hh"
+    expectFirstRows "vim's h twice from inside a folder" ["sub", "file-01.txt"]
+    expectSelected "h" "sub"
+    typed "-"
+    upRoot <- FT.ftRoot <$> treeNow
+    unless (equalFilePath upRoot (takeDirectory treeDir)) (fail ("selftest: vim's - in the tree put the root on " <> show upRoot))
+    expectSelected "-" "tree"
+    modifyIORef' ref (\a -> a {appTree = FT.setRoot treeDir (appTree a)})
+    idle
     chord 'l'
     textHas <- not . appTreeFocus <$> readIORef ref
     unless (treeHas && textHas) (fail "selftest: Ctrl+H and Ctrl+L did not move the keyboard to the tree and back")

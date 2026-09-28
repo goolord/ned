@@ -36,10 +36,11 @@ import System.FilePath (equalFilePath)
 -- is a file the rows were asked to open.
 --
 -- It takes the keyboard when @wantFocus@ is set, which the application does
--- while the tree is the thing last clicked on. The bar that resizes the panel
+-- while the tree is the thing last clicked on, and answers vim's keys as well
+-- as the arrows when @vim@ is. The bar that resizes the panel
 -- is the pane grid's, above; this is only what the pane holds.
-fileTreePanel :: Bool -> Maybe FilePath -> FileTree -> NanoUI (Response, FileTree, Maybe FilePath)
-fileTreePanel wantFocus current ft0 =
+fileTreePanel :: Bool -> Bool -> Maybe FilePath -> FileTree -> NanoUI (Response, FileTree, Maybe FilePath)
+fileTreePanel vim wantFocus current ft0 =
   columnWith (tight . gap 0 . fillW . fillH) $ do
     -- The padding goes on last: 'tight' before it would take it off again,
     -- and the name is meant to start where the rows' own names do. It is
@@ -49,11 +50,11 @@ fileTreePanel wantFocus current ft0 =
     rowWith (padXY treeHeaderPad 6 . tight . fillW . gap 4 . alignMid) $
       labelWith (tight . fontSemiBold) (rootName ft0)
     separator
-    treeRows wantFocus current ft0
+    treeRows vim wantFocus current ft0
 
 -- | The rows, in one widget that scrolls itself.
-treeRows :: Bool -> Maybe FilePath -> FileTree -> NanoUI (Response, FileTree, Maybe FilePath)
-treeRows wantFocus current ft0 = do
+treeRows :: Bool -> Bool -> Maybe FilePath -> FileTree -> NanoUI (Response, FileTree, Maybe FilePath)
+treeRows vim wantFocus current ft0 = do
   wid <- nextId
   lineH <- rowHeight <$> uiFontMetrics
   rect <- fromMaybe (Rect 0 0 defaultTreeWidth 600) <$> lastRect wid
@@ -62,7 +63,7 @@ treeRows wantFocus current ft0 = do
   -- the editor does with its own.
   when wantFocus (holdFocus wid)
 
-  tf <- treeFrame wantFocus rect lineH ft0
+  tf <- treeFrame vim wantFocus rect lineH ft0
   let ft1 = tfTree tf
       scene =
         TreeScene

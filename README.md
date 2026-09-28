@@ -81,6 +81,7 @@ Turn Vim keys off from the View menu. Insert mode keeps the shortcuts above, exc
 | Search | `/` then `Enter`, `n N`, `*` `#` for the word under the caret or the selection, `:noh` |
 | Language server | `gd`, `K` for hover, `g]` / `g[` for the next / previous diagnostic |
 | Panes | `Ctrl+H` / `Ctrl+L` to the file tree and back, `Ctrl+J` / `Ctrl+K` to the find bar and back |
+| File tree | `j k` with counts, `h` / `l` to close / open a folder or step out / in, `l` or `o` opens a file (`O` in a new tab), `gg G`, `Ctrl+D` / `Ctrl+U`, `-` to the parent folder |
 | Files and tabs | `:w`, `:q`, `:q!`, `:wq`, `:x`, `:qa`, `ZZ`, `ZQ`, `:e[!] [file]`, `:enew`, `:tabnew [file]`, `:tabe file`, `gt gT`, `:tabn`, `:tabp` |
 | Lines | `:`; `:s`, `:d`, `:y` over a range (`%`, `5`, `.`, `$`, `'<,'>`, `+n`, `-n`) |
 | Leader (Space) | `SPC f f` find a file, `SPC f g` search in files, `SPC d` toggle the file tree |

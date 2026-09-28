@@ -105,6 +105,7 @@ appView ref = do
         treePane respRef pctx = do
           (resp, ft, opened) <-
             fileTreePanel
+              (isJust (edVim (appEditor app1)))
               (appTreeFocus app1 && not (appBarFocus app1) && unblocked)
               (appPath app1)
               (appTree app1)

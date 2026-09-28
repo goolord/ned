@@ -6,10 +6,12 @@
 module Ned.Highlight.Languages
   ( plainText
   , languageFor
+  , languageNamed
   ) where
 
 import Control.Applicative ((<|>))
 import Data.Char (toLower)
+import Data.List (find)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
@@ -61,6 +63,13 @@ languageFor :: FilePath -> Lang
 languageFor path = fromMaybe plainText (known (takeExtension path) <|> known (takeFileName path))
   where
     known key = Map.lookup (map toLower key) languages
+
+-- | The language a Markdown fence names, by its name or by an extension it
+-- goes by: @haskell@ and @hs@ are both Haskell.
+languageNamed :: Text -> Maybe Lang
+languageNamed name = Map.lookup ('.' : key) languages <|> find ((== key) . map toLower . T.unpack . langName) (Map.elems languages)
+  where
+    key = map toLower (T.unpack name)
 
 -- | The languages, by the extensions and the file names they go by.
 languages :: Map String Lang

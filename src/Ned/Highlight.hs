@@ -18,6 +18,7 @@ module Ned.Highlight
   , LexState (..)
   , plainText
   , languageFor
+  , languageNamed
   ) where
 
 import Ned.Highlight.Lang

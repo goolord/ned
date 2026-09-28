@@ -26,15 +26,19 @@ module Ned.View
   , tracedView
   ) where
 
-import Control.Monad (unless, when)
+import Control.Monad (unless, void, when)
+import Data.Char (isSpace)
 import Data.Foldable (for_, traverse_)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
-import Data.Maybe (isJust)
+import Data.List (intercalate)
+import Data.Maybe (fromMaybe, isJust)
+import Data.Text (Text)
 import qualified Data.Text as T
+import Data.Traversable (mapAccumL)
 import Data.Word (Word64)
 import GHC.Clock (getMonotonicTime)
 import NanoUI
-import NanoUI.Markdown (markdown)
+import NanoUI.Markdown (Block (CodeBlock), MarkdownConfig (..), defaultMarkdownConfig, markdownConfigured)
 import Ned.App.Commands
 import Ned.App.Frame
 import Ned.App.State
@@ -43,8 +47,9 @@ import Ned.Config (Config (..), watchConfig)
 import Ned.Editor (Editor (..))
 import Ned.Editor.Vim (Vim (..))
 import Ned.FileTree (FileTree (..), defaultTreeWidth, minTreeWidth, rootName, treeHeaderHeight)
+import Ned.Highlight (Lang, LexState (LexNormal), Span (..), TokenKind (TokPlain), languageNamed, lexLine, plainText)
 import Ned.Picker (Item (..))
-import Ned.Theme (paneChrome)
+import Ned.Theme (paneChrome, tokenColor, tokenWeight)
 import Ned.View.Chrome
 import Ned.View.Editor (editorView)
 import Ned.View.Picker (pickerOverlay)
@@ -210,8 +215,47 @@ hoverPopup ref caret = do
   let shown = [doc | Just (at, doc) <- [appHover a], at == hoverAt a]
   (resp, _) <-
     popupWith (not (null shown)) (defaultPopupConfig (AnchorRect caret)) {cfgPlacement = PlacementBelow} (fixedW 560 . maxH 420) $
-      scrollWith fillW (mapM_ markdown shown)
+      scrollWith fillW (mapM_ (markdownConfigured (codeColoured (edLang (appEditor a)))) shown)
   when (respClicked resp || (isJust (appHover a) && null shown)) (modifyApp ref (\a' -> a' {appHover = Nothing}))
+
+-- | Markdown with its code blocks coloured as the editor colours code: in the
+-- language the fence names, or in @lang@, the file's, where it names none. A
+-- fence that names a language the editor does not know is left plain.
+codeColoured :: Lang -> MarkdownConfig
+codeColoured lang =
+  defaultMarkdownConfig
+    { mdBlock = \own -> \case
+        CodeBlock info code ->
+          let name = T.takeWhile (not . isSpace) info
+              fenced = if T.null name then lang else fromMaybe plainText (languageNamed name)
+           in Nothing <$ codeBlock name fenced code
+        b -> own b
+    }
+
+-- | A code block as the Markdown widget draws one, its language and a copy
+-- button over the code, with the code in colour.
+codeBlock :: Text -> Lang -> Text -> NanoUI ()
+codeBlock name lang code = do
+  theme <- uiTheme
+  size <- uiFontSize
+  styled (panelStyle (background (styleBg (themeInput theme)) . borderColor (themeSeparator theme) . cornerRadius 6)) $
+    panelWith (padXY 10 8 . gap 4 . fillW) $ do
+      scope $ rowWith (tight . fillW . alignMid) $ do
+        labelWith (tight . fontMuted . fontSizeScale 0.8) name
+        flex
+        whenM (styled subtle (buttonWith (padXY 6 1 . fontSize (0.8 * size)) "Copy")) $
+          void (setClipboard code)
+      void (richTextWith (tight . fillW . fontMono) (codePieces lang code))
+
+-- | Code as rich text, a piece to a span of each line. A tab is four spaces,
+-- which rich text measures as it does any other run of them.
+codePieces :: Lang -> Text -> [Inline]
+codePieces lang = intercalate [inlineText "\n"] . snd . mapAccumL line LexNormal . T.lines . T.replace "\t" "    "
+  where
+    line st t = let (spans, st') = lexLine lang st t in (st', pieces t spans)
+    pieces t [] = [piece TokPlain t | not (T.null t)]
+    pieces t (Span n kind : rest) = let (seg, t') = T.splitAt n t in piece kind seg : pieces t' rest
+    piece kind = inlineWith (fontColor (tokenColor kind) . fontWeight (tokenWeight kind))
 
 -- | One label and nothing else, which NED_BLANK swaps the application for: it
 -- tells what a frame costs nano-ui from what it costs the editor.

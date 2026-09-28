@@ -21,9 +21,10 @@ import NanoUI.Backend (lineWidthIO, textInputArea)
 import NanoUI.Backend.Sdl
 import NanoUI.Input (emptyInput, inputKeysFromList)
 import NanoUI.Internal.Context (Context (..))
+import NanoUI.Markdown (parseMarkdown)
 import NanoUI.Testing (cursorKindIs, needsRedraw, newPixelContext, uiCursorKind)
 import Ned.App
-import Ned.App.State (Doc (..), appDocs, docName, everyEditor, selectDoc)
+import Ned.App.State (Doc (..), appDocs, docName, everyEditor, hoverAt, selectDoc)
 import qualified Ned.Buffer as B
 import Ned.Complete (Candidate (..), Completion (..))
 import Ned.Config (Config (..), FileSettings (..), defaultConfig)
@@ -865,6 +866,15 @@ selftestIn dir mfile say = do
     tabsNow >>= \n -> unless (n == tabsAtCommand) (fail "selftest: :q did not close the tab")
     removeFile exFile
     modifyIORef' ref (everyEditor (\e -> e {edVim = Nothing}))
+
+    -- What a language server says of a name, put up as though one had: code
+    -- in a fence that names its language, and in one that names none, which
+    -- takes the file's.
+    modifyIORef' ref $ \a ->
+      a {appHover = Just (hoverAt a, parseMarkdown "```haskell\ngreeting :: Text -> IO ()\n```\n\nSays hello, `greeting \"you\"`.\n\n```\nmain = greeting \"world\" -- plain text\n```")}
+    idle
+    shot "19b-hover.bmp"
+    modifyIORef' ref (\a -> a {appHover = Nothing})
 
     -- The settings file under the window is watched: what an edit to it
     -- changes is taken up by a frame soon after, and a file that will not

@@ -26,7 +26,7 @@ import Ned.App
 import Ned.App.State (Doc (..), appDocs, docName, everyEditor, selectDoc)
 import qualified Ned.Buffer as B
 import Ned.Complete (Candidate (..), Completion (..))
-import Ned.Config (defaultConfig)
+import Ned.Config (Config (..), FileSettings (..), defaultConfig)
 import Ned.Editor (Editor (..), cellWidth, defaultFontSize)
 import Ned.Editor.Vim (Mode (..), Vim (..), newVim)
 import qualified Ned.FileTree as FT
@@ -56,7 +56,8 @@ selftest dir mfile = do
 selftestIn :: FilePath -> Maybe FilePath -> (String -> IO ()) -> IO ()
 selftestIn dir mfile say = do
   ctx0 <- newPixelContext >>= (`withTheme` tomorrowNightMinDarkTheme)
-  blankApp <- newApp defaultConfig
+  -- No language servers: what the test does is the same whatever is installed.
+  blankApp <- newApp defaultConfig {cfgFiles = (cfgFiles defaultConfig) {fsLanguageServers = []}}
   tLoad0 <- getMonotonicTime
   -- The self-test types into the editor as it is without vim's keys, and
   -- every tab opened takes after the first.

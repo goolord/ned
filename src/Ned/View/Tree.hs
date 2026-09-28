@@ -72,6 +72,12 @@ treeRows vim wantFocus current ft0 = do
   when wantFocus (holdFocus wid)
 
   tf <- treeFrame vim wantFocus rect lineH ft0
+  -- The window hands over typed text only while a widget asks for it, and
+  -- vim's keys come to the tree as typed text.
+  when vim $ do
+    let Rect x y _ _ = rect
+    _ <- useInputMethod wid InputNormal (Rect x y 1 lineH)
+    pure ()
   let ft1 = tfTree tf
       scene =
         TreeScene

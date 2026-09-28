@@ -828,6 +828,8 @@ selftestIn dir mfile say = do
     -- back.
     chord 'h'
     treeHas <- appTreeFocus <$> readIORef ref
+    treeAsks <- textInputArea ctx
+    unless (isJust treeAsks) (fail "selftest: the tree has the keyboard with vim's keys on and asks for no typed text")
     -- There vim's keys walk the tree: G and gg to the ends, l into a folder
     -- and h back out of it and closed, j and k with a count, and - up to the
     -- folder above, on the one it was.

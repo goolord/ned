@@ -166,7 +166,7 @@ cabal run ned -- --default-config > ~/.config/ned/config.dhall
 | `vimKeys` | `True` | Start with vim keys on |
 | `showFileTree` | `True` | Start with the file tree shown |
 | `showIndentation` | `True` | Mark indentation with dots and rules |
-| `shell` | `["sh", "-c"]` (`["cmd", "/c"]` on Windows) | The program a language server's command runs in, and its arguments before the command |
+| `languageServerShell` | `["sh", "-c"]` (`["cmd", "/c"]` on Windows) | The program a language server's command runs in, and its arguments before the command |
 | `languageServers` | Haskell: `haskell-language-server-wrapper --lsp` | A language server command per language |
 | `projects` | `{=}` | Settings for the files under a folder (see [Projects](#projects)) |
 
@@ -189,7 +189,7 @@ Ctrl+] (or `gd`) goes to a definition, and `K` shows the hover documentation,
 rendered as markdown, under the caret until it moves.
 
 The language is the name the status bar shows for the file, compared without
-case. The command runs through `shell`, in the folder the file tree is on:
+case. The command runs through `languageServerShell`, in the folder the file tree is on:
 
 ```dhall
 { languageServers =
@@ -204,14 +204,15 @@ to start is not tried again while you type; Ctrl+], `gd` or `K` tries it again.
 
 ### Projects
 
-Some settings belong to a file rather than to the window: `shell` and
-`languageServers`. A project sets them for the files under its `root`:
+Some settings belong to a file rather than to the window:
+`languageServerShell` and `languageServers`. A project sets them for the files
+under its `root`:
 
 ```dhall
 { projects =
   { app =
     { root = "~/src/app"
-    , shell = [ "nix", "develop", "-c", "sh", "-c" ]
+    , languageServerShell = [ "nix", "develop", "-c", "sh", "-c" ]
     }
   , web =
     { root = "~/src/app/web"

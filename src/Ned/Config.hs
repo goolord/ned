@@ -84,7 +84,7 @@ data Config = Config
 
 -- | The settings that are a file's rather than the window's.
 data FileSettings = FileSettings
-  { fsShell :: ![Text]
+  { fsServerShell :: ![Text]
   -- ^ The program a language server's command is run by, and the arguments
   -- that come before the command.
   , fsLanguageServers :: ![(Text, Text)]
@@ -153,7 +153,7 @@ defaultConfigText =
     , ", showIndentation = True"
     , "  -- What a language server's command is run in: the program, and the"
     , "  -- arguments before the command."
-    , ", shell = " <> (if isWindows then "[ \"cmd\", \"/c\" ]" else "[ \"sh\", \"-c\" ]")
+    , ", languageServerShell = " <> (if isWindows then "[ \"cmd\", \"/c\" ]" else "[ \"sh\", \"-c\" ]")
     , "  -- A server for a language, named as the status bar names it, as in"
     , "  -- { language = \"C\", command = \"clangd\" }."
     , "  -- Its diagnostics are underlined. Ctrl+] goes to a definition; with vim's"
@@ -161,11 +161,12 @@ defaultConfigText =
     , "  -- the next diagnostic and the one before."
     , ", languageServers ="
     , "  [ { language = \"Haskell\", command = \"haskell-language-server-wrapper --lsp\" } ]"
-    , "  -- Settings for the files under a folder: shell and languageServers, laid"
-    , "  -- over the ones above as this file is laid over these defaults. A root is"
-    , "  -- absolute, under ~, or from this file's folder. A project inside another"
-    , "  -- is laid over the outer one's settings, and its servers run in its root."
-    , "  -- { app = { root = \"~/src/app\", shell = [ \"nix\", \"develop\", \"-c\", \"sh\", \"-c\" ] } }"
+    , "  -- Settings for the files under a folder: languageServerShell and"
+    , "  -- languageServers, laid over the ones above as this file is laid over"
+    , "  -- these defaults. A root is absolute, under ~, or from this file's folder."
+    , "  -- A project inside another is laid over the outer one's settings, and its"
+    , "  -- servers run in its root."
+    , "  -- { app = { root = \"~/src/app\", languageServerShell = [ \"nix\", \"develop\", \"-c\", \"sh\", \"-c\" ] } }"
     , ", projects = {=}"
     , "}"
     ]
@@ -186,7 +187,7 @@ defaultConfig =
     , cfgShowIndentation = True
     , cfgFiles =
         FileSettings
-          { fsShell = if isWindows then ["cmd", "/c"] else ["sh", "-c"]
+          { fsServerShell = if isWindows then ["cmd", "/c"] else ["sh", "-c"]
           , fsLanguageServers = [("Haskell", "haskell-language-server-wrapper --lsp")]
           }
     , cfgProjects = []
@@ -219,7 +220,7 @@ configDecoder =
 fileFields :: D.RecordDecoder FileSettings
 fileFields =
   FileSettings
-    <$> D.field "shell" (D.list D.strictText)
+    <$> D.field "languageServerShell" (D.list D.strictText)
     <*> D.field "languageServers" (D.list (D.record ((,) <$> D.field "language" D.strictText <*> D.field "command" D.strictText)))
 
 -- | Their names.
@@ -283,14 +284,14 @@ readProjects dir top = \case
           "projects." <> T.unpack name <> ": " <> T.unpack (T.intercalate ", " stray) <> " cannot be set for a project; "
             <> T.unpack (T.intercalate " and " fileKeys) <> " can"
         (name,,own) <$> rootPath (T.unpack root)
-      _ -> ioError (userError ("projects." <> T.unpack name <> " needs a root, as in { root = \"~/src/app\", shell = [ \"sh\", \"-c\" ] }"))
+      _ -> ioError (userError ("projects." <> T.unpack name <> " needs a root, as in { root = \"~/src/app\", languageServerShell = [ \"sh\", \"-c\" ] }"))
     for raw $ \(name, root, _) -> do
       let around = [own | (_, r, own) <- sortOn (\(n, r, _) -> (depth r, n)) raw, r `holds` root]
           laid = foldl (\acc own -> Prefer Nothing PreferFromSource acc (RecordLit own)) (RecordLit (DM.restrictKeys top (Set.fromList fileKeys))) around
       try (D.fromExpr (D.record fileFields) (absurd <$> laid)) >>= \case
         Left (e :: SomeException) -> ioError (userError ("projects." <> T.unpack name <> ":\n" <> displayException e))
         Right fs -> pure (Project name root fs)
-  Just _ -> ioError (userError "projects is a record of projects, as in { app = { root = \"~/src/app\", shell = [ \"sh\", \"-c\" ] } }")
+  Just _ -> ioError (userError "projects is a record of projects, as in { app = { root = \"~/src/app\", languageServerShell = [ \"sh\", \"-c\" ] } }")
   where
     rootPath = \case
       "~" -> getHomeDirectory

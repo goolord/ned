@@ -548,7 +548,7 @@ answerer ref = do
 serverCommand :: Config -> FilePath -> Text -> FilePath -> Maybe ([String], FilePath)
 serverCommand cfg treeRoot lang path =
   lookup (T.toLower lang) [(T.toLower name, c) | (name, c) <- fsLanguageServers fs] <&> \c ->
-    (map T.unpack (fsShell fs) <> [T.unpack c], maybe treeRoot projRoot project)
+    (map T.unpack (fsServerShell fs) <> [T.unpack c], maybe treeRoot projRoot project)
   where
     (fs, project) = settingsFor cfg path
 

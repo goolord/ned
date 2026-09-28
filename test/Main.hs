@@ -424,19 +424,19 @@ main = do
       "{ languageServers = [ { language = \"C\", command = \"clangd\" } ]\n\
       \, projects =\n\
       \  { outer = { root = \"src\", languageServers = [ { language = \"Haskell\", command = \"hls\" } ] }\n\
-      \  , inner = { root = \"src/app\", shell = [ \"nix-shell\", \"--run\" ] }\n\
+      \  , inner = { root = \"src/app\", languageServerShell = [ \"nix-shell\", \"--run\" ] }\n\
       \  }\n\
       \}"
   let src = cfgDir </> "src"
       app = cfgDir </> "src" </> "app"
       outer = files {fsLanguageServers = hls}
-      inner = outer {fsShell = ["nix-shell", "--run"]}
+      inner = outer {fsServerShell = ["nix-shell", "--run"]}
   check "projects are laid over the settings and over each other" (Right [Project "inner" app inner, Project "outer" src outer]) (sortOn projName . cfgProjects . fst <$> nested)
   forM_ [(app </> "Main.hs", (inner, Just "inner")), (src </> "Lib.hs", (outer, Just "outer")), (cfgDir </> "x.c", (files {fsLanguageServers = [("C", "clangd")]}, Nothing))] $ \(file, want) ->
     check ("the settings for " <> file) want (fmap projName <$> settingsFor (either (const defaultConfig) fst nested) file)
   readWith "{ projects = { app = { root = \"src\", vimKeys = False } } }" >>= check "a window setting in a project is an error" True . failed
-  readWith "{ projects = { app = { shell = [ \"sh\" ] } } }" >>= check "a project without a root is an error" True . failed
-  readWith "{ projects = { app = { root = \"src\", shell = \"sh\" } } }" >>= check "a project setting of the wrong type is an error" True . failed
+  readWith "{ projects = { app = { languageServerShell = [ \"sh\" ] } } }" >>= check "a project without a root is an error" True . failed
+  readWith "{ projects = { app = { root = \"src\", languageServerShell = \"sh\" } } }" >>= check "a project setting of the wrong type is an error" True . failed
 
   -- The watcher hands over a reading once the file changes, and not before.
   readings <- newEmptyMVar

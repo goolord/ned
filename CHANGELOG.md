@@ -132,10 +132,10 @@
 * Language servers: Ctrl+] (and `gd` with vim's keys) goes to where what is
   under the caret is defined, and `K` puts what the server says of it on the
   status bar. A server is a command per language in `languageServers`, run
-  through `shell` in the tree's folder, and started the first time a file of
-  its language asks. `projects` gives the files under a folder servers of
-  their own, run in that folder. The server is told the whole file each time
-  it is asked, and waited for on a thread of its own.
+  through `languageServerShell` in the tree's folder, and started the first
+  time a file of its language asks. `projects` gives the files under a
+  folder servers of their own, run in that folder. The server is told the
+  whole file each time it is asked, and waited for on a thread of its own.
 * Diagnostics: a file's server is started when the file is opened, and told
   its text on a thread of its own each time it changes, only the latest
   being sent when the typing is ahead of it. What it finds wrong is
@@ -147,9 +147,9 @@
   by nano-ui-markdown, until the caret or the text moves.
 * Projects are general: `projects` is a record of projects, each a `root`
   and any of the settings that are a file's rather than the window's (for
-  now `shell` and `languageServers`). A project is laid over the settings as
-  the file is laid over the defaults, and a project inside another over the
-  outer one's. A file takes the deepest project that holds it, and its
-  servers run in that project's root. A root is absolute, under `~`, or from
-  the settings file's folder. A window setting in a project is an error that
-  says so.
+  now `languageServerShell` and `languageServers`). A project is laid over
+  the settings as the file is laid over the defaults, and a project inside
+  another over the outer one's. A file takes the deepest project that holds
+  it, and its servers run in that project's root. A root is absolute, under
+  `~`, or from the settings file's folder. A window setting in a project is
+  an error that says so.

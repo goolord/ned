@@ -1,7 +1,7 @@
 -- | The fuzzy finder's panel: the prompt over the rows that answer it, with a
 -- preview of the one the keyboard is on beside them, and nothing else. It is
--- a modal over the window, so while it is up it is the only thing that reads
--- a key.
+-- a border-only modal over the window, so while it is up it is the only thing
+-- that reads a key.
 --
 -- What the finder holds, and what gathering, matching and reading a preview
 -- do to it, are "Ned.Picker"'s; this is what it looks like and what the keys
@@ -47,16 +47,15 @@ pickerOverlay size mpk = do
   winW <- windowWidth
   winH <- windowHeight
   -- As much of the window as a modal is given, in whole pixels so that the
-  -- panel's edges land on the pixel grid. The body starts at the rule under
-  -- the title and ends at the panel's foot, with nothing between.
+  -- panel's edges land on the pixel grid.
   let whole v = fromIntegral (floor v :: Int)
       panelW = whole (max 500 (winW - 28))
       panelH = whole (max 320 (winH - 28))
-  (closeResp, out) <-
-    modalWith (fixedWH panelW panelH . gap 0 . padLRTB 10 10 0 10) (isJust mpk) (maybe "" (srcTitle . pkSource) mpk) $
-      maybe (pure (Nothing, Nothing)) (pickerBody size (panelW - 20)) mpk
+  (dismissResp, out) <-
+    modalPanelWith (fixedWH panelW panelH . gap 0 . padAll 1) (isJust mpk) $
+      maybe (pure (Nothing, Nothing)) (pickerBody size (panelW - 2)) mpk
   let (kept, chosen) = fromMaybe (Nothing, Nothing) out
-      left = if respClicked closeResp then Nothing else kept
+      left = if respClicked dismissResp then Nothing else kept
   -- Whatever put it away, the gathering thread is told to stop.
   when (isNothing left) (mapM_ (liftIO . closePicker) mpk)
   pure (left, chosen)

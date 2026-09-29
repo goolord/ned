@@ -599,13 +599,23 @@ selftestIn dir mfile say = do
     landedOn "a step back up the rows" (T.pack (listed !! 2)) stepped
 
     -- The rows' scrollbar is down the right of them. Its thumb, held and
-    -- dragged down, scrolls them; the button coming up lets go of it.
-    drag 462 130 462 400
+    -- dragged down, scrolls them; the button coming up lets go of it. Find the
+    -- thumb by its cursor so its test still follows the pane after its chrome
+    -- or padding changes.
+    let findThumb x
+          | x > 520 = fail "selftest: found no thumb beside the finder's rows"
+          | otherwise = do
+              let pos = at x 130
+              frame pos
+              onThumb <- cursorKindIs ctx pos UiCursorGrab
+              if onThumb then pure x else findThumb (x + 1)
+    thumbX <- findThumb 400
+    drag thumbX 130 thumbX 400
     idle
     dragged <- settle 20
     when (P.pkScroll dragged <= 0) $
       fail ("selftest: dragging the thumb left the finder's rows at " <> show (P.pkScroll dragged))
-    frame (at 462 200)
+    frame (at thumbX 200)
     idle
     released <- settle 20
     when (P.pkScroll released /= P.pkScroll dragged) $
@@ -644,7 +654,15 @@ selftestIn dir mfile say = do
     narrowedAgain <- settle 20
     when (P.hitCount narrowedAgain /= 1) $
       fail ("selftest: \"outer\" matched " <> show (P.hitCount narrowedAgain) <> " files, not 1")
-    click 451 69
+    let findClearButton x
+          | x > 520 = fail "selftest: found no clear button at the end of the finder's prompt"
+          | otherwise = do
+              let pos = at x 28
+              frame pos
+              onButton <- cursorKindIs ctx pos UiCursorPointer
+              if onButton then pure x else findClearButton (x + 1)
+    clearX <- findClearButton 400
+    click clearX 28
     emptiedPrompt <- settle 20
     unless (T.null (P.pkTyped emptiedPrompt) && P.hitCount emptiedPrompt == 63) $
       fail ("selftest: the clear button left " <> show (P.pkTyped emptiedPrompt) <> " and " <> show (P.hitCount emptiedPrompt) <> " rows")

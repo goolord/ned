@@ -199,6 +199,14 @@ data App = App
   , appFindMatching :: !B.Matching
   -- ^ How the find bar's text is matched: in its case, and as a whole word.
   , appGotoText :: !Text
+  , appMarkdownPreview :: !Bool
+  -- ^ Whether the active Markdown document is shown beside its source.
+  , appFocusMarkdownLinks :: !Bool
+  -- ^ Whether the editor yields keyboard focus to the Markdown link controls.
+  , appRequestMarkdownLinkFocus :: !Bool
+  -- ^ A one-frame request to focus the preview's first link-copy button.
+  , appMarkdownCache :: !(Maybe (Int, Int, Text, MarkdownDoc))
+  -- ^ The last parsed preview, keyed by tab and buffer version.
   , appPending :: !(Maybe Pending)
   , appTitle :: !Text
   -- ^ The window's title as last set.
@@ -294,6 +302,10 @@ newApp cfg = do
       , appFindText = ""
       , appFindMatching = B.Matching False False
       , appGotoText = ""
+      , appMarkdownPreview = False
+      , appFocusMarkdownLinks = False
+      , appRequestMarkdownLinkFocus = False
+      , appMarkdownCache = Nothing
       , appPending = Nothing
       , appTitle = ""
       , appTree = FT.newFileTree cwd
@@ -500,7 +512,17 @@ activeDoc app = Doc (appDocKey app) (appEditor app) (appPath app) (appFormat app
 -- | Put a tab in front, in the place of the one that was, which goes nowhere:
 -- the caller has put it somewhere already, or means to lose it.
 showDoc :: Doc -> App -> App
-showDoc doc app = app {appEditor = docEditor doc, appPath = docPath doc, appFormat = docFormat doc, appDocKey = docKey doc}
+showDoc doc app =
+  let changed = docKey doc /= appDocKey app
+   in app
+        { appEditor = docEditor doc
+        , appPath = docPath doc
+        , appFormat = docFormat doc
+        , appDocKey = docKey doc
+        , appFocusMarkdownLinks = appFocusMarkdownLinks app && not changed
+        , appRequestMarkdownLinkFocus = appRequestMarkdownLinkFocus app && not changed
+        , appStatus = if changed && appFocusMarkdownLinks app then "Ready" else appStatus app
+        }
 
 -- | The tab in front put behind, before where the next one will go.
 pushActive :: App -> App

@@ -21,7 +21,7 @@ import NanoUI.Backend (lineWidthIO, textInputArea)
 import NanoUI.Backend.Sdl
 import NanoUI.Input (emptyInput, inputKeysFromList)
 import NanoUI.Internal.Context (Context (..))
-import NanoUI.Markdown (parseMarkdown)
+import NanoUI.Markdown (markdownSource, parseMarkdown)
 import NanoUI.Testing (cursorKindIs, needsRedraw, newPixelContext, uiCursorKind)
 import Ned.App
 import Ned.App.State (Bar (..), Doc (..), Tip (..), WindowLayout (..), activeDoc, appDocs, closeDoc, docName, everyEditor, hoverAt, paneDocs, selectDoc)
@@ -74,7 +74,8 @@ selftestIn dir mfile say = do
         idle = frame base >> frame base
         typed t = frame base {inputChars = t} >> idle
         -- A chord types nothing: it is the key, pressed with Ctrl held.
-        chord c = key ctrlM (KeyChar c)
+        chord c = chordWith ctrlM c
+        chordWith mods c = frame base {inputKeys = inputKeysFromList [KeyChar c], inputKeysNew = inputKeysFromList [KeyChar c], inputModifiers = mods} >> idle
         key mods k = frame base {inputKeys = inputKeysFromList [k], inputKeysNew = inputKeysFromList [k], inputModifiers = mods} >> idle
         plain = noModifiers
         ctrlM = noModifiers {modCtrl = True}
@@ -1000,6 +1001,75 @@ selftestIn dir mfile say = do
     tabsNow >>= \n -> unless (n == tabsAtCommand) (fail "selftest: :q did not close the tab")
     removeFile exFile
     modifyIORef' ref (everyEditor (\e -> e {edVim = Nothing}))
+
+    plainFile <- makeAbsolute (dir </> "preview.txt")
+    writeFile plainFile "plain text\n"
+    readIORef ref >>= openPath InNewTab Nothing plainFile >>= writeIORef ref
+    idle
+    chordWith ctrlShiftM 'm'
+    wronglyShown <- appMarkdownPreview <$> readIORef ref
+    when wronglyShown (fail "selftest: Markdown preview opened for a non-Markdown file")
+    modifyIORef' ref (\a -> closeDoc (appDocKey a) a)
+    removeFile plainFile
+
+    previewFile <- makeAbsolute (dir </> "preview.md")
+    writeFile previewFile "# Live preview\n\nRendered before editing.\n\nSee [the reference](https://example.com) here.\n"
+    modifyIORef' ref (\a -> a {appMarkdownPreview = False, appMarkdownCache = Nothing})
+    readIORef ref >>= openPath InNewTab Nothing previewFile >>= writeIORef ref
+    idle
+    chordWith ctrlShiftM 'm'
+    shown <- appMarkdownPreview <$> readIORef ref
+    unless shown (fail "selftest: Ctrl+Shift+M did not show the Markdown preview")
+    plainTab <- makeAbsolute (dir </> "preview.txt")
+    writeFile plainTab "plain text\n"
+    readIORef ref >>= openPath InNewTab Nothing plainTab >>= writeIORef ref
+    idle
+    chordWith ctrlShiftM 'm'
+    hiddenOnPlain <- appMarkdownPreview <$> readIORef ref
+    when hiddenOnPlain (fail "selftest: Ctrl+Shift+M did not hide the preview outside Markdown")
+    modifyIORef' ref (\a -> closeDoc (appDocKey a) a)
+    removeFile plainTab
+    chordWith ctrlShiftM 'm'
+    restored <- appMarkdownPreview <$> readIORef ref
+    unless restored (fail "selftest: Ctrl+Shift+M did not restore the Markdown preview")
+    click 95 13
+    viewMenuOpen <- appOpenMenu <$> readIORef ref
+    unless (viewMenuOpen == "View") (fail "selftest: the View menu did not open")
+    shot "19d-markdown-menu.bmp"
+    click 145 80
+    hiddenByMenu <- appMarkdownPreview <$> readIORef ref
+    when hiddenByMenu (fail "selftest: the View menu did not hide the Markdown preview")
+    chordWith ctrlShiftM 'm'
+    shot "19d-markdown-preview.bmp"
+    modifyIORef' ref $ \a ->
+      let ed = appEditor a
+       in a {appEditor = ed {edBuffer = B.moveDocEnd False (edBuffer ed)}}
+    typed " edited"
+    preview <- readIORef ref
+    let expectedPreview = Rope.toText (B.bufRope (edBuffer (appEditor preview)))
+    case appMarkdownCache preview of
+      Just (previewKey, version, source, doc)
+        | previewKey == appDocKey preview
+        , version == B.bufVersion (edBuffer (appEditor preview))
+        , source == expectedPreview
+        , markdownSource doc == expectedPreview -> pure ()
+      _ -> fail "selftest: the live Markdown preview did not follow the edited buffer"
+    shot "19e-markdown-preview-edited.bmp"
+    chordWith ctrlShiftM 'l'
+    key plain KeyEnter
+    keyboardState <- readIORef ref
+    unless (appStatus keyboardState == "Link copied to clipboard") $
+      fail "selftest: Ctrl+Shift+L did not focus and activate the first Markdown link-copy button"
+    click 775 195
+    linkStatus <- appStatus <$> readIORef ref
+    unless (linkStatus == "Link copied to clipboard") (fail "selftest: clicking a Markdown link did not copy its destination")
+    chordWith ctrlShiftM 'm'
+    hidden <- appMarkdownPreview <$> readIORef ref
+    cacheCleared <- maybe True (const False) . appMarkdownCache <$> readIORef ref
+    when hidden (fail "selftest: Ctrl+Shift+M did not hide the Markdown preview")
+    unless cacheCleared (fail "selftest: hiding the Markdown preview kept its parsed document")
+    modifyIORef' ref (\a -> closeDoc (appDocKey a) a)
+    removeFile previewFile
 
     -- What a language server says of a name, put up as though one had: code
     -- in a fence that names its language, and in one that names none, which

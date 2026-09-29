@@ -27,21 +27,23 @@ module Ned.View
   ) where
 
 import Control.Applicative ((<|>))
-import Control.Monad (unless, void, when)
+import Control.Monad (forM, unless, void, when)
 import Data.Char (isSpace)
 import Data.Foldable (for_, traverse_)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (find, intercalate)
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.NanoRope.Measured as Rope
 import Data.Traversable (mapAccumL)
 import Data.Primitive.SmallArray (smallArrayFromList)
 import Data.Word (Word64)
 import GHC.Clock (getMonotonicTime)
 import NanoUI
 import qualified NanoUI as G (GridNode (..))
-import NanoUI.Markdown (Block (CodeBlock), MarkdownConfig (..), defaultMarkdownConfig, markdownConfigured)
+import NanoUI.Markdown (Block (CodeBlock), MarkdownConfig (..), MarkdownDoc, appendMarkdown, defaultMarkdownConfig, markdownBlocks, markdownConfigured, parseMarkdown)
+import qualified NanoUI.Markdown.Syntax as MD
 import Ned.App.Commands
 import Ned.App.Frame
 import Ned.App.State
@@ -51,7 +53,7 @@ import qualified Ned.Buffer as B
 import Ned.Editor (Editor (..))
 import Ned.Editor.Vim (Vim (..))
 import Ned.FileTree (FileTree (..), minTreeWidth, rootName)
-import Ned.Highlight (Lang, LexState (LexNormal), Span (..), TokenKind (TokPlain), languageNamed, lexLine, plainText)
+import Ned.Highlight (Lang, LexState (LexNormal), Span (..), TokenKind (TokPlain), langName, languageNamed, lexLine, plainText)
 import Ned.Lsp (Diagnostic (..), severityName)
 import Ned.Picker (Item (..))
 import Ned.Theme (colDiagnostic, paneChrome, tokenColor, tokenWeight)
@@ -83,6 +85,7 @@ appView ref = do
   reloadConfig ref
   trackWindow ref
   app0 <- readApp ref
+  linkFocus <- liftIO (newIORef Nothing)
 
   -- A dialog that is up is asked for its answer, a file dropped on the window
   -- opens, and the chords the application owns are read, all before anything
@@ -163,10 +166,23 @@ appView ref = do
             appNow <- readApp ref
             for_ (paneOf pid appNow) $ \pt -> do
               let focused = pid == appPaneKey appNow
-                  wantFocus = focused && not (appBarFocus app1) && not (appTreeFocus app1) && unblocked
+                  yieldMarkdownLinks = appFocusMarkdownLinks appNow && appMarkdownPreview appNow && langName (edLang (docEditor (paneFront pt))) == "Markdown"
+                  wantFocus = focused && not (appBarFocus app1) && not (appTreeFocus app1) && not yieldMarkdownLinks && unblocked
                   marks = if focused then findMarks appNow else (B.Matching False False, "")
                   diags = if focused then diagnosticSpans appNow else []
-              (resp, ed, caret) <- editorView (docKey (paneFront pt)) wantFocus marks diags (otherWords tags appNow) (docEditor (paneFront pt))
+              let doc = paneFront pt
+                  ed0 = docEditor doc
+                  preview = focused && appMarkdownPreview appNow && langName (edLang ed0) == "Markdown"
+                  editor = editorView (docKey doc) wantFocus marks diags (otherWords tags appNow) ed0
+              (resp, ed, caret) <-
+                if preview
+                  then rowWith (grow . gap 0 . padAll 0) $ do
+                    rendered <- editor
+                    separator
+                    let (_, previewEditor, _) = rendered
+                    markdownPreview ref linkFocus (docKey doc) previewEditor
+                    pure rendered
+                  else editor
               liftIO (modifyIORef' respRef (++ [(pid, resp)]))
               when (any (not . null . vimRequests) (edVim ed)) requestFrame
               when (edPressed ed && not focused) (modifyApp ref (focusPane pid))
@@ -245,6 +261,8 @@ appView ref = do
         traverse_ (runPending ref) (appPending app3)
   when (respClicked closeResp) (modifyApp ref (\a -> a {appPending = Nothing}))
 
+  linkFocusTarget <- liftIO (readIORef linkFocus)
+  for_ linkFocusTarget (requestFocus . respId)
   appEnd <- readApp ref
   when (chromeSig appEnd /= chromeSig app0 || editorSig appEnd /= drawn) requestFrame
 
@@ -299,6 +317,98 @@ codeBlock name lang code = do
         whenM (styled subtle (buttonWith (padXY 6 1 . fontSize (0.8 * size)) "Copy")) $
           void (setClipboard code)
       void (richTextWith (tight . fillW . fontMono) (codePieces lang code))
+
+markdownPreview :: IORef App -> IORef (Maybe Response) -> Int -> Editor -> NanoUI ()
+markdownPreview ref linkFocus key ed = do
+  let buf = edBuffer ed
+      bufferText = Rope.toText (B.bufRope buf)
+  (source, doc) <- cachedMarkdown ref key (B.bufVersion buf) bufferText
+  columnWith (grow . gap 0 . padAll 0) $ do
+    rowWith (tight . fillW . padXY 12 8) $
+      labelWith (tight . fontMuted . fontSizeScale 0.9) "Preview"
+    separator
+    if T.null (T.strip source)
+      then labelWith (grow . fillW . padAll 16 . fontMuted) "Write Markdown in the editor to see it here."
+    else do
+        clicked <- scrollWith (grow . fillW . padXY 16 12) $ do
+          response <- markdownConfigured (codeColoured (edLang ed)) doc
+          let links = markdownLinks doc
+          firstLink <- copyMarkdownLinks ref links
+          app <- readApp ref
+          when (appRequestMarkdownLinkFocus app) $ do
+            case firstLink of
+              Nothing -> do
+                setStatus ref "No links in this Markdown file"
+                modifyApp ref (\a -> a {appFocusMarkdownLinks = False})
+              Just copyButton -> liftIO (writeIORef linkFocus (Just copyButton))
+            modifyApp ref (\a -> a {appRequestMarkdownLinkFocus = False})
+          pure response
+        for_ clicked $ \url -> do
+          void (setClipboard url)
+          modifyApp ref $ \a ->
+            a
+              { appStatus = "Link copied to clipboard"
+              , appFocusMarkdownLinks = False
+              , appRequestMarkdownLinkFocus = False
+              }
+
+copyMarkdownLinks :: IORef App -> [(Text, Text)] -> NanoUI (Maybe Response)
+copyMarkdownLinks _ [] = pure Nothing
+copyMarkdownLinks ref links = do
+  buttons <- columnWith (tight . fillW . gap 6) $ do
+    separator
+    labelWith (tight . fontMuted . fontSizeScale 0.9) "Links"
+    forM (zip [1 :: Int ..] links) $ \(n, (labelText, url)) -> do
+      let name = if T.null labelText then url else labelText
+          shortName = T.take 36 name <> if T.length name > 36 then "..." else ""
+          buttonText = "Copy link " <> T.pack (show n) <> ": " <> shortName
+      response <- styled subtle (buttonWith' (fillW . padXY 8 4) buttonText)
+      when (respClicked response) $ do
+        void (setClipboard url)
+        modifyApp ref $ \a ->
+          a
+            { appStatus = "Link copied to clipboard"
+            , appFocusMarkdownLinks = False
+            , appRequestMarkdownLinkFocus = False
+            }
+      pure response
+  pure (listToMaybe buttons)
+
+markdownLinks :: MarkdownDoc -> [(Text, Text)]
+markdownLinks = concatMap blockLinks . markdownBlocks
+  where
+    blockLinks = \case
+      MD.Paragraph spans -> spanLinks spans
+      MD.Heading _ spans -> spanLinks spans
+      MD.BlockQuote blocks -> concatMap blockLinks blocks
+      MD.List _ _ items -> concatMap (concatMap blockLinks . MD.itemBlocks) items
+      MD.Table _ header rows -> concatMap spanLinks (header <> concat rows)
+      _ -> []
+    spanLinks = concatMap $ \case
+      MD.Link target _ linkLabel -> (MD.spansText linkLabel, target) : spanLinks linkLabel
+      MD.Emph spans -> spanLinks spans
+      MD.Strong spans -> spanLinks spans
+      MD.Strike spans -> spanLinks spans
+      _ -> []
+
+cachedMarkdown :: IORef App -> Int -> Int -> Text -> NanoUI (Text, MarkdownDoc)
+cachedMarkdown ref key version source = do
+  app <- readApp ref
+  case appMarkdownCache app of
+    Just (cachedKey, cachedVersion, cachedSource, cachedDoc)
+      | cachedKey == key && cachedVersion == version -> pure (cachedSource, cachedDoc)
+      | otherwise -> do
+          let doc
+                | cachedKey == key && cachedSource == source = cachedDoc
+                | cachedKey == key && cachedSource `T.isPrefixOf` source =
+                    appendMarkdown (T.drop (T.length cachedSource) source) cachedDoc
+                | otherwise = parseMarkdown source
+          store doc
+    Nothing -> store (parseMarkdown source)
+  where
+    store doc = do
+      modifyApp ref (\a -> a {appMarkdownCache = Just (key, version, source, doc)})
+      pure (source, doc)
 
 -- | Code as rich text, a piece to a span of each line. A tab is four spaces,
 -- which rich text measures as it does any other run of them.

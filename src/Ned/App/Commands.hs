@@ -52,6 +52,8 @@ module Ned.App.Commands
   , chordGrep
   , chordGoto
   , chordTree
+  , chordMarkdownPreview
+  , chordMarkdownLinks
   , chordZoomIn
   , chordZoomOut
   , chordZoomReset
@@ -71,6 +73,8 @@ module Ned.App.Commands
   , takeReading
   , fontFor
   , toggleTree
+  , toggleMarkdownPreview
+  , focusMarkdownLinks
   , openPicker
   , focusToward
 
@@ -326,6 +330,12 @@ chordZoomReset = K.ctrl <> K.key '0'
 chordDefinition :: K.Shortcut
 chordDefinition = K.ctrl <> K.key ']'
 
+chordMarkdownPreview :: K.Shortcut
+chordMarkdownPreview = K.ctrl <> K.shift <> K.key 'm'
+
+chordMarkdownLinks :: K.Shortcut
+chordMarkdownLinks = K.ctrl <> K.shift <> K.key 'l'
+
 -- | The chords that are vim's with vim's keys on, and not the application's:
 -- Ctrl+N and Ctrl+P complete a word in insert mode and move down and up in
 -- normal mode, and Ctrl+W deletes the word before the caret. What they did
@@ -444,6 +454,37 @@ fontFor fallback = \case
 -- back to the editor.
 toggleTree :: IORef App -> NanoUI ()
 toggleTree ref = modifyApp ref $ \a -> a {appTreeShown = not (appTreeShown a), appTreeFocus = False}
+
+toggleMarkdownPreview :: IORef App -> NanoUI ()
+toggleMarkdownPreview ref = do
+  app <- readApp ref
+  if appMarkdownPreview app
+    then
+      modifyApp ref $ \a ->
+        a
+          { appMarkdownPreview = False
+          , appFocusMarkdownLinks = False
+          , appRequestMarkdownLinkFocus = False
+          , appMarkdownCache = Nothing
+          , appStatus = "Markdown preview hidden"
+          }
+    else
+      if langName (edLang (appEditor app)) /= "Markdown"
+        then setStatus ref "Open a Markdown file to show its preview"
+        else modifyApp ref $ \a -> a {appMarkdownPreview = True, appStatus = "Markdown preview shown"}
+
+focusMarkdownLinks :: IORef App -> NanoUI ()
+focusMarkdownLinks ref = do
+  app <- readApp ref
+  if langName (edLang (appEditor app)) /= "Markdown"
+    then setStatus ref "Open a Markdown file to focus its preview links"
+    else modifyApp ref $ \a ->
+      a
+        { appMarkdownPreview = True
+        , appFocusMarkdownLinks = True
+        , appRequestMarkdownLinkFocus = True
+        , appStatus = "Focus a preview link, then press Enter to copy"
+        }
 
 -- | Give the keyboard to the pane on one side of the one that has it, by
 -- vim's letter for the side: the tree is left of the text, and the bar is

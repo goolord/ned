@@ -218,11 +218,25 @@ appMenus ref app = [("File", fileMenu), ("Edit", editMenu), ("View", viewMenu)]
       item "Find..." (Just chordFind) (openBar ref BarFind)
       item "Search in Files..." (Just chordGrep) (openPicker ref P.grepSource)
       item "Go to Line..." (Just chordGoto) (openBar ref BarGoto)
+    isMarkdown = langName (edLang (appEditor app)) == "Markdown"
     viewMenu = do
       item
         (if appTreeShown app then "Hide File Tree" else "Show File Tree")
         (Just chordTree)
         (toggleTree ref)
+      menuSeparator
+      menuEntry
+        ref
+        (isMarkdown || appMarkdownPreview app)
+        (if appMarkdownPreview app then "Hide Markdown Preview" else "Show Markdown Preview")
+        (Just chordMarkdownPreview)
+        (toggleMarkdownPreview ref)
+      menuEntry
+        ref
+        isMarkdown
+        "Focus Markdown Links"
+        (Just chordMarkdownLinks)
+        (focusMarkdownLinks ref)
       menuSeparator
       item "Zoom In" (Just chordZoomIn) (zoom ref (* 1.1))
       item "Zoom Out" (Just chordZoomOut) (zoom ref (/ 1.1))

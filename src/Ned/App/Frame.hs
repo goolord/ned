@@ -72,6 +72,13 @@ appChords ref app = do
       unless (isJust (edCompletion (appEditor app)) && chord `elem` [chordNew, chordFindFile]) $
         whenM (shortcut chord) action
   when (inputKeysElem KeyEscape (inputKeys inp) && appBar app /= BarNone && not (modalUp app)) (closeBar ref)
+  when (inputKeysElem KeyEscape (inputKeys inp) && appFocusMarkdownLinks app && not (modalUp app)) $
+    modifyApp ref $ \a ->
+      a
+        { appFocusMarkdownLinks = False
+        , appRequestMarkdownLinkFocus = False
+        , appStatus = "Ready"
+        }
   where
     bindings
       | isJust (edVim (appEditor app)) = filter ((`notElem` vimChords) . fst) (appBindings ref) <> vimBindings ref
@@ -95,6 +102,8 @@ appBindings ref =
   , (chordFind, openBar ref BarFind)
   , (chordGoto, openBar ref BarGoto)
   , (chordTree, toggleTree ref)
+  , (chordMarkdownPreview, toggleMarkdownPreview ref)
+  , (chordMarkdownLinks, focusMarkdownLinks ref)
   , (chordFindFile, openPicker ref fileSource)
   , (chordDefinition, gotoDefinition ref)
   , (chordZoomIn, zoom ref (* 1.1))
@@ -132,12 +141,13 @@ syncTitle ref app =
 --
 -- The tree's width is not in here: the pane grid marks its own damage while
 -- one of its bars is dragged.
-chromeSig :: App -> (Text, Bool, Bool, Bool, Text, (Bool, Bool, Int), [Word64], (Int, [(Int, Bool)], (Int, Maybe FilePath)))
+chromeSig :: App -> (Text, Bool, Bool, Bool, Bool, Text, (Bool, Bool, Int), [Word64], (Int, [(Int, Bool)], (Int, Maybe FilePath)))
 chromeSig a =
   ( appOpenMenu a
   , appBar a == BarNone
   , appBarFocus a
   , isJust (appPending a)
+  , appMarkdownPreview a
   , appStatus a
   , (appTreeShown a, appTreeFocus a, FT.ftVersion (appTree a))
   , -- The editors' panes, which a tab dragged out of a strip remakes from
@@ -156,7 +166,7 @@ chromeSig a =
   )
 
 -- | What of the application the editor draws.
-editorSig :: App -> (Int, Int, Int, (B.Matching, Text), (Bool, Bool), Float, Text)
+editorSig :: App -> (Int, Int, Int, (B.Matching, Text), (Bool, Bool), Float, Text, Bool, Bool)
 editorSig a =
   ( B.bufVersion buf
   , B.bufCursor buf
@@ -165,6 +175,8 @@ editorSig a =
   , (edReveal ed, edShowWhitespace ed)
   , edFontSize ed
   , langName (edLang ed)
+  , appMarkdownPreview a
+  , appFocusMarkdownLinks a
   )
   where
     ed = appEditor a

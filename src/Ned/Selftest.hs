@@ -1055,6 +1055,24 @@ selftestIn dir mfile say = do
         modifyIORef' ref (selectDoc sourceKey)
         idle
       _ -> fail ("selftest: expected one Preview tab, got " <> show previewKeys)
+    chordWith ctrlShiftM 'p'
+    typed "move preview into source tabs"
+    key plain KeyEnter
+    mergedByCommand <- readIORef ref
+    let previewsAfterCommand = filter (isJust . docMarkdownPreviewOf) (appDocs mergedByCommand)
+    unless (null (appPanes mergedByCommand) && length previewsAfterCommand == 1) $
+      fail
+        ( "selftest: the command palette left "
+            <> show (length (appPanes mergedByCommand))
+            <> " panes, "
+            <> show (length previewsAfterCommand)
+            <> " preview tabs, palette "
+            <> show (isJust (appCommandPalette mergedByCommand))
+            <> ", status "
+            <> show (appStatus mergedByCommand)
+        )
+    modifyIORef' ref (selectDoc sourceKey)
+    idle
     plainTab <- makeAbsolute (dir </> "preview.txt")
     writeFile plainTab "plain text\n"
     readIORef ref >>= openPath InNewTab Nothing plainTab >>= writeIORef ref

@@ -76,6 +76,7 @@ module Ned.App.Commands
   , toggleTree
   , openCommandPalette
   , toggleMarkdownPreview
+  , moveMarkdownPreviewIntoTabs
   , focusMarkdownLinks
   , PaletteCommand (..)
   , commandPaletteCommands
@@ -521,12 +522,13 @@ commandPaletteCommands ref app =
   , command "Toggle Line Endings" "" $
       modifyApp ref (\a -> a {appFormat = (appFormat a) {formatEol = if formatEol (appFormat app) == LF then CRLF else LF}})
   ]
-    <> if manyTabs app
-      then
-        [ command "Next Tab" "Ctrl+Tab" (stepTab ref True)
-        , command "Previous Tab" "Ctrl+Shift+Tab" (stepTab ref False)
-        ]
-      else []
+     <> ( if manyTabs app
+            then
+              [ command "Next Tab" "Ctrl+Tab" (stepTab ref True)
+              , command "Previous Tab" "Ctrl+Shift+Tab" (stepTab ref False)
+              ]
+            else []
+        )
     <> [ command "Undo" "Ctrl+Z" (onBuffer ref B.undo) | B.canUndo (edBuffer (appEditor app)) ]
     <> [ command "Redo" "Ctrl+Y" (onBuffer ref B.redo) | B.canRedo (edBuffer (appEditor app)) ]
     <> [ command "Cut" "Ctrl+X" (onBufferIO ref clipboardCut)
@@ -534,13 +536,15 @@ commandPaletteCommands ref app =
        , command "Paste" "Ctrl+V" (onBufferIO ref clipboardPaste)
        , command "Select All" "Ctrl+A" (onBuffer ref B.selectAll)
        ]
-    <> if langName (edLang (appEditor app)) == "Markdown"
-      then
-        [ command "Toggle Markdown Preview" "Ctrl+Shift+M" (toggleMarkdownPreview ref)
-        , command "Focus Markdown Links" "Ctrl+Shift+L" (focusMarkdownLinks ref)
-        ]
-      else []
-    <> [command "Reveal Current File" "" (for_ (appPath app) (onTree ref . FT.reveal)) | isJust (appPath app)]
+     <> ( if langName (edLang (appEditor app)) == "Markdown"
+            then
+              [ command "Toggle Markdown Preview" "Ctrl+Shift+M" (toggleMarkdownPreview ref)
+              , command "Focus Markdown Links" "Ctrl+Shift+L" (focusMarkdownLinks ref)
+              ]
+            else []
+        )
+     <> [command "Move Preview into Source Tabs" "" (moveMarkdownPreviewIntoTabs ref) | hasSeparateMarkdownPreview app]
+     <> [command "Reveal Current File" "" (for_ (appPath app) (onTree ref . FT.reveal)) | isJust (appPath app)]
     <> [command "Open Parent Folder" "" (onTree ref FT.parentRoot) | FT.hasParentRoot (appTree app)]
     <> [ command "Refresh File Tree" "" (onTree ref FT.refresh)
        , command "Collapse File Tree" "" (onTree ref FT.collapseAll)
@@ -580,6 +584,13 @@ toggleMarkdownPreview ref = do
               , appRequestMarkdownPreview = Just sourceKey
               , appStatus = "Markdown preview shown"
               }
+
+moveMarkdownPreviewIntoTabs :: IORef App -> NanoUI ()
+moveMarkdownPreviewIntoTabs ref = do
+  app <- readApp ref
+  when (hasSeparateMarkdownPreview app) $
+    modifyApp ref $ \a ->
+      (mergeMarkdownPreview a) {appStatus = "Preview moved into source tabs"}
 
 focusMarkdownLinks :: IORef App -> NanoUI ()
 focusMarkdownLinks ref = do

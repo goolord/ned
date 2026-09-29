@@ -239,6 +239,8 @@ appMenus ref app = [("File", fileMenu), ("Edit", editMenu), ("View", viewMenu)]
         "Focus Markdown Links"
         (Just chordMarkdownLinks)
         (focusMarkdownLinks ref)
+      when (hasSeparateMarkdownPreview app) $
+        menuEntry ref True "Move Preview into Source Tabs" Nothing (moveMarkdownPreviewIntoTabs ref)
       menuSeparator
       item "Zoom In" (Just chordZoomIn) (zoom ref (* 1.1))
       item "Zoom Out" (Just chordZoomOut) (zoom ref (/ 1.1))

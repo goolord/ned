@@ -39,6 +39,8 @@ module Ned.App.State
   , newDoc
   , blankDoc
   , closeDoc
+  , hasSeparateMarkdownPreview
+  , mergeMarkdownPreview
   , everyEditor
   , docName
   , docDirty
@@ -629,6 +631,30 @@ closeDocOne key a = case paneOfDoc key a of
     | length (paneDocs p) > 1 -> onPane (paneKey p) (paneRemove key) a
     | otherwise -> closePane (paneKey p) a
   Nothing -> a
+
+hasSeparateMarkdownPreview :: App -> Bool
+hasSeparateMarkdownPreview = isJust . separateMarkdownPreview
+
+mergeMarkdownPreview :: App -> App
+mergeMarkdownPreview app = case separateMarkdownPreview app of
+  Just (preview, sourcePane, previewPane) ->
+    moveDocAcross
+      (paneKey previewPane)
+      (docKey preview)
+      (paneKey sourcePane)
+      (length (paneDocs sourcePane))
+      app
+  Nothing -> app
+
+separateMarkdownPreview :: App -> Maybe (Doc, Pane, Pane)
+separateMarkdownPreview app = do
+  let sourceKey = fromMaybe (appDocKey app) (appMarkdownPreviewOf app)
+  preview <- find ((== Just sourceKey) . docMarkdownPreviewOf) (appDocs app)
+  sourcePane <- paneOfDoc sourceKey app
+  previewPane <- paneOfDoc (docKey preview) app
+  if paneKey sourcePane == paneKey previewPane
+    then Nothing
+    else Just (preview, sourcePane, previewPane)
 
 -- | Take a whole pane away: its tabs from the others, and it from the row,
 -- which its own pane does as it is drawn ('pgcClose'). Taking the one pane

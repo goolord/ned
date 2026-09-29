@@ -100,6 +100,10 @@ data FileTree = FileTree
   , ftVimPending :: !String
   -- ^ With vim's keys, what of a command has been typed and not finished: a
   -- count, and a @g@ waiting for the second one.
+  , ftAppKeys :: !(Maybe String)
+  -- ^ With vim's keys, 'Just' the keys that ask the application and not the
+  -- tree -- the leader's and the rest -- as far as they have been typed and
+  -- not finished; 'Nothing' when none is going.
   }
 
 -- | The width the tree's pane starts at, and the narrowest the pane grid may
@@ -124,6 +128,7 @@ newFileTree root =
     , ftDrag = DragNone
     , ftPressed = False
     , ftVimPending = ""
+    , ftAppKeys = Nothing
     }
 
 -- | The name the header shows: the root's own, or the whole path when it is a

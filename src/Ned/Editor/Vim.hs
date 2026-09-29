@@ -15,10 +15,12 @@ module Ned.Editor.Vim
   ( Vim (..)
   , Mode (..)
   , Request (..)
+  , P (..)
   , Clip (..)
   , newVim
   , vimKeys
   , feedKeys
+  , appStep
   , vimSettle
   , vimBlock
   , vimLabel
@@ -143,6 +145,36 @@ leaderKeys =
   , ("fg", Grep)
   , ("d", ToggleTree)
   ]
+
+-- | The keys in normal mode that ask the application for something and touch
+-- no text: the leader's, and the rest of what vim would leave to it. What
+-- they ask for is a list, since one of them, @ZZ@, asks for two things.
+appKeys :: [(String, [Request])]
+appKeys =
+  [ ("n", [FindAgain True])
+  , ("N", [FindAgain False])
+  , ("/", [FindBar])
+  , ("?", [FindBar])
+  , ("gt", [NextTab True])
+  , ("gT", [NextTab False])
+  , ("gd", [Definition])
+  , ("g]", [NextDiagnostic True])
+  , ("g[", [NextDiagnostic False])
+  , ("K", [Hover])
+  , ("ZZ", [Save, Quit False])
+  , ("ZQ", [Quit True])
+  ]
+    ++ [(" " ++ ks, [r]) | (ks, r) <- leaderKeys]
+
+-- | Where keys that ask the application and touch no text have got to: what
+-- they ask for, the start of keys that another key finishes, or neither. The
+-- file tree reads this too, since these keys mean as much with the keyboard
+-- there as in the text.
+appStep :: String -> P [Request]
+appStep s
+  | Just rs <- lookup s appKeys = Got rs
+  | any ((s `isPrefixOf`) . fst) appKeys = More
+  | otherwise = Bad
 
 --------------------------------------------------------------------------------
 -- The keys
@@ -426,24 +458,10 @@ command clip page v s0 = case vimMode v of
       let (i, j) = spanRange b (visualSpan v' b)
        in (v' {vimMode = Normal}, B.setCursor False i (B.replace i j (f (slice b i j)) b))
 
-    requests = case s of
-      "n" -> ask [FindAgain True]
-      "N" -> ask [FindAgain False]
-      [k] | k == '/' || k == '?' -> ask [FindBar]
-      "g" -> More
-      "gt" -> ask [NextTab True]
-      "gT" -> ask [NextTab False]
-      "gd" -> ask [Definition]
-      "g]" -> ask [NextDiagnostic True]
-      "g[" -> ask [NextDiagnostic False]
-      "K" -> ask [Hover]
-      "Z" -> More
-      "ZZ" -> ask [Save, Quit False]
-      "ZQ" -> ask [Quit True]
-      ' ' : ks
-        | Just r <- lookup ks leaderKeys -> ask [r]
-        | any ((ks `isPrefixOf`) . fst) leaderKeys -> More
-      _ -> Bad
+    requests = case appStep s of
+      Got rs -> ask rs
+      More -> More
+      Bad -> Bad
 
     -- A motion moves the caret, and in a visual mode the end of the
     -- selection it is on.

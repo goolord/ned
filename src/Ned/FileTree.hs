@@ -8,7 +8,8 @@
 -- Nothing here draws. The panel the rows sit in, and the ops they build, are
 -- in "Ned.View"; this turns a frame's pointer and keys into the changes
 -- "Ned.FileTree.Model" knows how to make, and hands back the tree, a file that
--- was asked for, and what the drawing needs to know besides.
+-- was asked for, what the keys that are the application's own asked of it, and
+-- what the drawing needs to know besides.
 module Ned.FileTree
   ( -- * One frame
     treeFrame
@@ -42,6 +43,7 @@ import Data.Primitive.SmallArray (indexSmallArray, sizeofSmallArray)
 import qualified Data.Text as T
 -- 'Row' here is a row of the tree, not nano-ui's layout direction.
 import NanoUI hiding (Row)
+import Ned.Editor.Vim (P (..), Request, appStep)
 import Ned.FileTree.Model
 import Ned.Text (clamp)
 import Ned.Widget
@@ -51,12 +53,15 @@ import Ned.Widget
 --------------------------------------------------------------------------------
 
 -- | What a frame of the tree worked out: the tree as the frame leaves it, a
--- file its rows were asked to open, and the answers the drawing needs that the
--- tree itself does not hold.
+-- file its rows were asked to open, what vim's application keys asked for,
+-- and the answers the drawing needs that the tree itself does not hold.
 data TreeFrame = TreeFrame
   { tfTree :: !FileTree
   , tfOpened :: !(Maybe FilePath)
   -- ^ A file a click or an Enter asked for.
+  , tfRequest :: ![Request]
+  -- ^ What the keys that ask the application asked for, which the tree leaves
+  -- to it as the editor's own vim does.
   , tfHovered :: !Int
   -- ^ The row the pointer is over, or -1.
   , tfThumbHot :: !Bool
@@ -113,10 +118,10 @@ treeFrame vim wantFocus rect lineH ft0 = do
 
   -- The keyboard, when the tree has it. With vim's keys, what was typed
   -- goes after the named keys.
-  let named = foldInputKeys applyKey (ftLoaded, Nothing) (inputKeys inp)
+  let named = foldInputKeys applyKey (ftLoaded, Nothing, []) (inputKeys inp)
       halfView = max 1 (floor (viewRows / 2))
-      (ftKeys, openedByKey)
-        | not wantFocus = (ftLoaded, Nothing)
+      (ftKeys, openedByKey, asked)
+        | not wantFocus = (ftLoaded, Nothing, [])
         | vim = foldl' (vimKey halfView) named (vimTyped inp)
         | otherwise = named
 
@@ -148,6 +153,7 @@ treeFrame vim wantFocus rect lineH ft0 = do
     TreeFrame
       { tfTree = ft1
       , tfOpened = maybe openedByKey Just openedByMouse
+      , tfRequest = asked
       , tfHovered = if hovered >= 0 && hovered < count1 then hovered else -1
       , tfThumbHot = overBar || isThumb (ftDrag ft1)
       , tfViewRows = viewRows
@@ -156,31 +162,34 @@ treeFrame vim wantFocus rect lineH ft0 = do
     isThumb = \case DragThumb _ -> True; _ -> False
 
     -- Up and down walk the rows, left closes a folder or steps out to the one
-    -- above, right opens one or steps into it, and Enter opens a file.
-    applyKey (ft, op) k =
-      let rows = ftRows ft
+    -- above, right opens one or steps into it, and Enter opens a file. A named
+    -- key is no part of an application key, so it gives one up, and Escape
+    -- gives up the count and the g that were waiting as well.
+    applyKey (ft0', op, ask) k =
+      let ft = ft0' {ftAppKeys = Nothing}
+          rows = ftRows ft
           n = sizeofSmallArray rows
           here = selectedRow ft
           sel = rowAt rows here
        in case k of
-            KeyUp -> (selectRow (if here < 0 then n - 1 else here - 1) ft, op)
-            KeyDown -> (selectRow (if here < 0 then 0 else here + 1) ft, op)
-            KeyHome -> (selectRow 0 ft, op)
-            KeyEnd -> (selectRow (n - 1) ft, op)
+            KeyUp -> (selectRow (if here < 0 then n - 1 else here - 1) ft, op, ask)
+            KeyDown -> (selectRow (if here < 0 then 0 else here + 1) ft, op, ask)
+            KeyHome -> (selectRow 0 ft, op, ask)
+            KeyEnd -> (selectRow (n - 1) ft, op, ask)
             KeyLeft -> case sel of
-              Just r | rowOpen r -> (toggle (rowPath r) ft, op)
-              Just r -> (selectRow (parentOf rows here (rowDepth r)) ft, op)
-              Nothing -> (ft, op)
+              Just r | rowOpen r -> (toggle (rowPath r) ft, op, ask)
+              Just r -> (selectRow (parentOf rows here (rowDepth r)) ft, op, ask)
+              Nothing -> (ft, op, ask)
             KeyRight -> case sel of
-              Just r | rowDir r && not (rowOpen r) -> (toggle (rowPath r) ft, op)
-              Just r | rowDir r -> (selectRow (here + 1) ft, op)
-              _ -> (ft, op)
+              Just r | rowDir r && not (rowOpen r) -> (toggle (rowPath r) ft, op, ask)
+              Just r | rowDir r -> (selectRow (here + 1) ft, op, ask)
+              _ -> (ft, op, ask)
             KeyEnter -> case sel of
-              Just r | rowDir r -> (toggle (rowPath r) ft, op)
-              Just r -> (ft, Just (rowPath r))
-              Nothing -> (ft, op)
-            KeyEscape -> (ft {ftVimPending = ""}, op)
-            _ -> (ft, op)
+              Just r | rowDir r -> (toggle (rowPath r) ft, op, ask)
+              Just r -> (ft, Just (rowPath r), ask)
+              Nothing -> (ft, op, ask)
+            KeyEscape -> (ft {ftVimPending = ""}, op, ask)
+            _ -> (ft, op, ask)
 
     -- What vim's keys typed: the characters, or with Ctrl held the half-view
     -- steps, which type nothing.
@@ -195,32 +204,46 @@ treeFrame vim wantFocus rect lineH ft0 = do
           'u' -> Just '\NAK'
           _ -> Nothing
 
-    -- Vim's keys: j and k walk the rows, and Ctrl+D and Ctrl+U half a view;
-    -- h and l are Left and Right, save that l on a file opens it; o opens a
-    -- file or a folder as Enter does, and O the same, whose Shift opens a file
-    -- in a tab of its own as a Shift+click does; gg and G go to the first row
-    -- and the last, or with a count to that row; and - puts the root on the
-    -- folder above, on the folder it was. A count before j, k and the half
-    -- views goes that many times as far.
-    vimKey half (ft0', op) c
+    -- Vim's keys, one at a time. The keys that ask the application and touch
+    -- no text -- the leader's and the rest -- mean as much with the keyboard
+    -- in a tree as in the text, so they are read out of vim's own table and
+    -- left to it: a key that finishes one asks for something, a key another
+    -- may still begin waits for the next, and a key that is neither gives the
+    -- keys so far up and is the tree's own after all.
+    vimKey half (ft0', op, asks) c =
+      let ks = fromMaybe "" (ftAppKeys ft0')
+          ft = ft0' {ftAppKeys = Nothing}
+       in case appStep (ks <> [c]) of
+            Got rs -> (ft, op, asks ++ rs)
+            More -> (ft0' {ftAppKeys = Just (ks <> [c])}, op, asks)
+            Bad -> foldl' (treeKey half) (ft, op, asks) (ks <> [c])
+
+    -- j and k walk the rows, and Ctrl+D and Ctrl+U half a view; h and l are
+    -- Left and Right, save that l on a file opens it; o opens a file or a
+    -- folder as Enter does, and O the same, whose Shift opens a file in a tab
+    -- of its own as a Shift+click does; gg and G go to the first row and the
+    -- last, or with a count to that row; and - puts the root on the folder
+    -- above, on the folder it was. A count before j, k and the half views
+    -- goes that many times as far.
+    treeKey half (ft0', op, ask) c
       | isDigit c && (c /= '0' || not (null digits)) && null prefix =
-          (ft0' {ftVimPending = take 6 (pending ++ [c])}, op)
+          (ft0' {ftVimPending = take 6 (pending ++ [c])}, op, ask)
       | otherwise = case (prefix, c) of
-          ("g", 'g') -> (goRow (maybe 0 (subtract 1) counted), op)
-          ("", 'g') -> (ft {ftVimPending = pending ++ "g"}, op)
-          ("", 'G') -> (goRow (maybe (n - 1) (subtract 1) counted), op)
-          ("", 'j') -> (walk count, op)
-          ("", 'k') -> (walk (negate count), op)
-          ("", '\EOT') -> (walk (count * half), op)
-          ("", '\NAK') -> (walk (negate (count * half)), op)
-          ("", 'h') -> applyKey (ft, op) KeyLeft
+          ("g", 'g') -> (goRow (maybe 0 (subtract 1) counted), op, ask)
+          ("", 'g') -> (ft {ftVimPending = pending ++ "g"}, op, ask)
+          ("", 'G') -> (goRow (maybe (n - 1) (subtract 1) counted), op, ask)
+          ("", 'j') -> (walk count, op, ask)
+          ("", 'k') -> (walk (negate count), op, ask)
+          ("", '\EOT') -> (walk (count * half), op, ask)
+          ("", '\NAK') -> (walk (negate (count * half)), op, ask)
+          ("", 'h') -> applyKey (ft, op, ask) KeyLeft
           ("", 'l') -> case rowAt rows here of
-            Just r | not (rowDir r) -> (ft, Just (rowPath r))
-            _ -> applyKey (ft, op) KeyRight
-          ("", 'o') -> applyKey (ft, op) KeyEnter
-          ("", 'O') -> applyKey (ft, op) KeyEnter
-          ("", '-') | hasParentRoot ft -> ((parentRoot ft) {ftSelected = Just (ftRoot ft), ftReveal = True}, op)
-          _ -> (ft, op)
+            Just r | not (rowDir r) -> (ft, Just (rowPath r), ask)
+            _ -> applyKey (ft, op, ask) KeyRight
+          ("", 'o') -> applyKey (ft, op, ask) KeyEnter
+          ("", 'O') -> applyKey (ft, op, ask) KeyEnter
+          ("", '-') | hasParentRoot ft -> ((parentRoot ft) {ftSelected = Just (ftRoot ft), ftReveal = True}, op, ask)
+          _ -> (ft, op, ask)
       where
         pending = ftVimPending ft0'
         ft = ft0' {ftVimPending = ""}

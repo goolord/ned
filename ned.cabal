@@ -64,7 +64,8 @@ library
         Ned.Editor.Keys
         Ned.Editor.Vim
 
-        -- The file tree beside it.
+        -- The file tree beside it, which answers vim's application keys as
+        -- well as the keys that mean something else in a tree.
         Ned.FileTree
         Ned.FileTree.Model
 

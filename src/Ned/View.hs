@@ -117,7 +117,7 @@ appView ref = do
         -- behind. The find bar's field takes the keyboard from the tree as it
         -- does from the editor, so the arrows do not walk both at once.
         treePane respRef pctx = do
-          (resp, ft, opened) <-
+          (resp, ft, opened, asked) <-
             fileTreePanel
               (paneDragHandle pctx)
               (isJust (edVim (appEditor app1)))
@@ -141,6 +141,12 @@ appView ref = do
           for_ opened $ \path -> do
             modifyApp ref (\a -> a {appTreeFocus = False})
             if shifted then openFile ref Nothing path else openHere ref path
+          -- What the tree's vim keys asked the application goes in the
+          -- editor's vim's own queue, and is done a frame later for the same
+          -- reason: so that the keys that put the finder up are not typed
+          -- into it as well.
+          for_ asked (queueVimRequest ref)
+          when (not (null asked)) requestFrame
           -- The header is the pane's drag handle, so a hold on the root's
           -- name drags the pane and nothing else in it does.
           pure (PaneView (rootName ft) False)

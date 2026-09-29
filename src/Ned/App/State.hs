@@ -76,7 +76,7 @@ import Ned.Complete (Source, buffersSource)
 import Ned.Complete.Tags (Tags, tagSource)
 import Ned.Config (Config (..))
 import Ned.Editor
-import Ned.Editor.Vim (newVim)
+import Ned.Editor.Vim (Request, newVim)
 import Ned.File
 import Ned.FileTree (FileTree)
 import qualified Ned.FileTree as FT
@@ -254,6 +254,9 @@ data App = App
   , appHover :: !(Maybe ((Int, Int, Int), Tip))
   -- ^ What is shown by the caret, for as long as the caret and the text are
   -- where they were when it was put up ('hoverAt').
+  , appRequests :: ![Request]
+  -- ^ What vim's keys have asked of the application, oldest first, from the
+  -- text or from the tree, and not done until the next frame.
   }
 
 -- | How the window was left: its size, whether it filled the screen, how wide
@@ -342,6 +345,7 @@ newApp cfg = do
       , appSynced = ("", -1)
       , appDiagnostics = Map.empty
       , appHover = Nothing
+      , appRequests = []
       }
 
 --------------------------------------------------------------------------------

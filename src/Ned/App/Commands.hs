@@ -90,6 +90,7 @@ module Ned.App.Commands
 
     -- * Vim
   , runVimRequests
+  , queueVimRequest
   ) where
 
 import Control.Concurrent (forkIO)
@@ -744,14 +745,22 @@ takeAnswers ref = liftIO $ do
 
 -- | Do what vim's keys asked of the application. They are done a frame after
 -- they were asked for, at its start, so that the keys that put up the finder
--- or the find bar are not typed into it as well.
+-- or the find bar are not typed into it as well. What the file tree's vim
+-- keys asked goes in the same queue, since those keys mean as much there.
 runVimRequests :: IORef App -> NanoUI ()
 runVimRequests ref = do
   a <- readApp ref
-  for_ (edVim (appEditor a)) $ \v ->
-    unless (null (V.vimRequests v)) $ do
+  let asked = appRequests a ++ maybe [] V.vimRequests (edVim (appEditor a))
+  unless (null asked) $ do
+    for_ (edVim (appEditor a)) $ \v ->
       onEditor ref (\ed -> ed {edVim = Just v {V.vimRequests = []}})
-      mapM_ (vimRequest ref) (V.vimRequests v)
+    modifyApp ref (\a' -> a' {appRequests = []})
+    mapM_ (vimRequest ref) asked
+
+-- | Put what vim's keys asked of the application in the queue, for
+-- 'runVimRequests' to do at the start of the next frame.
+queueVimRequest :: IORef App -> V.Request -> NanoUI ()
+queueVimRequest ref r = modifyApp ref (\a -> a {appRequests = appRequests a ++ [r]})
 
 vimRequest :: IORef App -> V.Request -> NanoUI ()
 vimRequest ref = \case

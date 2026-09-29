@@ -972,6 +972,28 @@ selftestIn dir mfile say = do
     expectSelected "-" "tree"
     modifyIORef' ref (\a -> a {appTree = FT.setRoot treeDir (appTree a)})
     idle
+    -- The leader is vim's own and means as much with the keyboard in the tree
+    -- as in the text: the finder comes up a frame later, with the keys that
+    -- asked for it not typed into it, and SPC d puts the tree away.
+    let expectPickerUp what = pickerNow >>= \case
+          Just pk | T.null (P.pkTyped pk) -> pure ()
+          Just pk -> fail ("selftest: the tree typed the leader's keys into " <> what <> ": " <> show (P.pkTyped pk))
+          Nothing -> fail ("selftest: " <> what <> " did not come up from the tree")
+    typed " ff"
+    idle
+    expectPickerUp "the finder"
+    key plain KeyEscape
+    typed " fg"
+    idle
+    expectPickerUp "the grep"
+    key plain KeyEscape
+    typed " d"
+    idle
+    treeGone <- not . appTreeShown <$> readIORef ref
+    unless treeGone (fail "selftest: SPC d in the tree did not put the tree away")
+    chord 'b'
+    treeBack <- appTreeShown <$> readIORef ref
+    unless treeBack (fail "selftest: Ctrl+B did not put the tree back")
     chord 'l'
     textHas <- not . appTreeFocus <$> readIORef ref
     unless (treeHas && textHas) (fail "selftest: Ctrl+H and Ctrl+L did not move the keyboard to the tree and back")

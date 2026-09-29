@@ -22,6 +22,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 -- 'Row' here is a row of the tree, not nano-ui's layout direction.
 import NanoUI hiding (Row)
+import Ned.Editor.Vim (Request)
 import Ned.FileTree
 import Ned.Theme (TreeColors (..), languageTint, treeColors)
 import Ned.Widget
@@ -47,7 +48,7 @@ fileTreePanel ::
   Bool ->
   Maybe FilePath ->
   FileTree ->
-  NanoUI (Response, FileTree, Maybe FilePath)
+  NanoUI (Response, FileTree, Maybe FilePath, [Request])
 fileTreePanel header vim wantFocus current ft0 =
   columnWith (tight . gap 0 . fillW . fillH) $ do
     -- The padding goes on last: 'tight' before it would take it off again,
@@ -61,7 +62,7 @@ fileTreePanel header vim wantFocus current ft0 =
     treeRows vim wantFocus current ft0
 
 -- | The rows, in one widget that scrolls itself.
-treeRows :: Bool -> Bool -> Maybe FilePath -> FileTree -> NanoUI (Response, FileTree, Maybe FilePath)
+treeRows :: Bool -> Bool -> Maybe FilePath -> FileTree -> NanoUI (Response, FileTree, Maybe FilePath, [Request])
 treeRows vim wantFocus current ft0 = do
   wid <- nextId
   lineH <- rowHeight <$> uiFontMetrics
@@ -110,7 +111,7 @@ treeRows vim wantFocus current ft0 = do
           -- repaints nothing.
           widgetTrackPointer = True
         }
-  pure (resp, ft1, tfOpened tf)
+  pure (resp, ft1, tfOpened tf, tfRequest tf)
 
 -- | Everything the tree's drawing reads.
 data TreeScene = TreeScene

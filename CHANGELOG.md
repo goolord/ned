@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+* Vim's application keys -- the leader's chords and the rest that ask the
+  application and touch no text -- work with the keyboard in the file tree as
+  they do in the text, where the tree's own keys had been swallowing them.
 * The tree/editor pane arrangement is saved with the window layout, so dragging
   the file tree to the right of the buffers keeps it there after reopening.
 * Tabs drag. A press carried off a tab takes it up, with the place a drop

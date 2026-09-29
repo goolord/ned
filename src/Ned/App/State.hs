@@ -62,7 +62,7 @@ module Ned.App.State
 
 import Data.IORef (IORef, newIORef)
 import Data.List (find)
-import Data.Maybe (isJust, isNothing, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Word (Word64)
@@ -126,6 +126,8 @@ data Doc = Doc
   , docEditor :: !Editor
   , docPath :: !(Maybe FilePath)
   , docFormat :: !FileFormat
+  , docMarkdownPreviewOf :: !(Maybe Int)
+  -- ^ The source tab rendered by this read-only preview tab.
   }
 
 -- | A pane of the row the tree and the editors share: the tabs of its own,
@@ -207,13 +209,17 @@ data App = App
   -- ^ How the find bar's text is matched: in its case, and as a whole word.
   , appGotoText :: !Text
   , appMarkdownPreview :: !Bool
-  -- ^ Whether the active Markdown document is shown beside its source.
-  , appFocusMarkdownLinks :: !Bool
+  -- ^ Whether the active document's Markdown preview tab is open.
+  , appRequestMarkdownPreview :: !(Maybe Int)
+  -- ^ The source tab whose preview pane the view should split off.
+  , appMarkdownPreviewOf :: !(Maybe Int)
+  -- ^ The Markdown source when the active tab is its preview.
+  , appFocusMarkdownLinks :: !(Maybe Int)
   -- ^ Whether the editor yields keyboard focus to the Markdown link controls.
-  , appRequestMarkdownLinkFocus :: !Bool
+  , appRequestMarkdownLinkFocus :: !(Maybe Int)
   -- ^ A one-frame request to focus the preview's first link-copy button.
-  , appMarkdownCache :: !(Maybe (Int, Int, Text, MarkdownDoc))
-  -- ^ The last parsed preview, keyed by tab and buffer version.
+  , appMarkdownCache :: !(Map Int (Int, Text, MarkdownDoc))
+  -- ^ Parsed previews, keyed by source tab and buffer version.
   , appCommandPalette :: !(Maybe PaletteState)
   -- ^ The command palette, while it is open.
   , appPending :: !(Maybe Pending)
@@ -312,9 +318,11 @@ newApp cfg = do
       , appFindMatching = B.Matching False False
       , appGotoText = ""
       , appMarkdownPreview = False
-      , appFocusMarkdownLinks = False
-      , appRequestMarkdownLinkFocus = False
-      , appMarkdownCache = Nothing
+      , appRequestMarkdownPreview = Nothing
+      , appMarkdownPreviewOf = Nothing
+      , appFocusMarkdownLinks = Nothing
+      , appRequestMarkdownLinkFocus = Nothing
+      , appMarkdownCache = Map.empty
       , appCommandPalette = Nothing
       , appPending = Nothing
       , appTitle = ""
@@ -513,26 +521,48 @@ tabWith path app = (`findTab` app) <$> makeAbsolute path
 
 -- | The tab holding a file, by its absolute path.
 findTab :: FilePath -> App -> Maybe Doc
-findTab path = find (maybe False (equalFilePath path) . docPath) . appDocs
+findTab path = find (\doc -> isNothing (docMarkdownPreviewOf doc) && maybe False (equalFilePath path) (docPath doc)) . appDocs
 
 -- | The tab in front, gathered up from the record.
 activeDoc :: App -> Doc
-activeDoc app = Doc (appDocKey app) (appEditor app) (appPath app) (appFormat app)
+activeDoc app = Doc (appDocKey app) (appEditor app) (appPath app) (appFormat app) (appMarkdownPreviewOf app)
 
 -- | Put a tab in front, in the place of the one that was, which goes nowhere:
 -- the caller has put it somewhere already, or means to lose it.
 showDoc :: Doc -> App -> App
-showDoc doc app =
-  let changed = docKey doc /= appDocKey app
-   in app
-        { appEditor = docEditor doc
-        , appPath = docPath doc
-        , appFormat = docFormat doc
-        , appDocKey = docKey doc
-        , appFocusMarkdownLinks = appFocusMarkdownLinks app && not changed
-        , appRequestMarkdownLinkFocus = appRequestMarkdownLinkFocus app && not changed
-        , appStatus = if changed && appFocusMarkdownLinks app then "Ready" else appStatus app
-        }
+showDoc doc app = case docMarkdownPreviewOf doc of
+  Just sourceKey ->
+    let source = fromMaybe doc (find ((== sourceKey) . docKey) (appDocs app))
+        keepLinkFocus = appFocusMarkdownLinks app == Just sourceKey
+     in app
+          { appEditor = docEditor source
+          , appPath = docPath source
+          , appFormat = docFormat source
+          , appDocKey = docKey doc
+          , appMarkdownPreviewOf = Just sourceKey
+          , appMarkdownPreview = hasMarkdownPreview sourceKey app
+          , appFocusMarkdownLinks = if keepLinkFocus then appFocusMarkdownLinks app else Nothing
+          , appRequestMarkdownLinkFocus = if keepLinkFocus then appRequestMarkdownLinkFocus app else Nothing
+          , appStatus = if appFocusMarkdownLinks app /= Nothing && not keepLinkFocus then "Ready" else appStatus app
+          }
+  Nothing ->
+    let changed = docKey doc /= appDocKey app
+        keepLinkFocus = appFocusMarkdownLinks app == Just (docKey doc)
+     in app
+          { appEditor = docEditor doc
+          , appPath = docPath doc
+          , appFormat = docFormat doc
+          , appDocKey = docKey doc
+          , appMarkdownPreviewOf = Nothing
+          , appMarkdownPreview = hasMarkdownPreview (docKey doc) app
+          , appRequestMarkdownPreview = if changed then Nothing else appRequestMarkdownPreview app
+          , appFocusMarkdownLinks = if keepLinkFocus then appFocusMarkdownLinks app else Nothing
+          , appRequestMarkdownLinkFocus = if keepLinkFocus then appRequestMarkdownLinkFocus app else Nothing
+          , appStatus = if appFocusMarkdownLinks app /= Nothing && not keepLinkFocus then "Ready" else appStatus app
+          }
+
+hasMarkdownPreview :: Int -> App -> Bool
+hasMarkdownPreview sourceKey = any ((== Just sourceKey) . docMarkdownPreviewOf) . appDocs
 
 -- | The tab in front put behind, before where the next one will go.
 pushActive :: App -> App
@@ -573,6 +603,7 @@ insertDoc replace ed path format app =
       , docEditor = ed {edFontSize = edFontSize front, edShowWhitespace = edShowWhitespace front, edVim = newVim <$ edVim front}
       , docPath = path
       , docFormat = format
+      , docMarkdownPreviewOf = Nothing
       }
     (if replace then app else pushActive app) {appNextKey = appNextKey app + 1}
   where
@@ -584,7 +615,16 @@ insertDoc replace ed path format app =
 -- the pane beside it; closing the last tab of the last pane leaves an
 -- untitled one, since there is always a file to type into.
 closeDoc :: Int -> App -> App
-closeDoc key a = case paneOfDoc key a of
+closeDoc key a =
+  let previewKeys = [docKey doc | doc <- appDocs a, docMarkdownPreviewOf doc == Just key]
+      sourceKeys = mapMaybe docMarkdownPreviewOf [doc | doc <- appDocs a, docKey doc == key]
+      removed = foldl' (flip closeDocOne) a previewKeys
+      closed = closeDocOne key removed
+      cache = foldr Map.delete (appMarkdownCache closed) (key : previewKeys <> sourceKeys)
+   in (refreshMarkdownPreviewState closed) {appMarkdownCache = cache}
+
+closeDocOne :: Int -> App -> App
+closeDocOne key a = case paneOfDoc key a of
   Just p
     | length (paneDocs p) > 1 -> onPane (paneKey p) (paneRemove key) a
     | otherwise -> closePane (paneKey p) a
@@ -596,13 +636,28 @@ closeDoc key a = case paneOfDoc key a of
 -- into.
 closePane :: Word64 -> App -> App
 closePane pid a
-  | null (appPanes a) = (newDoc a) {appBefore = []}
+  | null (appPanes a) = refreshMarkdownPreviewState ((newDoc a) {appBefore = []})
   | otherwise =
       let a1 = if pid == appPaneKey a then focusBeside pid a else a
-       in a1
+          removedSourceKeys = maybe [] (mapMaybe docMarkdownPreviewOf . paneDocs) (paneOf pid a)
+          closed = refreshMarkdownPreviewState $ a1
             { appPanes = filter ((/= pid) . paneKey) (appPanes a1)
             , appClosePane = Just pid
             }
+       in closed {appMarkdownCache = foldr Map.delete (appMarkdownCache closed) removedSourceKeys}
+
+refreshMarkdownPreviewState :: App -> App
+refreshMarkdownPreviewState app =
+  let sourceKey = fromMaybe (appDocKey app) (appMarkdownPreviewOf app)
+      open = hasMarkdownPreview sourceKey app
+      sourceExists = any ((== sourceKey) . docKey) (appDocs app)
+      focus = if open then appFocusMarkdownLinks app else Nothing
+   in app
+        { appMarkdownPreview = open
+        , appFocusMarkdownLinks = focus
+        , appRequestMarkdownLinkFocus = if isJust focus then appRequestMarkdownLinkFocus app else Nothing
+        , appRequestMarkdownPreview = if open || sourceExists then appRequestMarkdownPreview app else Nothing
+        }
 
 -- | Give the pane in front's keyboard to a pane beside it: the one before it
 -- among the panes there are, or the one after, round from the ends.
@@ -636,11 +691,13 @@ everyEditor f app =
 
 -- | What a tab is called: its file's name, or "Untitled".
 docName :: Doc -> Text
-docName = maybe "Untitled" (T.pack . takeFileName) . docPath
+docName doc
+  | isJust (docMarkdownPreviewOf doc) = "Preview"
+  | otherwise = maybe "Untitled" (T.pack . takeFileName) (docPath doc)
 
 -- | Whether a tab has changes to save.
 docDirty :: Doc -> Bool
-docDirty = B.isDirty . edBuffer . docEditor
+docDirty doc = isNothing (docMarkdownPreviewOf doc) && B.isDirty (edBuffer (docEditor doc))
 
 --------------------------------------------------------------------------------
 -- A tab on its way

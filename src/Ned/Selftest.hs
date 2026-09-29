@@ -11,6 +11,7 @@ import Control.Exception (SomeException, try)
 import Control.Monad (filterM, forM_, unless, void, when)
 import Data.Foldable (toList)
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
+import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust, isNothing)
 import qualified Data.Text as T
 import qualified Data.Text.NanoRope.Measured as Rope
@@ -1034,12 +1035,26 @@ selftestIn dir mfile say = do
 
     previewFile <- makeAbsolute (dir </> "preview.md")
     writeFile previewFile "# Live preview\n\nRendered before editing.\n\nSee [the reference](https://example.com) here.\n"
-    modifyIORef' ref (\a -> a {appMarkdownPreview = False, appMarkdownCache = Nothing})
+    modifyIORef' ref (\a -> a {appMarkdownPreview = False, appMarkdownCache = Map.empty})
     readIORef ref >>= openPath InNewTab Nothing previewFile >>= writeIORef ref
     idle
     chordWith ctrlShiftM 'm'
     shown <- appMarkdownPreview <$> readIORef ref
     unless shown (fail "selftest: Ctrl+Shift+M did not show the Markdown preview")
+    previewPanes <- filter (any (isJust . docMarkdownPreviewOf) . paneDocs) . appPanes <$> readIORef ref
+    unless (length previewPanes == 1) (fail "selftest: Markdown preview did not open in its own pane and tab")
+    openedPreview <- readIORef ref
+    let sourceKey = appDocKey openedPreview
+        previewKeys = [docKey doc | doc <- appDocs openedPreview, isJust (docMarkdownPreviewOf doc)]
+    case previewKeys of
+      [previewKey] -> do
+        modifyIORef' ref (selectDoc previewKey)
+        selectedPreview <- readIORef ref
+        unless (appMarkdownPreviewOf selectedPreview == Just sourceKey && appPath selectedPreview == Just previewFile) $
+          fail "selftest: selecting the Preview tab did not retain its Markdown source"
+        modifyIORef' ref (selectDoc sourceKey)
+        idle
+      _ -> fail ("selftest: expected one Preview tab, got " <> show previewKeys)
     plainTab <- makeAbsolute (dir </> "preview.txt")
     writeFile plainTab "plain text\n"
     readIORef ref >>= openPath InNewTab Nothing plainTab >>= writeIORef ref
@@ -1049,9 +1064,8 @@ selftestIn dir mfile say = do
     when hiddenOnPlain (fail "selftest: Ctrl+Shift+M did not hide the preview outside Markdown")
     modifyIORef' ref (\a -> closeDoc (appDocKey a) a)
     removeFile plainTab
-    chordWith ctrlShiftM 'm'
     restored <- appMarkdownPreview <$> readIORef ref
-    unless restored (fail "selftest: Ctrl+Shift+M did not restore the Markdown preview")
+    unless restored (fail "selftest: selecting the Markdown source tab hid its preview pane")
     click 95 13
     viewMenuOpen <- appOpenMenu <$> readIORef ref
     unless (viewMenuOpen == "View") (fail "selftest: the View menu did not open")
@@ -1067,9 +1081,9 @@ selftestIn dir mfile say = do
     typed " edited"
     preview <- readIORef ref
     let expectedPreview = Rope.toText (B.bufRope (edBuffer (appEditor preview)))
-    case appMarkdownCache preview of
-      Just (previewKey, version, source, doc)
-        | previewKey == appDocKey preview
+    case Map.lookup (appDocKey preview) (appMarkdownCache preview) of
+      Just (version, source, doc)
+        | appMarkdownPreview preview
         , version == B.bufVersion (edBuffer (appEditor preview))
         , source == expectedPreview
         , markdownSource doc == expectedPreview -> pure ()
@@ -1083,9 +1097,20 @@ selftestIn dir mfile say = do
     click 775 195
     linkStatus <- appStatus <$> readIORef ref
     unless (linkStatus == "Link copied to clipboard") (fail "selftest: clicking a Markdown link did not copy its destination")
+    dragTab 725 400 48
+    idle
+    merged <- readIORef ref
+    let previewTabs = filter (isJust . docMarkdownPreviewOf) (appDocs merged)
+    unless (null (appPanes merged) && length previewTabs == 1) $
+      fail
+        ( "selftest: dragging the preview tab into the source tab bar left "
+            <> show (length (appPanes merged))
+            <> " panes and preview tabs "
+            <> show (map docName previewTabs)
+        )
     chordWith ctrlShiftM 'm'
     hidden <- appMarkdownPreview <$> readIORef ref
-    cacheCleared <- maybe True (const False) . appMarkdownCache <$> readIORef ref
+    cacheCleared <- Map.null . appMarkdownCache <$> readIORef ref
     when hidden (fail "selftest: Ctrl+Shift+M did not hide the Markdown preview")
     unless cacheCleared (fail "selftest: hiding the Markdown preview kept its parsed document")
     modifyIORef' ref (\a -> closeDoc (appDocKey a) a)

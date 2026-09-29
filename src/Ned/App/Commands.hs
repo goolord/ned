@@ -136,7 +136,30 @@ readApp :: IORef App -> NanoUI App
 readApp = liftIO . readIORef
 
 modifyApp :: IORef App -> (App -> App) -> NanoUI ()
-modifyApp ref = liftIO . modifyIORef' ref
+modifyApp ref change = liftIO $ modifyIORef' ref (syncPreview . change)
+  where
+    syncPreview app = case appMarkdownPreviewOf app of
+      Nothing -> app
+      Just sourceKey ->
+        let sync doc
+              | docKey doc == sourceKey =
+                  doc
+                    { docEditor = appEditor app
+                    , docPath = appPath app
+                    , docFormat = appFormat app
+                    }
+              | otherwise = doc
+            syncPane pane =
+              pane
+                { paneFront = sync (paneFront pane)
+                , paneBefore = map sync (paneBefore pane)
+                , paneAfter = map sync (paneAfter pane)
+                }
+         in app
+              { appBefore = map sync (appBefore app)
+              , appAfter = map sync (appAfter app)
+              , appPanes = map syncPane (appPanes app)
+              }
 
 setStatus :: IORef App -> Text -> NanoUI ()
 setStatus ref msg = modifyApp ref (\a -> a {appStatus = msg})
@@ -528,33 +551,53 @@ commandPaletteCommands ref app =
 toggleMarkdownPreview :: IORef App -> NanoUI ()
 toggleMarkdownPreview ref = do
   app <- readApp ref
-  if appMarkdownPreview app
-    then
+  let sourceKey = fromMaybe (appDocKey app) (appMarkdownPreviewOf app)
+      previewDoc = find ((== Just sourceKey) . docMarkdownPreviewOf) (appDocs app)
+  case previewDoc of
+    Just doc ->
       modifyApp ref $ \a ->
-        a
-          { appMarkdownPreview = False
-          , appFocusMarkdownLinks = False
-          , appRequestMarkdownLinkFocus = False
-          , appMarkdownCache = Nothing
-          , appStatus = "Markdown preview hidden"
-          }
-    else
-      if langName (edLang (appEditor app)) /= "Markdown"
-        then setStatus ref "Open a Markdown file to show its preview"
-        else modifyApp ref $ \a -> a {appMarkdownPreview = True, appStatus = "Markdown preview shown"}
+        let closed = closeDoc (docKey doc) a
+         in closed
+              { appStatus = "Markdown preview hidden"
+              , appFocusMarkdownLinks = Nothing
+              , appRequestMarkdownLinkFocus = Nothing
+              }
+    Nothing
+      | langName (edLang (appEditor app)) /= "Markdown" -> setStatus ref "Open a Markdown file to show its preview"
+      | appRequestMarkdownPreview app == Just sourceKey ->
+          modifyApp ref $ \a ->
+            a
+              { appMarkdownPreview = False
+              , appRequestMarkdownPreview = Nothing
+              , appFocusMarkdownLinks = Nothing
+              , appRequestMarkdownLinkFocus = Nothing
+              , appStatus = "Markdown preview hidden"
+              }
+      | otherwise ->
+          modifyApp ref $ \a ->
+            a
+              { appMarkdownPreview = True
+              , appRequestMarkdownPreview = Just sourceKey
+              , appStatus = "Markdown preview shown"
+              }
 
 focusMarkdownLinks :: IORef App -> NanoUI ()
 focusMarkdownLinks ref = do
   app <- readApp ref
-  if langName (edLang (appEditor app)) /= "Markdown"
+  let sourceKey = fromMaybe (appDocKey app) (appMarkdownPreviewOf app)
+      sourceDoc = find ((== sourceKey) . docKey) (appDocs app)
+  if maybe True ((/= "Markdown") . langName . edLang . docEditor) sourceDoc
     then setStatus ref "Open a Markdown file to focus its preview links"
     else modifyApp ref $ \a ->
-      a
-        { appMarkdownPreview = True
-        , appFocusMarkdownLinks = True
-        , appRequestMarkdownLinkFocus = True
-        , appStatus = "Focus a preview link, then press Enter to copy"
-        }
+      let selected = selectDoc sourceKey a
+          hasPreview = any ((== Just sourceKey) . docMarkdownPreviewOf) (appDocs selected)
+       in selected
+            { appMarkdownPreview = True
+            , appRequestMarkdownPreview = if hasPreview then Nothing else Just sourceKey
+            , appFocusMarkdownLinks = Just sourceKey
+            , appRequestMarkdownLinkFocus = Just sourceKey
+            , appStatus = "Focus a preview link, then press Enter to copy"
+            }
 
 -- | Give the keyboard to the pane on one side of the one that has it, by
 -- vim's letter for the side: the tree is left of the text, and the bar is

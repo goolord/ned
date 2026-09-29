@@ -72,11 +72,11 @@ appChords ref app = do
       unless (isJust (edCompletion (appEditor app)) && chord `elem` [chordNew, chordFindFile]) $
         whenM (shortcut chord) action
   when (inputKeysElem KeyEscape (inputKeys inp) && appBar app /= BarNone && not (modalUp app)) (closeBar ref)
-  when (inputKeysElem KeyEscape (inputKeys inp) && appFocusMarkdownLinks app && not (modalUp app)) $
+  when (inputKeysElem KeyEscape (inputKeys inp) && isJust (appFocusMarkdownLinks app) && not (modalUp app)) $
     modifyApp ref $ \a ->
       a
-        { appFocusMarkdownLinks = False
-        , appRequestMarkdownLinkFocus = False
+        { appFocusMarkdownLinks = Nothing
+        , appRequestMarkdownLinkFocus = Nothing
         , appStatus = "Ready"
         }
   where
@@ -168,7 +168,7 @@ chromeSig a =
   )
 
 -- | What of the application the editor draws.
-editorSig :: App -> (Int, Int, Int, (B.Matching, Text), (Bool, Bool), Float, Text, Bool, Bool)
+editorSig :: App -> (Int, Int, Int, (B.Matching, Text), (Bool, Bool), Float, Text, Bool, Maybe Int)
 editorSig a =
   ( B.bufVersion buf
   , B.bufCursor buf

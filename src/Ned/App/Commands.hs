@@ -52,6 +52,7 @@ module Ned.App.Commands
   , chordGrep
   , chordGoto
   , chordTree
+  , chordCommandPalette
   , chordMarkdownPreview
   , chordMarkdownLinks
   , chordZoomIn
@@ -73,8 +74,11 @@ module Ned.App.Commands
   , takeReading
   , fontFor
   , toggleTree
+  , openCommandPalette
   , toggleMarkdownPreview
   , focusMarkdownLinks
+  , PaletteCommand (..)
+  , commandPaletteCommands
   , openPicker
   , focusToward
 
@@ -330,6 +334,9 @@ chordZoomReset = K.ctrl <> K.key '0'
 chordDefinition :: K.Shortcut
 chordDefinition = K.ctrl <> K.key ']'
 
+chordCommandPalette :: K.Shortcut
+chordCommandPalette = K.ctrl <> K.shift <> K.key 'p'
+
 chordMarkdownPreview :: K.Shortcut
 chordMarkdownPreview = K.ctrl <> K.shift <> K.key 'm'
 
@@ -454,6 +461,69 @@ fontFor fallback = \case
 -- back to the editor.
 toggleTree :: IORef App -> NanoUI ()
 toggleTree ref = modifyApp ref $ \a -> a {appTreeShown = not (appTreeShown a), appTreeFocus = False}
+
+openCommandPalette :: IORef App -> NanoUI ()
+openCommandPalette ref =
+  modifyApp ref (\a -> a {appCommandPalette = Just (PaletteState "" 0)})
+
+data PaletteCommand = PaletteCommand
+  { paletteCommandName :: !Text
+  , paletteCommandShortcut :: !Text
+  , paletteCommandAction :: NanoUI ()
+  }
+
+commandPaletteCommands :: IORef App -> App -> [PaletteCommand]
+commandPaletteCommands ref app =
+  [ command "New File" "Ctrl+N" (newFile ref)
+  , command "Open File..." "Ctrl+O" (openDialog ref)
+  , command "Find File..." "Ctrl+P" (openPicker ref P.fileSource)
+  , command "Save" "Ctrl+S" (save ref False)
+  , command "Save As..." "Ctrl+Shift+S" (save ref True)
+  , command "Close Tab" "Ctrl+W" (closeTab ref (appDocKey app))
+  , command "Quit" "Ctrl+Q" (guarded ref PendingQuit)
+  , command "Find..." "Ctrl+F" (openBar ref BarFind)
+  , command "Search in Files..." "Ctrl+Shift+F" (openPicker ref P.grepSource)
+  , command "Go to Line..." "Ctrl+G" (openBar ref BarGoto)
+  , command "Go to Definition" "Ctrl+]" (gotoDefinition ref)
+  , command "Toggle File Tree" "Ctrl+B" (toggleTree ref)
+  , command "Zoom In" "Ctrl+= / Ctrl++" (zoom ref (* 1.1))
+  , command "Zoom Out" "Ctrl+-" (zoom ref (/ 1.1))
+  , command "Reset Zoom" "Ctrl+0" (resetZoom ref)
+  , command "Toggle Indentation Marks" "" $
+      modifyApp ref (everyEditor (\ed -> ed {edShowWhitespace = not (edShowWhitespace (appEditor app))}))
+  , command "Toggle Vim Keys" "" $
+      modifyApp ref (everyEditor (\ed -> ed {edVim = maybe (Just V.newVim) (const Nothing) (edVim (appEditor app))}))
+  , command "Toggle Tabs and Spaces" "" $
+      onBuffer ref (B.setUsesTabs (not (B.usesTabs (edBuffer (appEditor app)))))
+  , command "Toggle Line Endings" "" $
+      modifyApp ref (\a -> a {appFormat = (appFormat a) {formatEol = if formatEol (appFormat app) == LF then CRLF else LF}})
+  ]
+    <> if manyTabs app
+      then
+        [ command "Next Tab" "Ctrl+Tab" (stepTab ref True)
+        , command "Previous Tab" "Ctrl+Shift+Tab" (stepTab ref False)
+        ]
+      else []
+    <> [ command "Undo" "Ctrl+Z" (onBuffer ref B.undo) | B.canUndo (edBuffer (appEditor app)) ]
+    <> [ command "Redo" "Ctrl+Y" (onBuffer ref B.redo) | B.canRedo (edBuffer (appEditor app)) ]
+    <> [ command "Cut" "Ctrl+X" (onBufferIO ref clipboardCut)
+       , command "Copy" "Ctrl+C" (onBufferIO ref clipboardCopy)
+       , command "Paste" "Ctrl+V" (onBufferIO ref clipboardPaste)
+       , command "Select All" "Ctrl+A" (onBuffer ref B.selectAll)
+       ]
+    <> if langName (edLang (appEditor app)) == "Markdown"
+      then
+        [ command "Toggle Markdown Preview" "Ctrl+Shift+M" (toggleMarkdownPreview ref)
+        , command "Focus Markdown Links" "Ctrl+Shift+L" (focusMarkdownLinks ref)
+        ]
+      else []
+    <> [command "Reveal Current File" "" (for_ (appPath app) (onTree ref . FT.reveal)) | isJust (appPath app)]
+    <> [command "Open Parent Folder" "" (onTree ref FT.parentRoot) | FT.hasParentRoot (appTree app)]
+    <> [ command "Refresh File Tree" "" (onTree ref FT.refresh)
+       , command "Collapse File Tree" "" (onTree ref FT.collapseAll)
+       ]
+  where
+    command = PaletteCommand
 
 toggleMarkdownPreview :: IORef App -> NanoUI ()
 toggleMarkdownPreview ref = do

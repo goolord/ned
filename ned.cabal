@@ -86,6 +86,7 @@ library
 
         -- The drawing, over the lot.
         Ned.View
+        Ned.View.CommandPalette
         Ned.View.Code
         Ned.View.Editor
         Ned.View.Tree

@@ -218,6 +218,8 @@ appMenus ref app = [("File", fileMenu), ("Edit", editMenu), ("View", viewMenu)]
       item "Find..." (Just chordFind) (openBar ref BarFind)
       item "Search in Files..." (Just chordGrep) (openPicker ref P.grepSource)
       item "Go to Line..." (Just chordGoto) (openBar ref BarGoto)
+      menuSeparator
+      item "Command Palette..." (Just chordCommandPalette) (openCommandPalette ref)
     isMarkdown = langName (edLang (appEditor app)) == "Markdown"
     viewMenu = do
       item

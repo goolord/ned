@@ -10,6 +10,7 @@ module Ned.App.State
   , Doc (..)
   , Bar (..)
   , Pending (..)
+  , PaletteState (..)
   , Placement (..)
   , Tip (..)
   , WindowLayout (..)
@@ -103,6 +104,12 @@ data Pending
   | -- | An untitled file in the tab in front, in place of what it holds.
     PendingNew
   | PendingQuit
+
+data PaletteState = PaletteState
+  { paletteQuery :: !Text
+  , paletteCursor :: !Int
+  }
+  deriving (Eq)
 
 -- | Where a file that is not open yet opens.
 data Placement
@@ -207,6 +214,8 @@ data App = App
   -- ^ A one-frame request to focus the preview's first link-copy button.
   , appMarkdownCache :: !(Maybe (Int, Int, Text, MarkdownDoc))
   -- ^ The last parsed preview, keyed by tab and buffer version.
+  , appCommandPalette :: !(Maybe PaletteState)
+  -- ^ The command palette, while it is open.
   , appPending :: !(Maybe Pending)
   , appTitle :: !Text
   -- ^ The window's title as last set.
@@ -306,6 +315,7 @@ newApp cfg = do
       , appFocusMarkdownLinks = False
       , appRequestMarkdownLinkFocus = False
       , appMarkdownCache = Nothing
+      , appCommandPalette = Nothing
       , appPending = Nothing
       , appTitle = ""
       , appTree = FT.newFileTree cwd
@@ -734,10 +744,10 @@ toNewPane src key npid a0 = case paneOf src a0 >>= paneDoc key of
 -- What follows from the state
 --------------------------------------------------------------------------------
 
--- | Whether a modal is up: the question about unsaved changes, or the finder.
--- While one is, it is the only thing that reads a key.
+-- | Whether a modal is up: the question about unsaved changes, the finder, or
+-- the command palette. While one is, it is the only thing that reads a key.
 modalUp :: App -> Bool
-modalUp app = isJust (appPending app) || isJust (appPicker app)
+modalUp app = isJust (appPending app) || isJust (appPicker app) || isJust (appCommandPalette app)
 
 -- | What the editor marks the matches of: what the find bar holds, while it
 -- is up.

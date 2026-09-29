@@ -102,6 +102,7 @@ appBindings ref =
   , (chordFind, openBar ref BarFind)
   , (chordGoto, openBar ref BarGoto)
   , (chordTree, toggleTree ref)
+  , (chordCommandPalette, openCommandPalette ref)
   , (chordMarkdownPreview, toggleMarkdownPreview ref)
   , (chordMarkdownLinks, focusMarkdownLinks ref)
   , (chordFindFile, openPicker ref fileSource)
@@ -141,13 +142,14 @@ syncTitle ref app =
 --
 -- The tree's width is not in here: the pane grid marks its own damage while
 -- one of its bars is dragged.
-chromeSig :: App -> (Text, Bool, Bool, Bool, Bool, Text, (Bool, Bool, Int), [Word64], (Int, [(Int, Bool)], (Int, Maybe FilePath)))
+chromeSig :: App -> (Text, Bool, Bool, Bool, Bool, Maybe PaletteState, Text, (Bool, Bool, Int), [Word64], (Int, [(Int, Bool)], (Int, Maybe FilePath)))
 chromeSig a =
   ( appOpenMenu a
   , appBar a == BarNone
   , appBarFocus a
   , isJust (appPending a)
   , appMarkdownPreview a
+  , appCommandPalette a
   , appStatus a
   , (appTreeShown a, appTreeFocus a, FT.ftVersion (appTree a))
   , -- The editors' panes, which a tab dragged out of a strip remakes from

@@ -3,7 +3,8 @@
 -- From the top: what the frame answers to, the title bar the menus are along,
 -- the tree and the editor side by side in their pane grid, the find bar under
 -- them, the status bar under that, and the overlays over the lot: the fuzzy
--- finder, and the question about unsaved changes. The window keeps no title
+-- finder, the command palette, and the question about unsaved changes. The
+-- window keeps no title
 -- bar of the desktop's, so the one along the top is its own:
 -- it carries the name and the three buttons, and what the desktop drags and
 -- resizes the window by is handed over from there.
@@ -58,6 +59,7 @@ import Ned.Lsp (Diagnostic (..), severityName)
 import Ned.Picker (Item (..))
 import Ned.Theme (colDiagnostic, paneChrome, tokenColor, tokenWeight)
 import Ned.View.Chrome
+import Ned.View.CommandPalette (commandPaletteOverlay)
 import Ned.View.Editor (editorView)
 import Ned.View.Picker (pickerOverlay)
 import Ned.View.Tree (fileTreePanel)
@@ -236,15 +238,20 @@ appView ref = do
     pure (editorSig app2)
 
   --------------------------------------------------------------- overlays ---
-  -- The finder is declared whether or not it is up, so that nothing after it
-  -- moves when it comes and goes, and under the question about unsaved
-  -- changes, which a file it picks may put up over it.
+  -- The picker and command palette are declared whether or not they are up,
+  -- above the content and under the question about unsaved changes, which an
+  -- action either can put up over them.
   appP <- readApp ref
   (picker, picked) <- pickerOverlay (cfgBufferFontSize (appConfig appP)) (appPicker appP)
   modifyApp ref (\a -> a {appPicker = picker})
   -- A grep hit opens its file on the line it was found on.
   for_ picked $ \item ->
     openFile ref (itemLine item) (itemPath item)
+
+  appPalette <- readApp ref
+  (palette, chosenCommand) <- commandPaletteOverlay ref appPalette (appCommandPalette appPalette)
+  modifyApp ref (\a -> a {appCommandPalette = palette})
+  for_ chosenCommand paletteCommandAction
 
   app3 <- readApp ref
   syncTitle ref app3

@@ -11,7 +11,7 @@ import Control.Exception (SomeException, try)
 import Control.Monad (filterM, forM_, unless, void, when)
 import Data.Foldable (toList)
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, isNothing)
 import qualified Data.Text as T
 import qualified Data.Text.NanoRope.Measured as Rope
 import qualified Data.Vector as V
@@ -120,6 +120,26 @@ selftestIn dir mfile say = do
     chord 'b'
     stillShown <- appTreeShown <$> readIORef ref
     when stillShown (fail "selftest: Ctrl+B did not put the file tree away")
+
+    chordWith ctrlShiftM 'p'
+    paletteOpen <- appCommandPalette <$> readIORef ref
+    unless (isJust paletteOpen) (fail "selftest: Ctrl+Shift+P did not open the command palette")
+    shot "02b-command-palette.bmp"
+    typed "toggle file tree"
+    key plain KeyEnter
+    paletteAfterRun <- readIORef ref
+    when (isJust (appCommandPalette paletteAfterRun)) (fail "selftest: running a command left the command palette open")
+    unless (appTreeShown paletteAfterRun) (fail "selftest: the command palette did not run Toggle File Tree")
+    chord 'b'
+    chordWith ctrlShiftM 'p'
+    typed "not-a-real-command"
+    key plain KeyEnter
+    noMatchState <- appCommandPalette <$> readIORef ref
+    when (isNothing noMatchState) (fail "selftest: Enter closed an empty command-palette search")
+    key plain KeyEscape
+    escapedPalette <- readIORef ref
+    when (isJust (appCommandPalette escapedPalette)) (fail "selftest: Escape did not close the command palette")
+    when (appTreeShown escapedPalette) (fail "selftest: closing the command palette ran a command")
 
     -- A run drawn as one op has to end where its cells do, or the span after
     -- it is drawn over its tail. At the sizes zooming passes through, where

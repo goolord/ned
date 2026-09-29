@@ -19,7 +19,7 @@ cabal run ned -- path/to/file.hs [more files...]
 - Drag-and-drop file opening.
 - Fuzzy file finder with live preview, powered by fzf's matching algorithm.
 - Searchable command palette, opened with `Ctrl+Shift+P`.
-- Live Markdown preview beside the source. `Ctrl+Shift+M` toggles it, `Ctrl+Shift+L` focuses link-copy buttons, and clicking a link copies its destination.
+- Live Markdown preview beside the source. `Ctrl+Shift+M` toggles it, links open with the system's default handler, and rendered text can be selected and copied.
 - Live grep across the project folder using ripgrep (`rg` must be on your `PATH`).
 - Find, go to line, undo/redo, auto-indent, zoom, and indentation guides.
 - UTF-8 editing that preserves line endings and byte order marks.
@@ -68,7 +68,6 @@ Keep `C:\msys64\ucrt64\bin` on your `PATH` when running `ned.exe`.
 | `Ctrl+G` | Go to line |
 | `Ctrl+Shift+P` | Open command palette |
 | `Ctrl+Shift+M` | Toggle Markdown preview |
-| `Ctrl+Shift+L` | Focus Markdown preview links |
 | `Ctrl+]` | Go to definition |
 | `Tab` / `Shift+Tab` | Complete the word before the caret, or indent / unindent |
 | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | Zoom in / out / reset |

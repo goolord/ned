@@ -1125,14 +1125,6 @@ selftestIn dir mfile say = do
         , markdownSource doc == expectedPreview -> pure ()
       _ -> fail "selftest: the live Markdown preview did not follow the edited buffer"
     shot "19e-markdown-preview-edited.bmp"
-    chordWith ctrlShiftM 'l'
-    key plain KeyEnter
-    keyboardState <- readIORef ref
-    unless (appStatus keyboardState == "Link copied to clipboard") $
-      fail "selftest: Ctrl+Shift+L did not focus and activate the first Markdown link-copy button"
-    click 775 195
-    linkStatus <- appStatus <$> readIORef ref
-    unless (linkStatus == "Link copied to clipboard") (fail "selftest: clicking a Markdown link did not copy its destination")
     dragTab 725 400 48
     idle
     merged <- readIORef ref

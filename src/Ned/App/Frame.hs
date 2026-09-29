@@ -72,13 +72,6 @@ appChords ref app = do
       unless (isJust (edCompletion (appEditor app)) && chord `elem` [chordNew, chordFindFile]) $
         whenM (shortcut chord) action
   when (inputKeysElem KeyEscape (inputKeys inp) && appBar app /= BarNone && not (modalUp app)) (closeBar ref)
-  when (inputKeysElem KeyEscape (inputKeys inp) && isJust (appFocusMarkdownLinks app) && not (modalUp app)) $
-    modifyApp ref $ \a ->
-      a
-        { appFocusMarkdownLinks = Nothing
-        , appRequestMarkdownLinkFocus = Nothing
-        , appStatus = "Ready"
-        }
   where
     bindings
       | isJust (edVim (appEditor app)) = filter ((`notElem` vimChords) . fst) (appBindings ref) <> vimBindings ref
@@ -104,7 +97,6 @@ appBindings ref =
   , (chordTree, toggleTree ref)
   , (chordCommandPalette, openCommandPalette ref)
   , (chordMarkdownPreview, toggleMarkdownPreview ref)
-  , (chordMarkdownLinks, focusMarkdownLinks ref)
   , (chordFindFile, openPicker ref fileSource)
   , (chordDefinition, gotoDefinition ref)
   , (chordZoomIn, zoom ref (* 1.1))
@@ -168,7 +160,7 @@ chromeSig a =
   )
 
 -- | What of the application the editor draws.
-editorSig :: App -> (Int, Int, Int, (B.Matching, Text), (Bool, Bool), Float, Text, Bool, Maybe Int)
+editorSig :: App -> (Int, Int, Int, (B.Matching, Text), (Bool, Bool), Float, Text, Bool)
 editorSig a =
   ( B.bufVersion buf
   , B.bufCursor buf
@@ -178,7 +170,6 @@ editorSig a =
   , edFontSize ed
   , langName (edLang ed)
   , appMarkdownPreview a
-  , appFocusMarkdownLinks a
   )
   where
     ed = appEditor a

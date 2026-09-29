@@ -233,12 +233,6 @@ appMenus ref app = [("File", fileMenu), ("Edit", editMenu), ("View", viewMenu)]
         (if appMarkdownPreview app then "Hide Markdown Preview" else "Show Markdown Preview")
         (Just chordMarkdownPreview)
         (toggleMarkdownPreview ref)
-      menuEntry
-        ref
-        isMarkdown
-        "Focus Markdown Links"
-        (Just chordMarkdownLinks)
-        (focusMarkdownLinks ref)
       when (hasSeparateMarkdownPreview app) $
         menuEntry ref True "Move Preview into Source Tabs" Nothing (moveMarkdownPreviewIntoTabs ref)
       menuSeparator

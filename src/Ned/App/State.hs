@@ -216,10 +216,6 @@ data App = App
   -- ^ The source tab whose preview pane the view should split off.
   , appMarkdownPreviewOf :: !(Maybe Int)
   -- ^ The Markdown source when the active tab is its preview.
-  , appFocusMarkdownLinks :: !(Maybe Int)
-  -- ^ Whether the editor yields keyboard focus to the Markdown link controls.
-  , appRequestMarkdownLinkFocus :: !(Maybe Int)
-  -- ^ A one-frame request to focus the preview's first link-copy button.
   , appMarkdownCache :: !(Map Int (Int, Text, MarkdownDoc))
   -- ^ Parsed previews, keyed by source tab and buffer version.
   , appCommandPalette :: !(Maybe PaletteState)
@@ -322,8 +318,6 @@ newApp cfg = do
       , appMarkdownPreview = False
       , appRequestMarkdownPreview = Nothing
       , appMarkdownPreviewOf = Nothing
-      , appFocusMarkdownLinks = Nothing
-      , appRequestMarkdownLinkFocus = Nothing
       , appMarkdownCache = Map.empty
       , appCommandPalette = Nothing
       , appPending = Nothing
@@ -535,33 +529,25 @@ showDoc :: Doc -> App -> App
 showDoc doc app = case docMarkdownPreviewOf doc of
   Just sourceKey ->
     let source = fromMaybe doc (find ((== sourceKey) . docKey) (appDocs app))
-        keepLinkFocus = appFocusMarkdownLinks app == Just sourceKey
      in app
           { appEditor = docEditor source
           , appPath = docPath source
           , appFormat = docFormat source
-          , appDocKey = docKey doc
-          , appMarkdownPreviewOf = Just sourceKey
-          , appMarkdownPreview = hasMarkdownPreview sourceKey app
-          , appFocusMarkdownLinks = if keepLinkFocus then appFocusMarkdownLinks app else Nothing
-          , appRequestMarkdownLinkFocus = if keepLinkFocus then appRequestMarkdownLinkFocus app else Nothing
-          , appStatus = if appFocusMarkdownLinks app /= Nothing && not keepLinkFocus then "Ready" else appStatus app
-          }
+           , appDocKey = docKey doc
+           , appMarkdownPreviewOf = Just sourceKey
+           , appMarkdownPreview = hasMarkdownPreview sourceKey app
+           }
   Nothing ->
     let changed = docKey doc /= appDocKey app
-        keepLinkFocus = appFocusMarkdownLinks app == Just (docKey doc)
      in app
           { appEditor = docEditor doc
           , appPath = docPath doc
           , appFormat = docFormat doc
           , appDocKey = docKey doc
-          , appMarkdownPreviewOf = Nothing
-          , appMarkdownPreview = hasMarkdownPreview (docKey doc) app
-          , appRequestMarkdownPreview = if changed then Nothing else appRequestMarkdownPreview app
-          , appFocusMarkdownLinks = if keepLinkFocus then appFocusMarkdownLinks app else Nothing
-          , appRequestMarkdownLinkFocus = if keepLinkFocus then appRequestMarkdownLinkFocus app else Nothing
-          , appStatus = if appFocusMarkdownLinks app /= Nothing && not keepLinkFocus then "Ready" else appStatus app
-          }
+           , appMarkdownPreviewOf = Nothing
+           , appMarkdownPreview = hasMarkdownPreview (docKey doc) app
+           , appRequestMarkdownPreview = if changed then Nothing else appRequestMarkdownPreview app
+           }
 
 hasMarkdownPreview :: Int -> App -> Bool
 hasMarkdownPreview sourceKey = any ((== Just sourceKey) . docMarkdownPreviewOf) . appDocs
@@ -677,11 +663,8 @@ refreshMarkdownPreviewState app =
   let sourceKey = fromMaybe (appDocKey app) (appMarkdownPreviewOf app)
       open = hasMarkdownPreview sourceKey app
       sourceExists = any ((== sourceKey) . docKey) (appDocs app)
-      focus = if open then appFocusMarkdownLinks app else Nothing
    in app
         { appMarkdownPreview = open
-        , appFocusMarkdownLinks = focus
-        , appRequestMarkdownLinkFocus = if isJust focus then appRequestMarkdownLinkFocus app else Nothing
         , appRequestMarkdownPreview = if open || sourceExists then appRequestMarkdownPreview app else Nothing
         }
 

@@ -54,7 +54,6 @@ module Ned.App.Commands
   , chordTree
   , chordCommandPalette
   , chordMarkdownPreview
-  , chordMarkdownLinks
   , chordZoomIn
   , chordZoomOut
   , chordZoomReset
@@ -77,7 +76,6 @@ module Ned.App.Commands
   , openCommandPalette
   , toggleMarkdownPreview
   , moveMarkdownPreviewIntoTabs
-  , focusMarkdownLinks
   , PaletteCommand (..)
   , commandPaletteCommands
   , openPicker
@@ -364,9 +362,6 @@ chordCommandPalette = K.ctrl <> K.shift <> K.key 'p'
 chordMarkdownPreview :: K.Shortcut
 chordMarkdownPreview = K.ctrl <> K.shift <> K.key 'm'
 
-chordMarkdownLinks :: K.Shortcut
-chordMarkdownLinks = K.ctrl <> K.shift <> K.key 'l'
-
 -- | The chords that are vim's with vim's keys on, and not the application's:
 -- Ctrl+N and Ctrl+P complete a word in insert mode and move down and up in
 -- normal mode, and Ctrl+W deletes the word before the caret. What they did
@@ -537,11 +532,9 @@ commandPaletteCommands ref app =
        , command "Select All" "Ctrl+A" (onBuffer ref B.selectAll)
        ]
      <> ( if langName (edLang (appEditor app)) == "Markdown"
-            then
-              [ command "Toggle Markdown Preview" "Ctrl+Shift+M" (toggleMarkdownPreview ref)
-              , command "Focus Markdown Links" "Ctrl+Shift+L" (focusMarkdownLinks ref)
-              ]
-            else []
+             then
+               [command "Toggle Markdown Preview" "Ctrl+Shift+M" (toggleMarkdownPreview ref)]
+             else []
         )
      <> [command "Move Preview into Source Tabs" "" (moveMarkdownPreviewIntoTabs ref) | hasSeparateMarkdownPreview app]
      <> [command "Reveal Current File" "" (for_ (appPath app) (onTree ref . FT.reveal)) | isJust (appPath app)]
@@ -563,8 +556,6 @@ toggleMarkdownPreview ref = do
         let closed = closeDoc (docKey doc) a
          in closed
               { appStatus = "Markdown preview hidden"
-              , appFocusMarkdownLinks = Nothing
-              , appRequestMarkdownLinkFocus = Nothing
               }
     Nothing
       | langName (edLang (appEditor app)) /= "Markdown" -> setStatus ref "Open a Markdown file to show its preview"
@@ -573,8 +564,6 @@ toggleMarkdownPreview ref = do
             a
               { appMarkdownPreview = False
               , appRequestMarkdownPreview = Nothing
-              , appFocusMarkdownLinks = Nothing
-              , appRequestMarkdownLinkFocus = Nothing
               , appStatus = "Markdown preview hidden"
               }
       | otherwise ->
@@ -591,24 +580,6 @@ moveMarkdownPreviewIntoTabs ref = do
   when (hasSeparateMarkdownPreview app) $
     modifyApp ref $ \a ->
       (mergeMarkdownPreview a) {appStatus = "Preview moved into source tabs"}
-
-focusMarkdownLinks :: IORef App -> NanoUI ()
-focusMarkdownLinks ref = do
-  app <- readApp ref
-  let sourceKey = fromMaybe (appDocKey app) (appMarkdownPreviewOf app)
-      sourceDoc = find ((== sourceKey) . docKey) (appDocs app)
-  if maybe True ((/= "Markdown") . langName . edLang . docEditor) sourceDoc
-    then setStatus ref "Open a Markdown file to focus its preview links"
-    else modifyApp ref $ \a ->
-      let selected = selectDoc sourceKey a
-          hasPreview = any ((== Just sourceKey) . docMarkdownPreviewOf) (appDocs selected)
-       in selected
-            { appMarkdownPreview = True
-            , appRequestMarkdownPreview = if hasPreview then Nothing else Just sourceKey
-            , appFocusMarkdownLinks = Just sourceKey
-            , appRequestMarkdownLinkFocus = Just sourceKey
-            , appStatus = "Focus a preview link, then press Enter to copy"
-            }
 
 -- | Give the keyboard to the pane on one side of the one that has it, by
 -- vim's letter for the side: the tree is left of the text, and the bar is

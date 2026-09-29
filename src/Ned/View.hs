@@ -28,12 +28,12 @@ module Ned.View
   ) where
 
 import Control.Applicative ((<|>))
-import Control.Monad (forM, unless, void, when)
+import Control.Monad (unless, void, when)
 import Data.Char (isSpace)
 import Data.Foldable (for_, traverse_)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (find, intercalate)
-import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -45,8 +45,7 @@ import GHC.Clock (getMonotonicTime)
 import NanoUI
 import NanoUI.Backend.Sdl (openUrl)
 import qualified NanoUI as G (GridNode (..))
-import NanoUI.Markdown (Block (CodeBlock), MarkdownConfig (..), MarkdownDoc, appendMarkdown, defaultMarkdownConfig, markdownBlocks, markdownConfigured, parseMarkdown)
-import qualified NanoUI.Markdown.Syntax as MD
+import NanoUI.Markdown (Block (CodeBlock), MarkdownConfig (..), MarkdownDoc, appendMarkdown, defaultMarkdownConfig, markdownConfigured, parseMarkdown)
 import Ned.App.Commands
 import Ned.App.Frame
 import Ned.App.State
@@ -90,7 +89,6 @@ appView ref = do
   reloadConfig ref
   trackWindow ref
   app0 <- readApp ref
-  linkFocus <- liftIO (newIORef Nothing)
 
   -- A dialog that is up is asked for its answer, a file dropped on the window
   -- opens, and the chords the application owns are read, all before anything
@@ -185,8 +183,7 @@ appView ref = do
                   ed0 = maybe (docEditor doc) docEditor sourceDoc
                   focused = pid == appPaneKey appNow
                   isPreview = isJust (docMarkdownPreviewOf doc)
-                  yieldMarkdownLinks = appFocusMarkdownLinks appNow == Just sourceKey
-                  wantFocus = focused && not isPreview && not (appBarFocus app1) && not (appTreeFocus app1) && not yieldMarkdownLinks && unblocked
+                  wantFocus = focused && not isPreview && not (appBarFocus app1) && not (appTreeFocus app1) && unblocked
                   marks = if focused then findMarks appNow else (B.Matching False False, "")
                   diags = if focused then diagnosticSpans appNow else []
               when
@@ -206,7 +203,7 @@ appView ref = do
                       }
               (mResp, ed, caret) <- case docMarkdownPreviewOf doc of
                 Just previewSource -> do
-                  markdownPreview ref linkFocus previewSource ed0
+                  markdownPreview ref previewSource ed0
                   pure (Nothing, ed0, Rect 0 0 0 0)
                 Nothing -> do
                   (resp, updated, caretRect') <-
@@ -296,8 +293,6 @@ appView ref = do
         traverse_ (runPending ref) (appPending app3)
   when (respClicked closeResp) (modifyApp ref (\a -> a {appPending = Nothing}))
 
-  linkFocusTarget <- liftIO (readIORef linkFocus)
-  for_ linkFocusTarget (requestFocus . respId)
   appEnd <- readApp ref
   when (chromeSig appEnd /= chromeSig app0 || editorSig appEnd /= drawn) requestFrame
 
@@ -353,74 +348,21 @@ codeBlock name lang code = do
           void (setClipboard code)
       void (richTextWith (tight . fillW . fontMono) (codePieces lang code))
 
-markdownPreview :: IORef App -> IORef (Maybe Response) -> Int -> Editor -> NanoUI ()
-markdownPreview ref linkFocus key ed = do
+markdownPreview :: IORef App -> Int -> Editor -> NanoUI ()
+markdownPreview ref key ed = do
   let buf = edBuffer ed
       bufferText = Rope.toText (B.bufRope buf)
   (source, doc) <- cachedMarkdown ref key (B.bufVersion buf) bufferText
   if T.null (T.strip source)
     then labelWith (grow . fillW . padAll 16 . fontMuted) "Write Markdown in the editor to see it here."
     else do
-      clicked <- scrollWith (grow . fillW . padXY 16 12) $ do
-        response <- markdownConfigured (codeColoured (edLang ed)) doc
-        let links = markdownLinks doc
-        firstLink <- copyMarkdownLinks ref key links
-        app <- readApp ref
-        when (appRequestMarkdownLinkFocus app == Just key) $ do
-          case firstLink of
-            Nothing -> do
-              setStatus ref "No links in this Markdown file"
-              modifyApp ref (\a -> a {appFocusMarkdownLinks = Nothing})
-            Just copyButton -> liftIO (writeIORef linkFocus (Just copyButton))
-          modifyApp ref (\a -> a {appRequestMarkdownLinkFocus = Nothing})
-        pure response
+      clicked <- scrollWith (grow . fillW . padXY 16 12) (markdownConfigured (codeColoured (edLang ed)) doc)
       for_ clicked $ \url -> do
         opened <- liftIO (openUrl url)
         modifyApp ref $ \a ->
           a
             { appStatus = if opened then "Opened link" else "Could not open link"
-            , appFocusMarkdownLinks = if appFocusMarkdownLinks a == Just key then Nothing else appFocusMarkdownLinks a
-            , appRequestMarkdownLinkFocus = if appRequestMarkdownLinkFocus a == Just key then Nothing else appRequestMarkdownLinkFocus a
             }
-
-copyMarkdownLinks :: IORef App -> Int -> [(Text, Text)] -> NanoUI (Maybe Response)
-copyMarkdownLinks _ _ [] = pure Nothing
-copyMarkdownLinks ref key links = do
-  buttons <- columnWith (tight . fillW . gap 6) $ do
-    separator
-    labelWith (tight . fontMuted . fontSizeScale 0.9) "Links"
-    forM (zip [1 :: Int ..] links) $ \(n, (labelText, url)) -> do
-      let name = if T.null labelText then url else labelText
-          shortName = T.take 36 name <> if T.length name > 36 then "..." else ""
-          buttonText = "Copy link " <> T.pack (show n) <> ": " <> shortName
-      response <- styled subtle (buttonWith' (fillW . padXY 8 4) buttonText)
-      when (respClicked response) $ do
-        void (setClipboard url)
-        modifyApp ref $ \a ->
-          a
-            { appStatus = "Link copied to clipboard"
-            , appFocusMarkdownLinks = if appFocusMarkdownLinks a == Just key then Nothing else appFocusMarkdownLinks a
-            , appRequestMarkdownLinkFocus = if appRequestMarkdownLinkFocus a == Just key then Nothing else appRequestMarkdownLinkFocus a
-            }
-      pure response
-  pure (listToMaybe buttons)
-
-markdownLinks :: MarkdownDoc -> [(Text, Text)]
-markdownLinks = concatMap blockLinks . markdownBlocks
-  where
-    blockLinks = \case
-      MD.Paragraph spans -> spanLinks spans
-      MD.Heading _ spans -> spanLinks spans
-      MD.BlockQuote blocks -> concatMap blockLinks blocks
-      MD.List _ _ items -> concatMap (concatMap blockLinks . MD.itemBlocks) items
-      MD.Table _ header rows -> concatMap spanLinks (header <> concat rows)
-      _ -> []
-    spanLinks = concatMap $ \case
-      MD.Link target _ linkLabel -> (MD.spansText linkLabel, target) : spanLinks linkLabel
-      MD.Emph spans -> spanLinks spans
-      MD.Strong spans -> spanLinks spans
-      MD.Strike spans -> spanLinks spans
-      _ -> []
 
 cachedMarkdown :: IORef App -> Int -> Int -> Text -> NanoUI (Text, MarkdownDoc)
 cachedMarkdown ref key version source = do

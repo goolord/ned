@@ -24,7 +24,7 @@ import NanoUI.Internal.Context (Context (..))
 import NanoUI.Markdown (parseMarkdown)
 import NanoUI.Testing (cursorKindIs, needsRedraw, newPixelContext, uiCursorKind)
 import Ned.App
-import Ned.App.State (Bar (..), Doc (..), Tip (..), activeDoc, appDocs, closeDoc, docName, everyEditor, hoverAt, paneDocs, selectDoc)
+import Ned.App.State (Bar (..), Doc (..), Tip (..), WindowLayout (..), activeDoc, appDocs, closeDoc, docName, everyEditor, hoverAt, paneDocs, selectDoc)
 import qualified Ned.Buffer as B
 import Ned.Complete (Candidate (..), Completion (..))
 import Ned.Config (Config (..), FileSettings (..), defaultConfig)
@@ -1053,6 +1053,15 @@ selftestIn dir mfile say = do
     unless (kept == 20) (fail ("selftest: a settings file that does not read changed the text size to " <> show kept))
     modifyIORef' ref (\a -> a {appConfigPath = Nothing})
     idle
+
+    -- The outer pane grid's arrangement goes into the saved window layout. A
+    -- drag of the tree pane onto the editor swaps which side it occupies.
+    drag 60 55 800 400
+    idle
+    outerGrid <- layoutOuterGrid . appLayout <$> readIORef ref
+    case outerGrid of
+      Just (Split _ AxisV _ (Pane 2) (Pane 1)) -> pure ()
+      other -> fail ("selftest: dragging the tree to the other side left the outer grid at " <> show other)
 
     -- Resize the window a step at a time, as a drag of its border does, and
     -- time the frames; then the same under a view of one label, for what the

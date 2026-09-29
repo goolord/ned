@@ -422,14 +422,11 @@ treeEditorGrid ref treePane editorPane = do
   -- response -- what it proposes for a held tab -- is carried out through a
   -- ref for the frame to read after the row.
   innerResp <- liftIO (newIORef Nothing)
-  -- The outer grid's own tree, handed back each frame. The first frame
-  -- starts it from the window's width; after that a resize changes the
-  -- editors' width and not the split, which the grid would take again if it
-  -- were passed a new one. The state starts empty rather than on that first
-  -- tree: a state is not stored while it is still what it started as, so the
-  -- first tree would be worked out again each frame from the tree's width as
-  -- it was last drawn, and the tree would creep narrower.
-  (outer, setOuter) <- useState Nothing
+  -- The outer grid starts from the saved arrangement, or on a first run from
+  -- the window and tree widths. Its response is kept from then on, so a resize
+  -- changes the editors' width and not the split, and the first-run split is
+  -- not worked out again from the tree's last-drawn width each frame.
+  (outer, setOuter) <- useState (layoutOuterGrid (appLayout app))
   let start = G.Split treeEditorSplit AxisV (treeShare (winW - 2 * border) (layoutTreeWidth (appLayout app))) (G.Pane treePaneId) (G.Pane editorPaneId)
       -- The pane the editors fill: the whole row while the tree is put away,
       -- beside the tree at its width while it is shown.
@@ -455,7 +452,11 @@ treeEditorGrid ref treePane editorPane = do
           , pgFocusable = False
           , pgViewPane = \pid pctx -> if pid == treePaneId then treePane pctx else editorHost pctx
           }
-  setOuter (pgrTree outerResp)
+  let outerTree = pgrTree outerResp
+  setOuter outerTree
+  for_ outerTree $ \gridTree ->
+    modifyApp ref $ \a ->
+      a {appLayout = (appLayout a) {layoutOuterGrid = Just gridTree}}
   liftIO (readIORef innerResp)
 
 -- | The outer row's own split, which the first frame starts the row from.

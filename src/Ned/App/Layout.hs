@@ -1,5 +1,5 @@
 -- | The window as it was left, kept from one run to the next: its size,
--- whether it filled the screen, and whether the tree was shown and how wide.
+-- whether it filled the screen, and the tree's visibility, width and position.
 --
 -- It is kept apart from the settings, in ned's folder of the user's state
 -- (@~/.local/state/ned@ on Linux, @%LOCALAPPDATA%\\ned@ on Windows), as JSON
@@ -14,9 +14,11 @@ module Ned.App.Layout
 
 import Control.Exception (IOException, try)
 import qualified Data.ByteString as BS
-import Data.Aeson.Micro (Object, Parser, Value, decodeStrict, encodeStrict, object, parseMaybe, withObject, (.!=), (.:?), (.=))
+import Data.Aeson.Micro (Object, Parser, Value, decodeStrict, encodeStrict, object, parseMaybe, withObject, (.!=), (.:), (.:?), (.=))
 import Data.Maybe (fromMaybe)
+import qualified Data.Text as T
 import NanoUI (Size (..))
+import qualified NanoUI as G (GridAxis (..), GridNode (..))
 import Ned.App.State
 import Ned.FileTree (minTreeWidth)
 import System.Directory (XdgDirectory (..), createDirectoryIfMissing, getXdgDirectory, renameFile)
@@ -41,17 +43,53 @@ loadLayout path app =
 -- dragged to.
 laidOver :: App -> Object -> Parser App
 laidOver app o = do
-  let WindowLayout (Size w h) maximized treeW = appLayout app
+  let WindowLayout (Size w h) maximized treeW outerGrid = appLayout app
   w' <- o .:? "width" .!= w
   h' <- o .:? "height" .!= h
   maximized' <- o .:? "maximized" .!= maximized
   treeW' <- o .:? "treeWidth" .!= treeW
   shown <- o .:? "treeShown" .!= appTreeShown app
+  outerGridValue <- o .:? "outerGrid"
+  let outerGrid' = case outerGridValue >>= parseMaybe parseGridNode of
+        Just tree | validOuterGrid tree -> Just tree
+        _ -> outerGrid
   pure
     app
-      { appLayout = WindowLayout (Size (max 320 w') (max 240 h')) maximized' (max minTreeWidth treeW')
+      { appLayout = WindowLayout (Size (max 320 w') (max 240 h')) maximized' (max minTreeWidth treeW') outerGrid'
       , appTreeShown = shown
       }
+
+-- | Read the small JSON tree that describes the outer pane arrangement.
+parseGridNode :: Value -> Parser G.GridNode
+parseGridNode = withObject "pane grid node" $ \node -> do
+  pane <- node .:? "pane"
+  case pane of
+    Just paneId -> pure (G.Pane paneId)
+    Nothing -> do
+      splitId <- node .: "split"
+      axisName <- (node .: "axis" :: Parser T.Text)
+      axis <- case axisName of
+        "vertical" -> pure G.AxisV
+        "horizontal" -> pure G.AxisH
+        _ -> fail "unknown pane grid axis"
+      ratio <- node .: "ratio"
+      first <- node .: "first" >>= parseGridNode
+      second <- node .: "second" >>= parseGridNode
+      pure (G.Split splitId axis ratio first second)
+
+-- | The outer grid always holds these two panes. Reject a stale or malformed
+-- tree rather than restoring an arrangement the views cannot fill.
+validOuterGrid :: G.GridNode -> Bool
+validOuterGrid (G.Split splitId _ ratio (G.Pane first) (G.Pane second)) =
+  ((first == treePaneId && second == editorPaneId) || (first == editorPaneId && second == treePaneId))
+    && splitId > 0
+    && splitId < (2 ^ (63 :: Int))
+    && splitId /= first
+    && splitId /= second
+    && not (isNaN ratio || isInfinite ratio)
+    && ratio >= 0
+    && ratio <= 1
+validOuterGrid _ = False
 
 -- | Keep the application's layout for the next run. The file is written
 -- beside itself and moved over the old one, so a run that is cut short
@@ -76,6 +114,23 @@ layoutJson app =
       -- of the row, and a hair off.
       "treeWidth" .= (fromIntegral (round treeW :: Int) :: Float)
     , "treeShown" .= appTreeShown app
+    , "outerGrid" .= (gridNodeValue <$> layoutOuterGrid (appLayout app))
     ]
   where
-    WindowLayout (Size w h) maximized treeW = appLayout app
+    WindowLayout (Size w h) maximized treeW _ = appLayout app
+
+gridNodeValue :: G.GridNode -> Value
+gridNodeValue (G.Pane paneId) = object ["pane" .= paneId]
+gridNodeValue (G.Split splitId axis ratio first second) =
+  object
+    [ "split" .= splitId
+    , "axis" .= axisName
+    , "ratio" .= ratio
+    , "first" .= gridNodeValue first
+    , "second" .= gridNodeValue second
+    ]
+  where
+    axisName :: T.Text
+    axisName = case axis of
+      G.AxisV -> "vertical"
+      G.AxisH -> "horizontal"

@@ -15,6 +15,8 @@ import qualified Data.Text.IO as TIO
 import qualified Data.Text.NanoRope.Measured as Rope
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
+import Ned.App.Layout (loadLayout, saveLayout)
+import Ned.App.State (App (appLayout), WindowLayout (..), newApp)
 import Ned.Buffer (Buffer)
 import qualified Ned.Buffer as B
 import Ned.Complete
@@ -25,6 +27,7 @@ import Ned.File (Eol (..), FileFormat (..), Loaded (..), loadFile, saveFile)
 import Ned.Highlight
 import Ned.Picker (Item (..), Source (..), fileSource, grepSource, relative)
 import Ned.Picker.Grep (grepHit)
+import NanoUI (GridAxis (..), GridNode (..))
 import System.Directory (createDirectoryIfMissing, findExecutable, getTemporaryDirectory, removeFile, removePathForcibly)
 import System.Exit (exitFailure)
 import System.FilePath ((</>))
@@ -339,6 +342,24 @@ main = do
   check "not UTF-8 is lossy" (Right True) (loadedLossy <$> latin)
   check "not UTF-8 shows replacements" (Right "caf\xFFFD\n") (text . loadedBuffer <$> latin)
   removeFile path
+
+  -- Window layout ------------------------------------------------------------
+  let layoutDir = tmp </> "ned-test-layout"
+      layoutFile = layoutDir </> "layout.json"
+  removePathForcibly layoutDir
+  layoutBase <- newApp defaultConfig
+  let outerGrid = Split 9 AxisV 0.63 (Pane 2) (Pane 1)
+      layoutApp = layoutBase {appLayout = (appLayout layoutBase) {layoutOuterGrid = Just outerGrid}}
+  saveLayout layoutFile layoutApp
+  restoredLayout <- loadLayout layoutFile layoutBase
+  check
+    "the pane order and split survive a layout round-trip"
+    (Just outerGrid)
+    (layoutOuterGrid (appLayout restoredLayout))
+  BS.writeFile layoutFile "{\"outerGrid\":{\"pane\":1}}"
+  invalidLayout <- loadLayout layoutFile layoutBase
+  check "an outer grid without both panes is ignored" Nothing (layoutOuterGrid (appLayout invalidLayout))
+  removePathForcibly layoutDir
 
   -- What the finder looks through ---------------------------------------------
   -- A folder with something to skip, something nested, and more files than one

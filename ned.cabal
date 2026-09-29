@@ -138,6 +138,7 @@ test-suite ned-test
         directory,
         filepath,
         ned,
+        nano-ui,
         nano-rope,
         text,
         vector

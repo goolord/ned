@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+* The tree/editor pane arrangement is saved with the window layout, so dragging
+  the file tree to the right of the buffers keeps it there after reopening.
 * Tabs drag. A press carried off a tab takes it up, with the place a drop
   would open at marked in its strip: drop it between two tabs to reorder
   them, over another pane to move it there, or over an edge of its own pane

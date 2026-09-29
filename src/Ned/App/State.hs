@@ -65,7 +65,7 @@ import Data.Maybe (isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Word (Word64)
-import NanoUI (DragPhase (..), Rect (..), Size (..), V2 (..), rectContains)
+import NanoUI (DragPhase (..), GridNode, Rect (..), Size (..), V2 (..), rectContains)
 import NanoUI.Backend.Sdl (FileDialogId)
 import NanoUI.Markdown (MarkdownDoc)
 import qualified Ned.Buffer as B
@@ -205,8 +205,8 @@ data App = App
   , appTree :: !FileTree
   , appTreeShown :: !Bool
   , appLayout :: !WindowLayout
-  -- ^ The window's size, whether it fills the screen, and the tree's width,
-  -- as last drawn: what is saved when the window closes.
+  -- ^ The window's size and pane arrangement, as last drawn: what is saved
+  -- when the window closes.
   , appTreeFocus :: !Bool
   -- ^ Whether the tree has the keyboard, and not the editor.
   , appPicker :: !(Maybe Picker)
@@ -235,8 +235,9 @@ data App = App
   -- where they were when it was put up ('hoverAt').
   }
 
--- | How the window was left: its size, whether it filled the screen, and how
--- wide the tree was. Whether the tree was shown is 'appTreeShown'.
+-- | How the window was left: its size, whether it filled the screen, how wide
+-- the tree was, and the tree/editor pane arrangement. Whether the tree was
+-- shown is 'appTreeShown'.
 data WindowLayout = WindowLayout
   { layoutSize :: !Size
   -- ^ In layout units, as the window opens at. A window that fills the
@@ -244,6 +245,8 @@ data WindowLayout = WindowLayout
   , layoutMaximized :: !Bool
   , layoutTreeWidth :: !Float
   -- ^ As it was last drawn, which a tree put away keeps.
+  , layoutOuterGrid :: !(Maybe GridNode)
+  -- ^ The tree and editor panes, as arranged when the window was last closed.
   }
   deriving (Eq, Show)
 
@@ -300,6 +303,7 @@ newApp cfg = do
             { layoutSize = Size (fromIntegral (cfgWindowWidth cfg)) (fromIntegral (cfgWindowHeight cfg))
             , layoutMaximized = False
             , layoutTreeWidth = FT.defaultTreeWidth
+            , layoutOuterGrid = Nothing
             }
       , appTreeFocus = False
       , appPicker = Nothing

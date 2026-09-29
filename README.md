@@ -118,7 +118,7 @@ To write out every setting with its default and a description:
 cabal run ned -- --default-config > ~/.config/ned/config.dhall
 ```
 
-ned remembers the window's size, whether it was maximized, and the file tree's width and visibility in `layout.json` in `~/.local/state/ned` (`%LOCALAPPDATA%\ned` on Windows), so `windowWidth`, `windowHeight`, and `showFileTree` only set the first run. Delete the file to start from them again.
+ned remembers the window's size, whether it was maximized, and the file tree's width, visibility, and position relative to the buffers in `layout.json` in `~/.local/state/ned` (`%LOCALAPPDATA%\ned` on Windows), so `windowWidth`, `windowHeight`, and `showFileTree` only set the first run. Delete the file to start from them again.
 
 Sizes are Doubles, so write `18.0`, not `18`. A field that is misspelled or has the wrong type is an error, and ned starts with the defaults. ned applies changes when you save the file, except `uiFontSize`, `bufferFont`, and the window size, which need a restart.
 

@@ -30,21 +30,24 @@ import Control.Applicative ((<|>))
 import Control.Monad (unless, void, when)
 import Data.Char (isSpace)
 import Data.Foldable (for_, traverse_)
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
-import Data.List (intercalate)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
+import Data.List (find, intercalate)
 import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Traversable (mapAccumL)
+import Data.Primitive.SmallArray (smallArrayFromList)
 import Data.Word (Word64)
 import GHC.Clock (getMonotonicTime)
 import NanoUI
+import qualified NanoUI as G (GridNode (..))
 import NanoUI.Markdown (Block (CodeBlock), MarkdownConfig (..), defaultMarkdownConfig, markdownConfigured)
 import Ned.App.Commands
 import Ned.App.Frame
 import Ned.App.State
 import Ned.Complete.Tags (Tags, noTags, watchTags)
 import Ned.Config (Config (..), watchConfig)
+import qualified Ned.Buffer as B
 import Ned.Editor (Editor (..))
 import Ned.Editor.Vim (Vim (..))
 import Ned.FileTree (FileTree (..), minTreeWidth, rootName)
@@ -88,14 +91,17 @@ appView ref = do
   appChords ref app0
 
   ----------------------------------------------------------------- layout ---
+  -- A tab the pointer holds says nothing yet of where it would land: the
+  -- panes say so again this frame, each for its own rectangle.
+  modifyApp ref rewindDrag
   drawn <- windowBorder $ columnWith (grow . gap 0 . padAll 0) $ do
     titleBar ref app0
     separator
 
     -- The tree and the editor run on the state as the chords and menus above
-    -- left it. They are the two panes of a pane grid, so the bar between them
-    -- is the toolkit's to draw and drag, and where the split was left is
-    -- remembered by the grid rather than by the application.
+    -- left it. They are the panes of a pane grid, so the bars between them
+    -- are the toolkit's to draw and drag, and the shape of the row is the
+    -- state's to keep.
     app1 <- readApp ref
     -- Whether the question about unsaved changes was up as the frame found
     -- things, which is what the chords above were read under too: one that
@@ -132,53 +138,85 @@ appView ref = do
           -- The header is the pane's drag handle, so a hold on the root's
           -- name drags the pane and nothing else in it does.
           pure (PaneView (rootName ft) False)
-        -- The editor pane: the tabs of the open files, and the text of the
-        -- one in front. Putting the tree away makes this pane the whole row:
-        -- the grid calls that maximizing it, and keeps the split where it
-        -- was, so showing the tree again brings it back at its width.
-        editorPane respRef pctx = do
-          if appTreeShown app1
-            then when (pgcMaximized pctx) (pgcRestore pctx)
-            else unless (pgcMaximized pctx) (pgcMaximize pctx)
+        -- A pane shows its strip when there is more than the one tab in it,
+        -- or more than the one pane to take a tab to.
+        showsStrip a pt = length (paneDocs pt) > 1 || not (null (appPanes a))
+        -- An editor pane: the strip of the files it holds, and the text of
+        -- the one in front of them. A press on the text makes the pane the
+        -- one in front; what a release over its body would do with a tab
+        -- held -- a move into this pane, when it came from another -- the
+        -- pane says while the pointer is over it.
+        editorPane respRef pid pctx = do
           columnWith (grow . gap 0 . padAll 0) $ do
             -- Scoped so that the editor keeps its ids whether or not the
             -- tabs are there: one file has none.
             scope $ do
               appTabs <- readApp ref
-              when (manyTabs appTabs) (docTabs ref appTabs)
-            -- The tree or the tabs may have just brought another file to the
-            -- front, which is the editor's buffer now. Who has the keyboard
-            -- is read from before either ran, though: the keys of this frame
-            -- are theirs, and an Enter that opened a file in the tree is not
-            -- one to put a newline in the file it opened.
+              for_ (paneOf pid appTabs) $ \pt ->
+                when (showsStrip appTabs pt) (docTabs ref pid pt)
+            -- The tree or a strip may have just brought another file to the
+            -- front, which is this pane's buffer now if this is the pane in
+            -- front. Who has the keyboard is read from before either ran,
+            -- though: the keys of this frame are theirs, and an Enter that
+            -- opened a file in the tree is not one to put a newline in the
+            -- file it opened.
             appNow <- readApp ref
-            let wantFocus = not (appBarFocus app1) && not (appTreeFocus app1) && unblocked
-            (resp, ed, caret) <- editorView (appDocKey appNow) wantFocus (findMarks appNow) (diagnosticSpans appNow) (otherWords tags appNow) (appEditor appNow)
-            liftIO (writeIORef respRef (Just resp))
-            when (any (not . null . vimRequests) (edVim ed)) requestFrame
-            modifyApp ref $ \a ->
-              a
-                { appEditor = ed
-                , appBarFocus = appBarFocus a && not (edPressed ed)
-                , appTreeFocus = appTreeFocus a && not (edPressed ed)
-                }
-            hoverPopup ref caret
-          pure (PaneView "" False)
+            for_ (paneOf pid appNow) $ \pt -> do
+              let focused = pid == appPaneKey appNow
+                  wantFocus = focused && not (appBarFocus app1) && not (appTreeFocus app1) && unblocked
+                  marks = if focused then findMarks appNow else (B.Matching False False, "")
+                  diags = if focused then diagnosticSpans appNow else []
+              (resp, ed, caret) <- editorView (docKey (paneFront pt)) wantFocus marks diags (otherWords tags appNow) (docEditor (paneFront pt))
+              liftIO (modifyIORef' respRef (++ [(pid, resp)]))
+              when (any (not . null . vimRequests) (edVim ed)) requestFrame
+              when (edPressed ed && not focused) (modifyApp ref (focusPane pid))
+              modifyApp ref $ \a ->
+                let a' = onPane pid (\p -> p {paneFront = (paneFront p) {docEditor = ed}}) a
+                 in a'
+                      { appBarFocus = appBarFocus a' && not (edPressed ed)
+                      , appTreeFocus = appTreeFocus a' && not (edPressed ed)
+                      }
+              -- What a release over this pane's body would do with a tab
+              -- held that came from another pane.
+              modifyApp ref (noteDrop pid (pgcRect pctx))
+              when focused (hoverPopup ref caret)
+            -- A pane the tabs have emptied closes here, its own pane's to
+            -- close, which leaves the row to the panes beside it.
+            appClosed <- readApp ref
+            when (appClosePane appClosed == Just pid) $ do
+              pgcClose pctx
+              modifyApp ref (\a -> a {appClosePane = Nothing})
+            pure (PaneView (maybe T.empty (docName . paneFront) (paneOf pid appNow)) False)
     -- What each pane hangs its menu on, which the grid's own response does
     -- not carry out of it.
     treeResp <- liftIO (newIORef Nothing)
-    edResp <- liftIO (newIORef Nothing)
-    _ <- treeEditorGrid (layoutTreeWidth (appLayout app1)) (treePane treeResp) (editorPane edResp)
+    edResps <- liftIO (newIORef [])
+    gridResp <- treeEditorGrid ref (treePane treeResp) (editorPane edResps)
+    -- The frame the drag's release lands on: the tab goes where the strips
+    -- and panes said, or into the pane the grid proposes for it, or back
+    -- where it came from. Any other frame of the drag is kept as it is.
+    landHeldTabUi ref (gridResp >>= pgrDropTarget)
     app2 <- readApp ref
 
     -- Scoped so that the editor's own menu below keeps its ids whether or not
     -- the tree hangs its own menu this frame.
     scope $ liftIO (readIORef treeResp) >>= traverse_ (`contextMenu` treeMenu ref app2)
-    liftIO (readIORef edResp) >>= traverse_ (`contextMenu` editorMenu ref (edBuffer (appEditor app2)))
+    -- The editor's menu is the pane in front's: what it says of the text is
+    -- said of the file the keyboard would type into.
+    edRespList <- liftIO (readIORef edResps)
+    for_ [resp | (pid, resp) <- edRespList, pid == appPaneKey app2] $
+      (`contextMenu` editorMenu ref (edBuffer (appEditor app2)))
 
     editorBar ref app2
     separator
     statusBar =<< readApp ref
+    -- A tab the pointer holds off the strips, with nowhere in them to go:
+    -- the pane the grid proposes for it, lit, and the ghost of the tab by
+    -- the pointer. Scoped so that the frame after it needs no ids of its
+    -- own moved.
+    scope $ for_ (appTabDrag app2) $ \h ->
+      unless (isJust (htDrop h)) $
+        for_ (gridResp >>= pgrDropTarget) (tabGhost h (appDocs app2))
     pure (editorSig app2)
 
   --------------------------------------------------------------- overlays ---
@@ -335,23 +373,22 @@ reloadConfig ref = do
       for_ reading (takeReading ref)
 
 --------------------------------------------------------------------------------
--- The row the tree and the editor share
+-- The row the tree and the editors share
 --------------------------------------------------------------------------------
 
--- The two panes of a nano-ui pane grid, so the bar between them is the
--- toolkit's to draw, drag and remember.
+-- Two nano-ui pane grids, one inside the other, so the bars between the
+-- panes are the toolkit's to draw, drag and remember. The tree is one pane
+-- of the outer grid and the editors' grid is the other, so putting the tree
+-- away is the outer grid's maximizing of the editors and showing it again is
+-- its restore, at the width the split was left at. The editors split about
+-- among themselves in the inner grid, which makes a pane of its own for a
+-- tab dragged off a strip ('pgDropPane') and names it ('pgrDropPane') for
+-- the tabs to fill; a pane the tabs have emptied is closed by its own pane
+-- ('pgcClose'), and a pane id means the same pane to the grid and the tabs
+-- for as long as both keep it.
 --
--- The grid starts from the split it is given: the tree is the left pane, the
--- editor the right, and the tree starts at the width it was left at. A grid
--- left to split itself would put the new pane on the B side and at a half,
--- which is the wrong side for the editor and the wrong width for the tree.
-
--- | The tree pane's id, the editor's, and the split between them, which are
--- the ids the grid starts from.
-treePaneId, editorPaneId, treeEditorSplit :: Word64
-treePaneId = 1
-editorPaneId = 2
-treeEditorSplit = 3
+-- Neither grid is a Tab stop: their own keys act on their panes, and ned's
+-- widgets own the keyboard this side of them.
 
 -- | The bar's measurements. The panes are laid out with a 'dividerW' gap
 -- between them, of which the middle 'paneSpacing' is the line that is drawn;
@@ -362,35 +399,76 @@ dividerW = paneSpacing + 2 * paneLeeway
 paneSpacing = 1
 paneLeeway = 2
 
--- | The tree and the editor side by side, as the two panes of a pane grid.
--- Each pane's content is the given view, and the bar between them resizes
--- them; the split is kept by the grid, so the tree comes back at the width it
--- was left at when it is put away and taken up again.
+-- | The row: the tree beside the editors, split about as it was left, and
+-- the editors' grid back. Each pane's content is the view given for its id,
+-- and the bars between them resize them; the tree is the outer grid's pinned
+-- pane, so a resized window resizes the editors, and the tree keeps the
+-- width it was left at, giving way only when the window is too narrow to
+-- hold it and an editor's minimum both. Putting the tree away is the outer
+-- grid's maximizing of the editors, and showing it again its restore.
 --
--- The tree is the grid's pinned pane. A resized window resizes the editor:
--- the tree is a fixture the reader set the width of, and a wider window is
--- room for more text, not for more of a file name. It gives way only when
--- the window is too narrow to hold it and the editor's minimum both.
---
--- The grid is no Tab stop: its own keys act on its panes, and ned's widgets
--- own the keyboard this side of it.
+-- What comes back is the editors' grid's response, whose 'pgrDropTarget'
+-- proposes a pane for a held tab.
 treeEditorGrid ::
-  Float ->
+  IORef App ->
   (PaneGridCtx -> NanoUI PaneView) ->
-  (PaneGridCtx -> NanoUI PaneView) ->
-  NanoUI PaneGridResponse
-treeEditorGrid treeW treePane editorPane = do
+  (Word64 -> PaneGridCtx -> NanoUI PaneView) ->
+  NanoUI (Maybe PaneGridResponse)
+treeEditorGrid ref treePane editorPane = do
   winW <- windowWidth
   border <- windowBorderFor <$> askWindow
-  -- The grid's own tree, handed back each frame. The first frame starts it
-  -- from the window's width; after that a resize changes the editor's width
-  -- and not the split, which the grid would take again if it were passed a
-  -- new one. The state starts empty rather than on that first tree: a state
-  -- is not stored while it is still what it started as, so the first tree
-  -- would be worked out again each frame from the tree's width as it was
-  -- last drawn, and the tree would creep narrower.
-  (arrangement, setArrangement) <- useState Nothing
-  let start = Split treeEditorSplit AxisV (treeShare (winW - 2 * border)) (Pane treePaneId) (Pane editorPaneId)
+  app <- readApp ref
+  -- The editors' grid runs inside its pane of the outer row, and its
+  -- response -- what it proposes for a held tab -- is carried out through a
+  -- ref for the frame to read after the row.
+  innerResp <- liftIO (newIORef Nothing)
+  -- The outer grid's own tree, handed back each frame. The first frame
+  -- starts it from the window's width; after that a resize changes the
+  -- editors' width and not the split, which the grid would take again if it
+  -- were passed a new one. The state starts empty rather than on that first
+  -- tree: a state is not stored while it is still what it started as, so the
+  -- first tree would be worked out again each frame from the tree's width as
+  -- it was last drawn, and the tree would creep narrower.
+  (outer, setOuter) <- useState Nothing
+  let start = G.Split treeEditorSplit AxisV (treeShare (winW - 2 * border) (layoutTreeWidth (appLayout app))) (G.Pane treePaneId) (G.Pane editorPaneId)
+      -- The pane the editors fill: the whole row while the tree is put away,
+      -- beside the tree at its width while it is shown.
+      editorHost pctx = do
+        if appTreeShown app
+          then when (pgcMaximized pctx) (pgcRestore pctx)
+          else unless (pgcMaximized pctx) (pgcMaximize pctx)
+        resp <- editorGrid editorPane
+        liftIO (writeIORef innerResp (Just resp))
+        pure (PaneView "" False)
+  outerResp <-
+    styled paneChrome $
+      paneGrid
+        defaultPaneGridConfig
+          { pgSpacing = paneSpacing
+          , pgMinSize = minTreeWidth
+          , pgLeeway = paneLeeway
+          , pgPreserveDragSize = True
+          , -- The window's width is the editors' to take or give up: the
+            -- tree is as wide as it was left, whatever the window does.
+            pgFixedPanes = (== treePaneId)
+          , pgTree = outer <|> Just start
+          , pgFocusable = False
+          , pgViewPane = \pid pctx -> if pid == treePaneId then treePane pctx else editorHost pctx
+          }
+  setOuter (pgrTree outerResp)
+  liftIO (readIORef innerResp)
+
+-- | The outer row's own split, which the first frame starts the row from.
+treeEditorSplit :: Word64
+treeEditorSplit = 3
+
+-- | The editors' grid: the strips of tabs and the texts, split about as the
+-- tabs were dragged about. It starts as the one pane, whose id is the
+-- application's too; the panes it makes for dropped tabs have ids of its own
+-- after that, and the tree each frame is its own, handed back for the next.
+editorGrid :: (Word64 -> PaneGridCtx -> NanoUI PaneView) -> NanoUI PaneGridResponse
+editorGrid editorPane = do
+  (inner, setInner) <- useState Nothing
   resp <-
     styled paneChrome $
       paneGrid
@@ -399,21 +477,48 @@ treeEditorGrid treeW treePane editorPane = do
           , pgMinSize = minTreeWidth
           , pgLeeway = paneLeeway
           , pgPreserveDragSize = True
-          , -- The window's width is the editor's to take or give up: the tree
-            -- is as wide as it was left, whatever the window does.
-            pgFixedPanes = (== treePaneId)
-          , pgTree = arrangement <|> Just start
+          , pgTree = inner <|> Just (G.Pane editorPaneId)
           , pgFocusable = False
-          , pgViewPane = \pid pctx -> if pid == treePaneId then treePane pctx else editorPane pctx
+          , pgViewPane = editorPane
           }
-  setArrangement (pgrTree resp)
+  setInner (pgrTree resp)
   pure resp
+
+-- | A tab held off the strips, with nowhere in them to go: the pane the grid
+-- proposes for it, lit, and by the pointer the ghost of the tab, as the grid
+-- draws a pane it is moving itself. It passes the pointer through, so the
+-- grid keeps sight of where it is.
+tabGhost :: HeldTab -> [Doc] -> PaneGridDrop -> NanoUI ()
+tabGhost held docs target = do
+  theme <- uiTheme
+  fm <- uiFontMetrics
+  let V2 mx my = htPos held
+      accent = themeAccent theme
+      zone = pgdRect target
+      ghost = Rect (mx + 12) (my + 12) 112 28
+      title = maybe "Untitled" (T.take 12 . docName) (find ((== htDoc held) . docKey) docs)
+   in void $
+        drawing (pinAt 0 0 . grow . pointer PointerPass) $ \_ ->
+          smallArrayFromList
+            [ FillRect zone (withAlpha accent 0.13)
+            , StrokeRoundedRect zone 0 1 accent
+            , FillRoundedRect ghost 2 (withAlpha accent 0.19)
+            , StrokeRoundedRect ghost 2 1 (withAlpha accent 0.5)
+            , DrawTextStyled
+                (mx + 18)
+                (my + 16 + (28 - fmLineHeight fm) / 2)
+                (TextFont 0 FontRegular WeightNormal FontStyleNormal DecorationNone)
+                title
+                (withAlpha (styleFg (themePanel theme)) 0.6)
+            ]
+
+-- | The tree's share of the row: the width it was left at, of what the panes
+-- share out. The grid has not been laid out yet, so the window's width inside
+-- its border stands in for the grid's, and the gutter is left out of the
+-- share, so the tree lands at its width and not a hair off.
+treeShare :: Float -> Float -> Float
+treeShare usable treeW
+  | room <= 0 = 0.5
+  | otherwise = treeW / room
   where
-    -- The tree's share of the row: the width it was left at, of what the
-    -- panes share out. The grid has not been laid out yet, so the window's
-    -- width inside its border stands in for the grid's.
-    treeShare gridW
-      | usable <= 0 = 0.5
-      | otherwise = treeW / usable
-      where
-        usable = gridW - dividerW
+    room = usable - dividerW

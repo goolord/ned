@@ -14,6 +14,8 @@ cabal run ned -- path/to/file.hs [more files...]
 
 - Syntax highlighting for Haskell, Rust, C/C++, JavaScript, Python, and more.
 - Tabs and a resizable file tree (Shift+click opens a file in a new tab).
+  Tabs drag: between two tabs to reorder them, onto another pane to move it
+  there, or against an edge of a pane to split the row and open it there.
 - Drag-and-drop file opening.
 - Fuzzy file finder with live preview, powered by fzf's matching algorithm.
 - Live grep across the project folder using ripgrep (`rg` must be on your `PATH`).

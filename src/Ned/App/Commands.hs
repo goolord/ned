@@ -23,6 +23,8 @@ module Ned.App.Commands
 
     -- * The files
   , newFile
+  , newFileIn
+  , landHeldTabUi
   , openDialog
   , openFile
   , openHere
@@ -95,6 +97,7 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.Word (Word64)
 import qualified Data.Text.NanoRope.Measured as Rope
 import NanoUI
 import NanoUI.Backend.Sdl
@@ -151,6 +154,25 @@ onTree ref f = modifyApp ref (\a -> a {appTree = f (appTree a)})
 -- | A new tab, untitled and empty.
 newFile :: IORef App -> NanoUI ()
 newFile ref = modifyApp ref (\a -> (newDoc a) {appStatus = "New file"})
+
+-- | A new tab in the pane of this id, which comes to the front with it.
+newFileIn :: IORef App -> Word64 -> NanoUI ()
+newFileIn ref pid = modifyApp ref (focusPane pid) >> newFile ref
+
+-- | The frame a held tab's drag releases on: land it where the strips and
+-- panes said, and, when they said nowhere and the pane grid proposes a pane
+-- for it, make that pane ('commitPaneDrop') and put the tab in it. Any other
+-- frame of the drag is kept as it is.
+landHeldTabUi :: IORef App -> Maybe PaneGridDrop -> NanoUI ()
+landHeldTabUi ref target = do
+  a <- readApp ref
+  case appTabDrag a of
+    Just d | htPhase d == DragReleased -> do
+      made <- case htDrop d of
+        Just _ -> pure Nothing
+        Nothing -> traverse commitPaneDrop target
+      modifyApp ref (landHeldTab (fmap fst =<< made))
+    _ -> pure ()
 
 -- | Ask the desktop for a file to open, starting in the folder of the one in
 -- front.

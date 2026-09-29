@@ -19,12 +19,14 @@ module Ned.View.Chrome
   , statusBar
   ) where
 
-import Control.Monad (unless, when)
+import Control.Monad (unless, void, when)
 import Data.Foldable (for_)
 import Data.IORef (IORef)
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.Primitive.SmallArray (smallArrayFromList)
+import Data.Word (Word64)
 import NanoUI
 import qualified NanoUI.Adornment as A
 import NanoUI.Backend.Sdl (CaptionOptions (..), defaultCaptionOptions, defaultResizeBorder, windowCaptionWith)
@@ -276,25 +278,59 @@ treeMenu ref app = do
 -- The tabs over the editor
 --------------------------------------------------------------------------------
 
--- | The open files, a tab each, over the text: folder tabs, the one in front
--- opening onto the text beneath it. A click brings a file to the front and
--- gives the text the keyboard; the cross on a tab, or a middle click on it,
--- closes it, asking first if it has changes; the button after the tabs opens
--- a new one. A file with changes to save carries a dot after its name, as it
--- does on the status bar.
-docTabs :: IORef App -> App -> NanoUI ()
-docTabs ref app = do
-  resp <- tabBarConfigured' (TabsConfig TabContained TabTop newTab) (appDocKey app) (map docTab (appDocs app))
-  when (tabActive resp /= appDocKey app) $ do
+-- | The open files of one pane, a tab each, over the text: folder tabs, the
+-- one in front opening onto the text beneath it. A click brings a file to
+-- the front and gives the text the keyboard; a press carried off the tab
+-- takes it up to drag, and where the drag lands -- in this strip at the
+-- place it marks, in another pane, or as a pane of its own, which the pane
+-- grid proposes -- is what "Ned.App.State" does when the button comes up.
+-- The cross on a tab, or a middle click on it, closes it, asking first if it
+-- has changes; the button after the tabs opens a new one in this pane. A
+-- file with changes to save carries a dot after its name, as it does on the
+-- status bar.
+docTabs :: IORef App -> Word64 -> Pane -> NanoUI ()
+docTabs ref pid pt = do
+  let docs = map docTab (paneDocs pt)
+      docTab d =
+        (closableTab (docKey d) (docName d) ())
+          { tabAdornments = if docDirty d then A.trailing (A.affix "\x2022") else mempty
+          }
+  resp <- tabBarConfigured' (TabsConfig TabContained TabTop newTab) (docKey (paneFront pt)) docs
+  when (tabActive resp /= docKey (paneFront pt)) $ do
     showTab ref (tabActive resp)
     modifyApp ref (\a -> a {appTreeFocus = False, appBarFocus = False})
   for_ (tabClosed resp) (closeTab ref)
+  -- A press carried off a tab takes it up past the drag threshold; the
+  -- cancellation puts it back, and the release is landed once, after the
+  -- panes and the grid have all said their say.
+  drag <- useDrag (tabHeaders resp)
+  for_ drag $ \d ->
+    if dragPhase d == DragCancelled
+      then modifyApp ref (\a -> a {appTabDrag = Nothing})
+      else do
+        let key = dragPayload d
+            others = [respRect r | (k, r) <- tabHeaders resp, k /= key]
+            -- Where a release would open in this strip: before the first of
+            -- the other tabs the pointer is past.
+            slot = insertionIndex DragAxisX (tabStripRect resp) others (dragAt d)
+        modifyApp ref (holdTab key pid (dragAt d) (dragPhase d))
+        for_ slot $ \i -> do
+          modifyApp ref $ \a -> case appTabDrag a of
+            Just h | htFrom h == pid -> a {appTabDrag = Just h {htDrop = Just (pid, i)}}
+            _ -> a
+          -- The mark where a release would open, over the strip: a bar in
+          -- the accent, between the tabs it would come between.
+          let boundary = case splitAt i others of
+                (_, r : _) -> rectX r - 1
+                (_, []) -> maybe 0 (\r -> rectX r + rectW r + 1) (listToMaybe (reverse others))
+          when (boundary > 0) $ do
+            theme <- uiTheme
+            let Rect _ sy _ sh = tabStripRect resp
+            scope $ void $
+              drawing (pinAt 0 0 . grow . pointer PointerPass) $ \_ ->
+                smallArrayFromList [FillRect (Rect (boundary - 1) sy 2 sh) (themeAccent theme)]
   where
-    newTab = whenM (styled subtle (buttonWith (tight . fixedWH 28 28) "+")) (newFile ref)
-    docTab d =
-      (closableTab (docKey d) (docName d) ())
-        { tabAdornments = if docDirty d then A.trailing (A.affix "\x2022") else mempty
-        }
+    newTab = whenM (styled subtle (buttonWith (tight . fixedWH 28 28) "+")) (newFileIn ref pid)
 
 --------------------------------------------------------------------------------
 -- The bar under the editor

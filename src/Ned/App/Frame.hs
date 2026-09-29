@@ -20,6 +20,7 @@ import Control.Monad (forM_, unless, when)
 import Data.Foldable (for_)
 import Data.IORef (IORef)
 import Data.Maybe (isJust, listToMaybe)
+import Data.Word (Word64)
 import Data.Text (Text)
 import qualified Data.Text as T
 import NanoUI
@@ -131,7 +132,7 @@ syncTitle ref app =
 --
 -- The tree's width is not in here: the pane grid marks its own damage while
 -- one of its bars is dragged.
-chromeSig :: App -> (Text, Bool, Bool, Bool, Text, (Bool, Bool, Int), (Int, [(Int, Bool)], (Int, Maybe FilePath)))
+chromeSig :: App -> (Text, Bool, Bool, Bool, Text, (Bool, Bool, Int), [Word64], (Int, [(Int, Bool)], (Int, Maybe FilePath)))
 chromeSig a =
   ( appOpenMenu a
   , appBar a == BarNone
@@ -139,6 +140,10 @@ chromeSig a =
   , isJust (appPending a)
   , appStatus a
   , (appTreeShown a, appTreeFocus a, FT.ftVersion (appTree a))
+  , -- The editors' panes, which a tab dragged out of a strip remakes from
+    -- the state; the strips themselves come and go with the tabs and panes
+    -- they would show.
+    map paneKey (appPanes a)
   , ( -- The finder gathers on a thread of its own, so it is the one part of
       -- the window that changes between frames without anybody having
       -- touched a key.

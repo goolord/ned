@@ -10,7 +10,7 @@ import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, try)
 import Control.Monad (filterM, forM_, unless, void, when)
 import Data.Foldable (toList)
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Maybe (isJust)
 import qualified Data.Text as T
 import qualified Data.Text.NanoRope.Measured as Rope
@@ -24,7 +24,7 @@ import NanoUI.Internal.Context (Context (..))
 import NanoUI.Markdown (parseMarkdown)
 import NanoUI.Testing (cursorKindIs, needsRedraw, newPixelContext, uiCursorKind)
 import Ned.App
-import Ned.App.State (Bar (..), Doc (..), Tip (..), appDocs, docName, everyEditor, hoverAt, selectDoc)
+import Ned.App.State (Bar (..), Doc (..), Tip (..), activeDoc, appDocs, closeDoc, docName, everyEditor, hoverAt, paneDocs, selectDoc)
 import qualified Ned.Buffer as B
 import Ned.Complete (Candidate (..), Completion (..))
 import Ned.Config (Config (..), FileSettings (..), defaultConfig)
@@ -730,6 +730,75 @@ selftestIn dir mfile say = do
     clickedTab <- frontNow
     when ([clickedTab] /= take 1 (map docKey before)) $ fail "selftest: a click on the first tab did not bring it to the front"
     chord 'b'
+    idle
+
+    -- A drag of a tab. One pane again, of three clean files, the tree at the
+    -- left, so the places to press and to drop are known: the strip's first
+    -- tab is a little right of the tree, the next a tab on from it.
+    aTabs <- readIORef ref
+    let stripped = foldl' (flip closeDoc) aTabs {appPanes = [], appTabDrag = Nothing} (map docKey (appDocs aTabs))
+    replaced <- openPath InFrontTab Nothing (treeDir </> "outer.txt") stripped
+    opened2 <- openPath InNewTab Nothing (treeDir </> "inner.txt") replaced
+    opened3 <- openPath InNewTab Nothing (treeDir </> "demo.hs") opened2
+    writeIORef ref opened3
+    idle
+    let stripNames = map docName . appDocs <$> readIORef ref
+        dragTab x0 x1 y1 = do
+          frame (at x0 48) {inputButtonsHeld = leftButton, inputButtonsPressed = leftButton}
+          frame (at x1 y1) {inputButtonsHeld = leftButton}
+          frame (at x1 y1) {inputButtonsHeld = leftButton, inputButtonsReleased = leftButton}
+        paneCount = length . appPanes <$> readIORef ref
+    order0 <- stripNames
+    when (order0 /= ["outer.txt", "inner.txt", "demo.hs"]) $
+      fail ("selftest: the drag tests were to start from three tabs, at " <> show order0)
+
+    -- Across the strip, to its end: the order changes, and the tab dragged
+    -- stays the one in front.
+    dragTab 300 1000 48
+    idle
+    order1 <- stripNames
+    when (order1 /= ["inner.txt", "demo.hs", "outer.txt"]) $
+      fail ("selftest: dragging the first tab past the others left them at " <> show order1)
+    frontPath <- appPath <$> readIORef ref
+    unless (fmap takeFileName frontPath == Just "outer.txt") $
+      fail ("selftest: dragging a tab left " <> show frontPath <> " in front")
+
+    -- Down, off the strip, to the pane's edge: the pane splits, the tab
+    -- dragged alone in the new pane, which is the one in front.
+    frame (at 300 48) {inputButtonsHeld = leftButton, inputButtonsPressed = leftButton}
+    frame (at 300 300) {inputButtonsHeld = leftButton}
+    snap "21-tab-drag.bmp"
+    frame (at 300 300) {inputButtonsHeld = leftButton, inputButtonsReleased = leftButton}
+    idle
+    splitPanes <- paneCount
+    splitFront <- appPath <$> readIORef ref
+    unless (splitPanes == 1) $
+      fail (printf "selftest: dragging a tab off the strip left %d panes beside the one in front" splitPanes)
+    unless (fmap takeFileName splitFront == Just "inner.txt") $
+      fail ("selftest: the pane a drag split off shows " <> show splitFront)
+    shot "22-split.bmp"
+
+    -- Onto the other pane, below its strip: the tab moves to it, in front.
+    dragTab 730 400 300
+    idle
+    movedPanes <- paneCount
+    movedFront <- docName . activeDoc <$> readIORef ref
+    movedBeside <- readIORef ref >>= \a -> case appPanes a of
+      [p] -> pure (map docName (paneDocs p))
+      other -> fail ("selftest: the row has " <> show (length other) <> " panes beside the one in front")
+    unless (movedPanes == 1 && movedFront == "demo.hs" && movedBeside == ["outer.txt"]) $
+      fail ("selftest: dropping a tab on the pane beside left " <> show movedFront <> " in front of " <> show movedBeside)
+    shot "23-moved.bmp"
+
+    -- The cross on the last tab of a pane takes the pane with it, the row
+    -- closing up behind it.
+    click 772 50
+    idle
+    closedPanes <- paneCount
+    closedDocs <- stripNames
+    unless (closedPanes == 0 && closedDocs == ["inner.txt", "demo.hs"]) $
+      fail ("selftest: closing a pane's last tab left " <> show closedDocs <> ", with " <> show closedPanes <> " panes beside the one in front")
+    shot "24-pane-closed.bmp"
 
     -- Completion, in a tab of its own: Tab after a word puts in the nearest
     -- word it starts and opens the menu on it, Ctrl+N steps down it and opens

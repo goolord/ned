@@ -13,8 +13,19 @@ module Ned.App.State
   , Placement (..)
   , Tip (..)
   , WindowLayout (..)
+  , Pane (..)
+  , HeldTab (..)
   , newApp
   , openPath
+
+    -- * The panes of the row
+  , treePaneId
+  , editorPaneId
+  , paneOf
+  , appAllPanes
+  , focusPane
+  , onPane
+  , paneDocs
 
     -- * The tabs
   , appDocs
@@ -31,6 +42,12 @@ module Ned.App.State
   , docName
   , docDirty
 
+    -- * A tab on its way
+  , holdTab
+  , rewindDrag
+  , noteDrop
+  , landHeldTab
+
     -- * What follows from the state
   , modalUp
   , findMarks
@@ -44,10 +61,11 @@ module Ned.App.State
 
 import Data.IORef (IORef, newIORef)
 import Data.List (find)
-import Data.Maybe (isJust, isNothing)
+import Data.Maybe (isJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
-import NanoUI (Size (..))
+import Data.Word (Word64)
+import NanoUI (DragPhase (..), Rect (..), Size (..), V2 (..), rectContains)
 import NanoUI.Backend.Sdl (FileDialogId)
 import NanoUI.Markdown (MarkdownDoc)
 import qualified Ned.Buffer as B
@@ -103,10 +121,51 @@ data Doc = Doc
   , docFormat :: !FileFormat
   }
 
--- | The tabs are a zipper whose focus is spread over the record: the file in
--- front is 'appEditor', 'appPath' and 'appFormat' under 'appDocKey', and the
--- others are either side of it. Everything that works on the file in front
--- reads and writes those three and never has to find it among the others.
+-- | A pane of the row the tree and the editors share: the tabs of its own,
+-- and the one of them it shows. The pane the application is working in has
+-- its shown tab spread over the 'App' record instead ('appEditor',
+-- 'appPath', 'appFormat', 'appDocKey', 'appBefore', 'appAfter'); the record
+-- here is for every pane beside it. Nothing but 'paneKey' is read of a pane
+-- without its tabs.
+data Pane = Pane
+  { paneKey :: !Word64
+  -- ^ The pane's id in the editors' pane grid.
+  , paneFront :: !Doc
+  -- ^ The tab the pane shows.
+  , paneBefore :: ![Doc]
+  -- ^ The tabs before the one shown, the nearest first.
+  , paneAfter :: ![Doc]
+  -- ^ The tabs after the one shown, in order.
+  }
+
+-- | A tab the pointer is holding, on its way from the strip it was taken
+-- from to wherever it will land. The strip's own drag ('useDrag') holds it
+-- from the press carried past the threshold to the frame the button comes
+-- up; where it would land, the strips and panes say as the pointer goes: at
+-- a place in a strip, into another pane over its body, or -- when nothing
+-- has said -- into a pane of its own, which the editors' pane grid proposes
+-- and the release commits.
+data HeldTab = HeldTab
+  { htDoc :: !Int
+  -- ^ The tab's key.
+  , htFrom :: !Word64
+  -- ^ The pane it was taken from.
+  , htPos :: !V2
+  -- ^ Where the pointer is.
+  , htPhase :: !DragPhase
+  -- ^ What the drag is doing this frame; the release is the landing.
+  , htDrop :: !(Maybe (Word64, Int))
+  -- ^ Where a release would put it: into this pane's strip, before the tab
+  -- now at this index of it.
+  }
+  deriving (Eq)
+
+-- | The tabs of the pane in front are a zipper whose focus is spread over
+-- the record: the file in front is 'appEditor', 'appPath' and 'appFormat'
+-- under 'appDocKey', and the others are either side of it. Everything that
+-- works on the file in front reads and writes those three and never has to
+-- find it among the others. The panes beside the one in front keep their own
+-- zippers, in 'appPanes', whole.
 data App = App
   { appEditor :: !Editor
   , appPath :: !(Maybe FilePath)
@@ -117,6 +176,15 @@ data App = App
   , appAfter :: ![Doc]
   -- ^ The tabs after the one in front, in order.
   , appNextKey :: !Int
+  , appPaneKey :: !Word64
+  -- ^ The pane in front, whose shown tab is the one spread over this record.
+  , appPanes :: ![Pane]
+  -- ^ Every pane of the editors' grid beside the one in front.
+  , appClosePane :: !(Maybe Word64)
+  -- ^ A pane the tabs have emptied, for its own pane view to close in the
+  -- pane grid ('pgcClose') and clear.
+  , appTabDrag :: !(Maybe HeldTab)
+  -- ^ The tab the pointer is holding, while it holds one.
   , appStatus :: !Text
   , appOpenMenu :: !Text
   , appMenuSwallow :: !Text
@@ -209,6 +277,10 @@ newApp cfg = do
       , appBefore = []
       , appAfter = []
       , appNextKey = 1
+      , appPaneKey = editorPaneId
+      , appPanes = []
+      , appClosePane = Nothing
+      , appTabDrag = Nothing
       , appStatus = "Ready"
       , appOpenMenu = ""
       , appMenuSwallow = ""
@@ -295,8 +367,119 @@ openPath placement line path0 app = do
         buf = edBuffer (appEditor a)
 
 --------------------------------------------------------------------------------
+-- The panes of the row
+--------------------------------------------------------------------------------
+
+-- The row the tree and the editors share is a pane grid inside a pane grid:
+-- the tree is one pane of the outer grid and the editors' grid is the other,
+-- so putting the tree away is the outer grid's maximizing, and each strip of
+-- tabs is a pane of the inner grid, which makes a pane of its own for a tab
+-- dropped off the strips. A pane the tabs have emptied is the grid's to
+-- close: 'appClosePane' names it, and its own pane closes it as it is drawn.
+
+-- | The tree pane's id, and the pane beside it that holds the editors'
+-- grid, which are the ids the outer row starts from. The editors' panes
+-- have ids of the inner grid's own.
+treePaneId, editorPaneId :: Word64
+treePaneId = 1
+editorPaneId = 2
+
+-- | The pane in front, gathered up from the record.
+focusedPane :: App -> Pane
+focusedPane a = Pane (appPaneKey a) (activeDoc a) (appBefore a) (appAfter a)
+
+-- | Every pane, the one in front first.
+appAllPanes :: App -> [Pane]
+appAllPanes a = focusedPane a : appPanes a
+
+-- | The pane of this id, the one in front included.
+paneOf :: Word64 -> App -> Maybe Pane
+paneOf k a
+  | k == appPaneKey a = Just (focusedPane a)
+  | otherwise = find ((== k) . paneKey) (appPanes a)
+
+-- | Put a pane's tabs back, wherever the pane is: into the record when it is
+-- beside the one in front, into this record when it is the one in front.
+putPane :: Pane -> App -> App
+putPane p a
+  | paneKey p == appPaneKey a =
+      (showDoc (paneFront p) a) {appBefore = paneBefore p, appAfter = paneAfter p}
+  | otherwise = a {appPanes = [if paneKey q == paneKey p then p else q | q <- appPanes a]}
+
+-- | Do what this says to one pane's tabs.
+onPane :: Word64 -> (Pane -> Pane) -> App -> App
+onPane k f a = maybe a (\p -> putPane (f p) a) (paneOf k a)
+
+-- | Make the pane of this id the one in front. The pane that was, with the
+-- tab of its own it was showing, takes a place among the others; the tabs of
+-- the pane that comes forward are this record's from now on.
+focusPane :: Word64 -> App -> App
+focusPane k a
+  | k == appPaneKey a = a
+  | otherwise = case break ((== k) . paneKey) (appPanes a) of
+      (_, p : _) -> setFocusedPane p a {appPanes = [if paneKey q == k then focusedPane a else q | q <- appPanes a]}
+      _ -> a
+
+setFocusedPane :: Pane -> App -> App
+setFocusedPane p a =
+  (showDoc (paneFront p) a)
+    { appPaneKey = paneKey p
+    , appBefore = paneBefore p
+    , appAfter = paneAfter p
+    }
+
+-- | The pane holding this tab, whichever pane that is.
+paneOfDoc :: Int -> App -> Maybe Pane
+paneOfDoc key = find (any ((== key) . docKey) . paneDocs) . appAllPanes
+
+-- | A pane's tabs, in the order its strip shows them.
+paneDocs :: Pane -> [Doc]
+paneDocs p = reverse (paneBefore p) <> [paneFront p] <> paneAfter p
+
+-- | The tab of this key of a pane's.
+paneDoc :: Int -> Pane -> Maybe Doc
+paneDoc key = find ((== key) . docKey) . paneDocs
+
+-- | Bring a tab of this pane to its front.
+paneSelect :: Int -> Pane -> Pane
+paneSelect key p = case break ((== key) . docKey) (paneDocs p) of
+  (before, d : after) -> p {paneFront = d, paneBefore = reverse before, paneAfter = after}
+  _ -> p
+
+-- | Take a tab out of a pane. When it was the one shown, the one before it
+-- comes forward, or the one after it when it was first; a pane has at least
+-- the one tab, so taking the last is the caller closing the pane.
+paneRemove :: Int -> Pane -> Pane
+paneRemove key p
+  | docKey (paneFront p) /= key =
+      p {paneBefore = filter ((/= key) . docKey) (paneBefore p), paneAfter = filter ((/= key) . docKey) (paneAfter p)}
+  | prev : rest <- paneBefore p = p {paneFront = prev, paneBefore = rest}
+  | next : rest <- paneAfter p = p {paneFront = next, paneAfter = rest}
+  | otherwise = p
+
+-- | A pane's tabs with one of theirs moved to this place among the others,
+-- in front: what landing a held tab in a strip leaves it with.
+panePlaced :: Int -> Doc -> Pane -> Pane
+panePlaced index d p =
+  let others = filter ((/= docKey d) . docKey) (paneDocs p)
+      (before, after) = splitAt (max 0 (min index (length others))) others
+   in p {paneFront = d, paneBefore = reverse before, paneAfter = after}
+
+-- | Move the tab of this key to the place given among the others, in front.
+paneMoveTo :: Int -> Int -> Pane -> Pane
+paneMoveTo index key p = maybe p (\d -> panePlaced index d p) (paneDoc key p)
+
+--------------------------------------------------------------------------------
 -- The tabs
 --------------------------------------------------------------------------------
+
+-- | Every tab of every pane, the pane in front first.
+appDocs :: App -> [Doc]
+appDocs a = concatMap paneDocs (appAllPanes a)
+
+-- | Whether there is more than the one tab or the one pane to put a tab in.
+manyTabs :: App -> Bool
+manyTabs a = length (appDocs a) > 1 || not (null (appPanes a))
 
 -- | The tab holding a file, if one does.
 tabWith :: FilePath -> App -> IO (Maybe Doc)
@@ -305,14 +488,6 @@ tabWith path app = (`findTab` app) <$> makeAbsolute path
 -- | The tab holding a file, by its absolute path.
 findTab :: FilePath -> App -> Maybe Doc
 findTab path = find (maybe False (equalFilePath path) . docPath) . appDocs
-
--- | Whether there is more than the one tab.
-manyTabs :: App -> Bool
-manyTabs app = not (null (appBefore app) && null (appAfter app))
-
--- | Every tab, in the order the strip shows them.
-appDocs :: App -> [Doc]
-appDocs app = reverse (appBefore app) <> [activeDoc app] <> appAfter app
 
 -- | The tab in front, gathered up from the record.
 activeDoc :: App -> Doc
@@ -327,12 +502,12 @@ showDoc doc app = app {appEditor = docEditor doc, appPath = docPath doc, appForm
 pushActive :: App -> App
 pushActive app = app {appBefore = activeDoc app : appBefore app}
 
--- | Bring the tab of this key to the front. A key no tab has changes nothing.
+-- | Bring the tab of this key to the front, in the pane that has it, which
+-- comes to the front with it. A key no tab has changes nothing.
 selectDoc :: Int -> App -> App
-selectDoc key app =
-  case break ((== key) . docKey) (appDocs app) of
-    (before, doc : after) | key /= appDocKey app -> showDoc doc app {appBefore = reverse before, appAfter = after}
-    _ -> app
+selectDoc key a = case paneOfDoc key a of
+  Just p -> focusPane (paneKey p) (putPane (paneSelect key p) a)
+  Nothing -> a
 
 -- | Bring the next tab to the front, or the one before, round from the ends.
 stepDoc :: Bool -> App -> App
@@ -367,31 +542,61 @@ insertDoc replace ed path format app =
   where
     front = appEditor app
 
--- | Close the tab of this key, whatever it holds. Closing the tab in front
--- brings the one before it forward, or the one after it when it was first;
--- closing the last tab leaves an untitled one, since there is always a file
--- to type into.
+-- | Close the tab of this key, whatever it holds, in whatever pane it is.
+-- Closing the tab in front brings the one before it forward, or the one after
+-- it when it was first. A pane's last tab closes the pane, its place going to
+-- the pane beside it; closing the last tab of the last pane leaves an
+-- untitled one, since there is always a file to type into.
 closeDoc :: Int -> App -> App
-closeDoc key app
-  | key /= appDocKey app = app {appBefore = drop' (appBefore app), appAfter = drop' (appAfter app)}
-  | prev : rest <- appBefore app = showDoc prev app {appBefore = rest}
-  | next : rest <- appAfter app = showDoc next app {appAfter = rest}
-  | otherwise = (newDoc app) {appBefore = []}
+closeDoc key a = case paneOfDoc key a of
+  Just p
+    | length (paneDocs p) > 1 -> onPane (paneKey p) (paneRemove key) a
+    | otherwise -> closePane (paneKey p) a
+  Nothing -> a
+
+-- | Take a whole pane away: its tabs from the others, and it from the row,
+-- which its own pane does as it is drawn ('pgcClose'). Taking the one pane
+-- there is leaves it an untitled tab, since there is always a file to type
+-- into.
+closePane :: Word64 -> App -> App
+closePane pid a
+  | null (appPanes a) = (newDoc a) {appBefore = []}
+  | otherwise =
+      let a1 = if pid == appPaneKey a then focusBeside pid a else a
+       in a1
+            { appPanes = filter ((/= pid) . paneKey) (appPanes a1)
+            , appClosePane = Just pid
+            }
+
+-- | Give the pane in front's keyboard to a pane beside it: the one before it
+-- among the panes there are, or the one after, round from the ends.
+focusBeside :: Word64 -> App -> App
+focusBeside pid a = maybe a (`focusPane` a) beside
   where
-    drop' = filter ((/= key) . docKey)
+    ids = map paneKey (appAllPanes a)
+    after = drop 1 (dropWhile (/= pid) ids)
+    before = reverse (takeWhile (/= pid) ids)
+    beside = listToMaybe (after <> before)
 
 -- | Change how the text of every tab is shown. How big it is and whether its
 -- indentation is marked are the reader's, not the file's, so they are the
--- same in every tab.
+-- same in every tab of every pane.
 everyEditor :: (Editor -> Editor) -> App -> App
 everyEditor f app =
   app
     { appEditor = f (appEditor app)
     , appBefore = map onDoc (appBefore app)
     , appAfter = map onDoc (appAfter app)
+    , appPanes = map onPaneRec (appPanes app)
     }
   where
     onDoc d = d {docEditor = f (docEditor d)}
+    onPaneRec p =
+      p
+        { paneFront = onDoc (paneFront p)
+        , paneBefore = map onDoc (paneBefore p)
+        , paneAfter = map onDoc (paneAfter p)
+        }
 
 -- | What a tab is called: its file's name, or "Untitled".
 docName :: Doc -> Text
@@ -400,6 +605,104 @@ docName = maybe "Untitled" (T.pack . takeFileName) . docPath
 -- | Whether a tab has changes to save.
 docDirty :: Doc -> Bool
 docDirty = B.isDirty . edBuffer . docEditor
+
+--------------------------------------------------------------------------------
+-- A tab on its way
+--------------------------------------------------------------------------------
+
+-- A strip holds its tab up when its own drag ('useDrag') takes the press
+-- past the threshold, and says where a release would land it as the pointer
+-- goes: into a strip at the place the strip's drag reports, or into a pane
+-- beside it over its body -- and when nothing has said, the pane grid
+-- proposes a pane of the tab's own, which the release commits. Landing is
+-- the only thing that moves a tab between panes, so a drag given up on the
+-- tree, the bars or the desktop moves nothing.
+
+-- | The strip's drag holds its tab, from this pane, where the pointer is and
+-- at this phase of the drag. The tab comes to the front with it, as a
+-- browser takes a tab the moment it is pressed. A hold already going keeps
+-- where a release would land it, which the panes say as the pointer goes.
+holdTab :: Int -> Word64 -> V2 -> DragPhase -> App -> App
+holdTab key pid pos phase a =
+  (selectDoc key a)
+    { appTabDrag = Just held
+    , appTreeFocus = False
+    , appBarFocus = False
+    }
+  where
+    held = case appTabDrag a of
+      Just h | htFrom h == pid, htDoc h == key -> h {htPos = pos, htPhase = phase}
+      _ -> HeldTab key pid pos phase Nothing
+
+-- | Once a frame, before the panes are drawn: nothing of where the held tab
+-- would land, which the panes say again this frame.
+rewindDrag :: App -> App
+rewindDrag a = a {appTabDrag = (\d -> d {htDrop = Nothing}) <$> appTabDrag a}
+
+-- | What the pane of this id would do with a release: a tab from another
+-- pane, over its body, would move into it, after the one in front. What a
+-- release would do over a strip, the strip's own drag says, and over the
+-- pane a tab came from, the pane grid proposes; a strip that has said, this
+-- pane's own or another's, is not said over.
+noteDrop :: Word64 -> Rect -> App -> App
+noteDrop pid pane a = case appTabDrag a of
+  Just d
+    | pid /= htFrom d
+    , isNothing (htDrop d)
+    , rectContains pane (htPos d)
+    , Just p <- paneOf pid a ->
+        a {appTabDrag = Just d {htDrop = Just (pid, 1 + length (paneBefore p))}}
+  _ -> a
+
+-- | The drag's release frame: put the tab where the panes said, into the
+-- pane the grid made for it when they said nowhere, or back where it came
+-- from. Any other frame of the drag is kept as it is; the drag itself is
+-- over on the release either way, and a cancellation was put back where it
+-- came from already.
+landHeldTab :: Maybe Word64 -> App -> App
+landHeldTab made a0 = case appTabDrag a0 of
+  Just d | htPhase d == DragReleased -> (land d) {appTabDrag = Nothing}
+  _ -> a0
+  where
+    land d = case htDrop d of
+      Just (pid, i)
+        | pid == htFrom d -> onPane pid (paneMoveTo i (htDoc d)) a0
+        | otherwise -> moveDocAcross (htFrom d) (htDoc d) pid i a0
+      Nothing -> maybe a0 (\np -> toNewPane (htFrom d) (htDoc d) np a0) made
+
+-- | Take a tab out of the pane of this id. When it was the one shown, the
+-- one before it comes forward, or the one after it when it was first. A pane
+-- left with nothing beside another closes; the pane in front is never left
+-- with nothing, because the caller has made some other pane the one in front
+-- first.
+liftDocFrom :: Word64 -> Int -> App -> (Maybe Doc, App)
+liftDocFrom pid key a = case paneOf pid a of
+  Nothing -> (Nothing, a)
+  Just p
+    | [d] <- paneDocs p, pid /= appPaneKey a -> (Just d, closePane pid a)
+    | otherwise -> (paneDoc key p, onPane pid (paneRemove key) a)
+
+-- | Move a tab into another pane's strip, at the place given, in front. The
+-- pane it came from keeps the rest of its tabs, or closes when that was its
+-- last one.
+moveDocAcross :: Word64 -> Int -> Word64 -> Int -> App -> App
+moveDocAcross src key pid index a0
+  | src /= pid =
+      let (md, a2) = liftDocFrom src key (focusPane pid a0)
+       in maybe a2 (\d -> onPane pid (panePlaced index d) a2) md
+  | otherwise = a0
+
+-- | The pane grid has made a pane for a tab dropped off the strips
+-- ('commitPaneDrop'): give the tab to it, out of the pane it came from, and
+-- put the keyboard there. The pane it came from keeps the rest of its tabs,
+-- or closes when that was its last one, the grid closing up the row behind
+-- it.
+toNewPane :: Word64 -> Int -> Word64 -> App -> App
+toNewPane src key npid a0 = case paneOf src a0 >>= paneDoc key of
+  Nothing -> a0
+  Just doc ->
+    let a1 = a0 {appPanes = Pane npid doc [] [] : appPanes a0}
+     in snd (liftDocFrom src key (focusPane npid a1))
 
 --------------------------------------------------------------------------------
 -- What follows from the state

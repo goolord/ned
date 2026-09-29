@@ -1,5 +1,19 @@
 # Revision history for ned
 
+## Unreleased
+
+* Tabs drag. A press carried off a tab takes it up, with the place a drop
+  would open at marked in its strip: drop it between two tabs to reorder
+  them, over another pane to move it there, or over an edge of its own pane
+  to split the row and give it a pane of its own. A pane's last tab dragged
+  away is the pane it already was; a pane emptied of its tabs by any of this
+  closes, the row closing up behind it.
+* The row is two pane grids, one inside the other: the tree and the editors
+  beside each other, the editors split about among themselves. Putting the
+  tree away is the outer grid's maximizing of the editors, and each strip of
+  tabs is a pane of the inner grid with a button of its own to open a tab
+  there.
+
 ## 0.1.0.0 -- 2026-09-19
 
 * First version: a source code editor on nano-rope and nano-ui, with syntax

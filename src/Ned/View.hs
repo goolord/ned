@@ -43,6 +43,7 @@ import Data.Primitive.SmallArray (smallArrayFromList)
 import Data.Word (Word64)
 import GHC.Clock (getMonotonicTime)
 import NanoUI
+import NanoUI.Backend.Sdl (openUrl)
 import qualified NanoUI as G (GridNode (..))
 import NanoUI.Markdown (Block (CodeBlock), MarkdownConfig (..), MarkdownDoc, appendMarkdown, defaultMarkdownConfig, markdownBlocks, markdownConfigured, parseMarkdown)
 import qualified NanoUI.Markdown.Syntax as MD
@@ -374,10 +375,10 @@ markdownPreview ref linkFocus key ed = do
           modifyApp ref (\a -> a {appRequestMarkdownLinkFocus = Nothing})
         pure response
       for_ clicked $ \url -> do
-        void (setClipboard url)
+        opened <- liftIO (openUrl url)
         modifyApp ref $ \a ->
           a
-            { appStatus = "Link copied to clipboard"
+            { appStatus = if opened then "Opened link" else "Could not open link"
             , appFocusMarkdownLinks = if appFocusMarkdownLinks a == Just key then Nothing else appFocusMarkdownLinks a
             , appRequestMarkdownLinkFocus = if appRequestMarkdownLinkFocus a == Just key then Nothing else appRequestMarkdownLinkFocus a
             }

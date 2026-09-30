@@ -577,7 +577,10 @@ editorGrid editorPane = do
 -- | A tab held off the strips, with nowhere in them to go: the pane the grid
 -- proposes for it, lit, and by the pointer the ghost of the tab, as the grid
 -- draws a pane it is moving itself. It passes the pointer through, so the
--- grid keeps sight of where it is.
+-- grid keeps sight of where it is. The drawing is versioned by where the
+-- pointer is and the zone under it: pinned over the whole window as it is,
+-- its size never changes, so without a version its ops would stay those of
+-- the frame it first appeared on and the ghost would not follow the pointer.
 tabGhost :: HeldTab -> [Doc] -> PaneGridDrop -> NanoUI ()
 tabGhost held docs target = do
   theme <- uiTheme
@@ -587,8 +590,10 @@ tabGhost held docs target = do
       zone = pgdRect target
       ghost = Rect (mx + 12) (my + 12) 112 28
       title = maybe "Untitled" (T.take 12 . docName) (find ((== htDoc held) . docKey) docs)
+      Rect zx zy zw zh = zone
+      version = contentKeyOf [keyPart title, keyPart (mx, my), keyPart (zx, zy, zw, zh)]
    in void $
-        drawing (pinAt 0 0 . grow . pointer PointerPass) $ \_ ->
+        drawingVersioned version (pinAt 0 0 . grow . pointer PointerPass) $ \_ ->
           smallArrayFromList
             [ FillRect zone (withAlpha accent 0.13)
             , StrokeRoundedRect zone 0 1 accent

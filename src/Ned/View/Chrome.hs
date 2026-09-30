@@ -331,15 +331,17 @@ docTabs ref pid pt = do
             Just h | htFrom h == pid -> a {appTabDrag = Just h {htDrop = Just (pid, i)}}
             _ -> a
           -- The mark where a release would open, over the strip: a bar in
-          -- the accent, between the tabs it would come between.
+          -- the accent, between the tabs it would come between. Versioned by
+          -- where it sits, for the same reason as the held tab's ghost: a
+          -- pinned drawing keeps its ops until its version says otherwise.
           let boundary = case splitAt i others of
                 (_, r : _) -> rectX r - 1
                 (_, []) -> maybe 0 (\r -> rectX r + rectW r + 1) (listToMaybe (reverse others))
+              Rect _ sy _ sh = tabStripRect resp
           when (boundary > 0) $ do
             theme <- uiTheme
-            let Rect _ sy _ sh = tabStripRect resp
             scope $ void $
-              drawing (pinAt 0 0 . grow . pointer PointerPass) $ \_ ->
+              drawingVersioned (contentKey [boundary, sy, sh]) (pinAt 0 0 . grow . pointer PointerPass) $ \_ ->
                 smallArrayFromList [FillRect (Rect (boundary - 1) sy 2 sh) (themeAccent theme)]
   where
     newTab = whenM (styled subtle (buttonWith (tight . fixedWH 28 28) "+")) (newFileIn ref pid)

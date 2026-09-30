@@ -294,14 +294,15 @@ treeMenu ref app = do
 -- one in front opening onto the text beneath it. A click brings a file to
 -- the front and gives the text the keyboard; a press carried off the tab
 -- takes it up to drag, and where the drag lands -- in this strip at the
--- place it marks, in another pane, or as a pane of its own, which the pane
--- grid proposes -- is what "Ned.App.State" does when the button comes up.
--- The cross on a tab, or a middle click on it, closes it, asking first if it
--- has changes; the button after the tabs opens a new one in this pane. A
--- file with changes to save carries a dot after its name, as it does on the
--- status bar.
-docTabs :: IORef App -> Word64 -> Pane -> NanoUI ()
-docTabs ref pid pt = do
+-- place it marks, in another pane's strip at the place that strip marks,
+-- over another pane's body after its tab in front, or as a pane of its own,
+-- which the pane grid proposes -- is what "Ned.App.State" does when the
+-- button comes up. The cross on a tab, or a middle click on it, closes it,
+-- asking first if it has changes; the button after the tabs opens a new one
+-- in this pane. A file with changes to save carries a dot after its name,
+-- as it does on the status bar.
+docTabs :: IORef App -> Word64 -> Pane -> Rect -> NanoUI ()
+docTabs ref pid pt paneRect = do
   let docs = map docTab (paneDocs pt)
       docTab d =
         (closableTab (docKey d) (docName d) ())
@@ -319,30 +320,42 @@ docTabs ref pid pt = do
   for_ drag $ \d ->
     if dragPhase d == DragCancelled
       then modifyApp ref (\a -> a {appTabDrag = Nothing})
-      else do
-        let key = dragPayload d
-            others = [respRect r | (k, r) <- tabHeaders resp, k /= key]
-            -- Where a release would open in this strip: before the first of
-            -- the other tabs the pointer is past.
-            slot = insertionIndex DragAxisX (tabStripRect resp) others (dragAt d)
-        modifyApp ref (holdTab key pid (dragAt d) (dragPhase d))
-        for_ slot $ \i -> do
-          modifyApp ref $ \a -> case appTabDrag a of
-            Just h | htFrom h == pid -> a {appTabDrag = Just h {htDrop = Just (pid, i)}}
-            _ -> a
-          -- The mark where a release would open, over the strip: a bar in
-          -- the accent, between the tabs it would come between. Versioned by
-          -- where it sits, for the same reason as the held tab's ghost: a
-          -- pinned drawing keeps its ops until its version says otherwise.
-          let boundary = case splitAt i others of
-                (_, r : _) -> rectX r - 1
-                (_, []) -> maybe 0 (\r -> rectX r + rectW r + 1) (listToMaybe (reverse others))
-              Rect _ sy _ sh = tabStripRect resp
-          when (boundary > 0) $ do
-            theme <- uiTheme
-            scope $ void $
-              drawingVersioned (contentKey [boundary, sy, sh]) (pinAt 0 0 . grow . pointer PointerPass) $ \_ ->
-                smallArrayFromList [FillRect (Rect (boundary - 1) sy 2 sh) (themeAccent theme)]
+      else modifyApp ref (holdTab (dragPayload d) pid (dragAt d) (dragPhase d))
+  -- Where a release would land in this strip, said for any tab the pointer
+  -- holds over it -- this pane's own, come back to reorder it, or another
+  -- pane's, moving in. Over the strip it opens at the place the pointer is;
+  -- over the body of a pane that is not the one the tab came from, after
+  -- the tab in front. The place it would open is marked over the strip: a
+  -- bar in the accent, between the tabs it would come between. Versioned by
+  -- where it sits, for the same reason as the held tab's ghost: a pinned
+  -- drawing keeps its ops until its version says otherwise.
+  inp <- askInput
+  held <- appTabDrag <$> readApp ref
+  for_ held $ \h -> do
+    let key = htDoc h
+        others = [respRect r | (k, r) <- tabHeaders resp, k /= key]
+        -- Over the strip: before the first of the other tabs the pointer is
+        -- past. Over the body: after the tab in front.
+        landing = case insertionIndex DragAxisX (tabStripRect resp) others (inputMousePos inp) of
+          Just i -> Just i
+          Nothing
+            | htFrom h /= pid
+            , rectContains paneRect (inputMousePos inp) ->
+                Just (1 + length (paneBefore pt))
+            | otherwise -> Nothing
+    for_ landing $ \i -> do
+      modifyApp ref $ \a -> case appTabDrag a of
+        Just h' -> a {appTabDrag = Just h' {htDrop = Just (pid, i)}}
+        _ -> a
+      let boundary = case splitAt i others of
+            (_, r : _) -> rectX r - 1
+            (_, []) -> maybe 0 (\r -> rectX r + rectW r + 1) (listToMaybe (reverse others))
+          Rect _ sy _ sh = tabStripRect resp
+      when (boundary > 0) $ do
+        theme <- uiTheme
+        scope $ void $
+          drawingVersioned (contentKey [boundary, sy, sh]) (pinAt 0 0 . grow . pointer PointerPass) $ \_ ->
+            smallArrayFromList [FillRect (Rect (boundary - 1) sy 2 sh) (themeAccent theme)]
   where
     newTab = whenM (styled subtle (buttonWith (tight . fixedWH 28 28) "+")) (newFileIn ref pid)
 

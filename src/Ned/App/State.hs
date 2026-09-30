@@ -48,7 +48,6 @@ module Ned.App.State
     -- * A tab on its way
   , holdTab
   , rewindDrag
-  , noteDrop
   , landHeldTab
 
     -- * What follows from the state
@@ -68,7 +67,7 @@ import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Word (Word64)
-import NanoUI (DragPhase (..), GridNode, Rect (..), Size (..), V2 (..), rectContains)
+import NanoUI (DragPhase (..), GridNode, Size (..), V2 (..))
 import NanoUI.Backend.Sdl (FileDialogId)
 import NanoUI.Markdown (MarkdownDoc)
 import qualified Ned.Buffer as B
@@ -716,13 +715,14 @@ docDirty doc = isNothing (docMarkdownPreviewOf doc) && B.isDirty (edBuffer (docE
 -- A tab on its way
 --------------------------------------------------------------------------------
 
--- A strip holds its tab up when its own drag ('useDrag') takes the press
--- past the threshold, and says where a release would land it as the pointer
--- goes: into a strip at the place the strip's drag reports, or into a pane
--- beside it over its body -- and when nothing has said, the pane grid
--- proposes a pane of the tab's own, which the release commits. Landing is
--- the only thing that moves a tab between panes, so a drag given up on the
--- tree, the bars or the desktop moves nothing.
+-- The strip that took the press holds its tab up, its own drag ('useDrag')
+-- carrying it, and the strips say where a release would land it as the
+-- pointer goes: into whichever strip the pointer is over, at the place it
+-- marks there, or into a pane beside it over its body, after the tab in
+-- front -- and when nothing has said, the pane grid proposes a pane of the
+-- tab's own, which the release commits. Landing is the only thing that
+-- moves a tab between panes, so a drag given up on the tree, the bars or
+-- the desktop moves nothing.
 
 -- | The strip's drag holds its tab, from this pane, where the pointer is and
 -- at this phase of the drag. The tab comes to the front with it, as a
@@ -744,21 +744,6 @@ holdTab key pid pos phase a =
 -- would land, which the panes say again this frame.
 rewindDrag :: App -> App
 rewindDrag a = a {appTabDrag = (\d -> d {htDrop = Nothing}) <$> appTabDrag a}
-
--- | What the pane of this id would do with a release: a tab from another
--- pane, over its body, would move into it, after the one in front. What a
--- release would do over a strip, the strip's own drag says, and over the
--- pane a tab came from, the pane grid proposes; a strip that has said, this
--- pane's own or another's, is not said over.
-noteDrop :: Word64 -> Rect -> App -> App
-noteDrop pid pane a = case appTabDrag a of
-  Just d
-    | pid /= htFrom d
-    , isNothing (htDrop d)
-    , rectContains pane (htPos d)
-    , Just p <- paneOf pid a ->
-        a {appTabDrag = Just d {htDrop = Just (pid, 1 + length (paneBefore p))}}
-  _ -> a
 
 -- | The drag's release frame: put the tab where the panes said, into the
 -- pane the grid made for it when they said nowhere, or back where it came

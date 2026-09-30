@@ -8,13 +8,14 @@
 * The tree/editor pane arrangement is saved with the window layout, so dragging
   the file tree to the right of the buffers keeps it there after reopening.
 * Tabs drag. A press carried off a tab takes it up, with the ghost of it at
-  the pointer and the pane a drop would give it lit, both following the
-  pointer for as long as it is held, and the place a drop would open at
-  marked in its strip: drop it between two tabs to reorder them, over
-  another pane to move it there, or over an edge of its own pane to split
-  the row and give it a pane of its own. A pane's last tab dragged away is
-  the pane it already was; a pane emptied of its tabs by any of this closes,
-  the row closing up behind it.
+  the pointer wherever the pointer goes, the pane a drop would give it lit
+  when there is one, and the place a drop would open at marked in whichever
+  strip the pointer is over -- its own, to reorder, or another pane's, to
+  move it there at that place -- or, over a pane's body, after the tab in
+  front. Over an edge of a pane the row splits and the tab gets a pane of
+  its own. A pane's last tab dragged away is the pane it already was; a
+  pane emptied of its tabs by any of this closes, the row closing up behind
+  it.
 * The row is two pane grids, one inside the other: the tree and the editors
   beside each other, the editors split about among themselves. Putting the
   tree away is the outer grid's maximizing of the editors, and each strip of

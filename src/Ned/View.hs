@@ -165,7 +165,7 @@ appView ref = do
             scope $ do
               appTabs <- readApp ref
               for_ (paneOf pid appTabs) $ \pt ->
-                when (showsStrip appTabs pt) (docTabs ref pid pt)
+                when (showsStrip appTabs pt) (docTabs ref pid pt (pgcRect pctx))
             -- The tree or a strip may have just brought another file to the
             -- front, which is this pane's buffer now if this is the pane in
             -- front. Who has the keyboard is read from before either ran,
@@ -225,9 +225,6 @@ appView ref = do
                         { appBarFocus = appBarFocus a' && not (edPressed ed)
                         , appTreeFocus = appTreeFocus a' && not (edPressed ed)
                         }
-              -- What a release over this pane's body would do with a tab
-              -- held that came from another pane.
-              modifyApp ref (noteDrop pid (pgcRect pctx))
               when (focused && not isPreview) (hoverPopup ref caret)
             -- A pane the tabs have emptied closes here, its own pane's to
             -- close, which leaves the row to the panes beside it.
@@ -260,12 +257,12 @@ appView ref = do
     separator
     statusBar =<< readApp ref
     -- A tab the pointer holds off the strips, with nowhere in them to go:
-    -- the pane the grid proposes for it, lit, and the ghost of the tab by
-    -- the pointer. Scoped so that the frame after it needs no ids of its
-    -- own moved.
+    -- the ghost of the tab by the pointer wherever it goes, whether the grid
+    -- proposes a pane for it or not, and that pane lit when it does. Scoped
+    -- so that the frame after it needs no ids of its own moved.
     scope $ for_ (appTabDrag app2) $ \h ->
       unless (isJust (htDrop h)) $
-        for_ (gridResp >>= pgrDropTarget) (tabGhost h (appDocs app2))
+        tabGhost h (appDocs app2) (gridResp >>= pgrDropTarget)
     pure (editorSig app2)
 
   --------------------------------------------------------------- overlays ---
@@ -574,38 +571,42 @@ editorGrid editorPane = do
   setInner (pgrTree resp)
   pure resp
 
--- | A tab held off the strips, with nowhere in them to go: the pane the grid
--- proposes for it, lit, and by the pointer the ghost of the tab, as the grid
--- draws a pane it is moving itself. It passes the pointer through, so the
--- grid keeps sight of where it is. The drawing is versioned by where the
--- pointer is and the zone under it: pinned over the whole window as it is,
--- its size never changes, so without a version its ops would stay those of
--- the frame it first appeared on and the ghost would not follow the pointer.
-tabGhost :: HeldTab -> [Doc] -> PaneGridDrop -> NanoUI ()
+-- | A tab held off the strips, with nowhere in them to go: the ghost of the
+-- tab by the pointer, wherever the pointer goes -- over a pane the grid
+-- proposes nothing for, over the tree, over the bars -- and when the grid
+-- does propose a pane for it, that pane lit, as the grid draws a pane it is
+-- moving itself. It passes the pointer through, so the grid keeps sight of
+-- where it is. The drawing is versioned by where the pointer is, the title
+-- and the zone under it, if any: pinned over the whole window as it is, its
+-- size never changes, so without a version its ops would stay those of the
+-- frame it first appeared on and the ghost would not follow the pointer.
+tabGhost :: HeldTab -> [Doc] -> Maybe PaneGridDrop -> NanoUI ()
 tabGhost held docs target = do
   theme <- uiTheme
   fm <- uiFontMetrics
   let V2 mx my = htPos held
       accent = themeAccent theme
-      zone = pgdRect target
+      zone = pgdRect <$> target
       ghost = Rect (mx + 12) (my + 12) 112 28
       title = maybe "Untitled" (T.take 12 . docName) (find ((== htDoc held) . docKey) docs)
-      Rect zx zy zw zh = zone
-      version = contentKeyOf [keyPart title, keyPart (mx, my), keyPart (zx, zy, zw, zh)]
+      version = contentKeyOf [keyPart title, keyPart (mx, my), keyPart (rectParts <$> zone)]
    in void $
         drawingVersioned version (pinAt 0 0 . grow . pointer PointerPass) $ \_ ->
-          smallArrayFromList
-            [ FillRect zone (withAlpha accent 0.13)
-            , StrokeRoundedRect zone 0 1 accent
-            , FillRoundedRect ghost 2 (withAlpha accent 0.19)
-            , StrokeRoundedRect ghost 2 1 (withAlpha accent 0.5)
-            , DrawTextStyled
-                (mx + 18)
-                (my + 16 + (28 - fmLineHeight fm) / 2)
-                (TextFont 0 FontRegular WeightNormal FontStyleNormal DecorationNone)
-                title
-                (withAlpha (styleFg (themePanel theme)) 0.6)
-            ]
+          smallArrayFromList $
+            maybe [] (\z -> [FillRect z (withAlpha accent 0.13), StrokeRoundedRect z 0 1 accent]) zone
+              <> [ FillRoundedRect ghost 2 (withAlpha accent 0.19)
+                 , StrokeRoundedRect ghost 2 1 (withAlpha accent 0.5)
+                 , DrawTextStyled
+                     (mx + 18)
+                     (my + 16 + (28 - fmLineHeight fm) / 2)
+                     (TextFont 0 FontRegular WeightNormal FontStyleNormal DecorationNone)
+                     title
+                     (withAlpha (styleFg (themePanel theme)) 0.6)
+                 ]
+
+-- | A rectangle as four numbers, to key a drawing by.
+rectParts :: Rect -> (Float, Float, Float, Float)
+rectParts (Rect x y w h) = (x, y, w, h)
 
 -- | The tree's share of the row: the width it was left at, of what the panes
 -- share out. The grid has not been laid out yet, so the window's width inside
